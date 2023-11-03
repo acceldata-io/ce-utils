@@ -1,4 +1,4 @@
-# Pulse Bash Script for Automated Task Automation
+# Pulse Bash Script for Automated Tasks
 
 This repository contains a Bash script designed to automate various tasks related to Pulse Server. The script primarily serves two main purposes:
 
