@@ -1,11 +1,23 @@
 #!/bin/bash
 # Acceldata Inc.
 
+
 # User-defined variables
 AMBARISERVER_URL="https://$(hostname -f):8443"
 IMPORT_CERT_PATH="/opt/security/pki/server.pem"
 IMPORT_KEY_PATH="/opt/security/pki/server.key"
 PEM_PASSWORD="Password"
+
+# Check if the script is being run as root
+if [ "$EUID" -ne 0 ]; then
+    handle_error "This script must be run as root."
+fi
+
+# Check if ambari is already configured for SSL
+if grep -q "^api\.ssl=true" /etc/ambari-server/conf/ambari.properties; then
+    echo "SSL is already configured for Ambari Server. Exiting..."
+    exit 0
+fi
 
 # Function to prompt yes/no and proceed
 prompt_yes_no() {
