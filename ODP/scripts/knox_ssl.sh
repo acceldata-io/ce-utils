@@ -72,7 +72,7 @@ set -x
                 rm -rf "$knox_dir/data/security/master"
 
                 # Switch to the user and execute the knoxcli commands
-                sudo -u "$knox_user" "$knox_keytool" create-master --force --master "$knox_master_secret_password"
+                sudo -u "$knox_user" "$knox_keytool" create-master --force --master "$password"
 
                 # Ensure ownership and group ownership are the same as "/etc/knox/conf/gateway-site.xml" file
                 chown "$knox_user:$knox_group" "$knox_dir/data/security/master"
@@ -82,7 +82,7 @@ set -x
             fi
 
             # Create the alias and rename the keystore
-            "$knox_keytool" create-alias gateway-identity-passphrase --value "$knox_master_secret_password"
+            "$knox_keytool" create-alias gateway-identity-passphrase --value "$password"
             mv "/var/lib/knox/data/security/keystores/keystore.jks" "/var/lib/knox/data/security/keystores/gateway.jks"
 
             # Ensure ownership and group ownership are set correctly for the files
