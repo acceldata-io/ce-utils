@@ -42,8 +42,9 @@ To utilize this script for enabling SSL in your ODP environment, please ensure t
 
 ### 3. Setup KNOX SSL
 - **Script:** [knox_ssl.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/knox_ssl.sh)
-- This script can be used to replace default KNOX self-signed certificate with the provided CA-signed certificate.
+- This script can be used to replace the default KNOX self-signed certificate with the provided CA-signed certificate.
 - Download and Execute this Script on the Knox Server node.
+- Make sure the keystore password matches the master secret created earlier, you have an option in the script to reset it.
 
 ### 4. Setup Ambari LDAP
 - **Script:** [setup_ambari_ldap.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ambari_ldap.sh)
