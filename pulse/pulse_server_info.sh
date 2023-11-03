@@ -39,6 +39,7 @@ print_pulse_info() {
   printf "AcceloHome Directory:\t|  %.2f GB\n" "$available_space_accelo_gb"
   printf "Total Memory:\t\t|  %.2f GB\n" "$total_memory_gb"
   printf "Free Memory:\t\t|  %.2f GB\n" "$free_memory_gb"
+  printf "Available Memory:\t|  %.2f GB\n" "$available_memory_gb"  
   printf "CPU Cores:\t\t|  %d\n" "$cpu_cores"
   printf "Sockets:\t\t|  %d\n" "$sockets"
   printf "Cores per Socket:\t|  %d\n" "$cores_per_socket"
@@ -64,6 +65,7 @@ df_accelo_output=$(df -h "$AcceloHome")
 available_space_accelo_gb=$(echo "$df_accelo_output" | awk 'NR==2 {gsub(/G/,"",$4); print $4}')
 
 # Free Memory
+available_memory_gb=$(free -g | awk 'NR==2 {print $7}')
 free_memory_gb=$(free -g | awk 'NR==2 {print $4}')
 total_memory_gb=$(free -g | awk 'NR==2 {print $2}')
 
