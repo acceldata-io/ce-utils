@@ -34,14 +34,26 @@ To utilize this script for enabling SSL in your ODP environment, please ensure t
 
 ### 2. Setup Ambari LDAP
 - **Script:** [setup_ambari_ldap.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ambari_ldap.sh)
+- Modify the script with the correct LDAP/AD details before running the script.
+- Once the script is executed, please restart the Ambari Server and sync ldap user.
 
 ### 3. Setup KNOX SSL
 - **Script:** [knox_ssl.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/knox_ssl.sh)
+- This script can be used to replace default KNOX self-signed certificate with the provided CA-signed certificate.
+- Download and Execute this Script on the Knox Server node.
 
 ### 4. Setup Ambari SSL
 - **Script:** [setup_ssl_ambari.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ssl_ambari.sh)
+- Modify the script to include the following details:
+- **IMPORT_CERT_PATH:** Ambari Server Certificate file
+- **IMPORT_KEY_PATH:** Ambari Server Certificate private key
+- **PEM_PASSWORD:** Ambari Server Certificate private key password
+<img width="656" alt="image" src="https://github.com/acceldata-io/ce-utils/assets/28974904/4e418710-c3cb-44f0-8ef4-18bae2472835">
 
 ### 5. Setup Ranger LDAP
 - **Script:** [setup_ranger_ldap.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ranger_ldap.sh)
+- Modify the script with the correct LDAP/AD details before running the script.
+  
+<img width="712" alt="image" src="https://github.com/acceldata-io/ce-utils/assets/28974904/e7bae7ba-a55e-4545-ba3f-04447e515c56">
 
 These scripts are intended to simplify and automate crucial tasks within your ODP environment. Each script is linked for easy access and usage. Be sure to follow the provided instructions and customize the scripts with your environment-specific details as needed.
