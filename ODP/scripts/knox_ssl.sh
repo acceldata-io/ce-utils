@@ -47,7 +47,7 @@ update_knox_certificate() {
         echo -e "🔐 ${GREEN}keystore:${NC} $keystore"
         echo -e "🔐 ${GREEN}password:${NC} ${YELLOW}********${NC}"  # Replace with actual keystore password
         echo -e "🔐 ${GREEN}knox_master_secret_password:${NC} ${YELLOW}********${NC}"  # Replace with knox_master_secret_password used during Knox installation.
-        echo -e "Do the variables look correct for Knox SSL setup and prceeed (yes/no)?"
+        echo -e "Do the variables look correct for Knox SSL setup and prceeed?"
         if prompt_yes_no ; then
             # Take a backup with the date
             date=$(date +"%Y%m%d")
@@ -110,4 +110,4 @@ issuer_cn=$(openssl x509 -in /tmp/knoxcert.crt -noout -issuer | sed -n 's/.*CN=\
 subject_cn=$(openssl x509 -in /tmp/knoxcert.crt -noout -subject | sed -n 's/.*CN=\([^/]\+\).*/\1/p')
 
 # Call the update_knox_certificate function
-update_knox_certificate 2>/dev/null
+update_knox_certificate
