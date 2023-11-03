@@ -13,6 +13,7 @@ export keystorepassword=Password
 export truststorepassword=Password
 export keystore=/opt/security/pki/server.jks
 export truststore=/opt/security/pki/ca-certs.jks
+
 # For Infra-Solr we need PKCS12 format keystore and truststore.
 # keytool -importkeystore -srckeystore [MY_KEYSTORE.jks] -destkeystore [MY_FILE.p12] -srcstoretype JKS -deststoretype PKCS12 -deststorepass [PASSWORD_PKCS12]
 export keystore_p12=/opt/security/pki/server.p12
@@ -36,6 +37,8 @@ echo -e "🔐 ${GREEN}keystorepassword:${NC} ********"  # Replace with actual ke
 echo -e "🔐 ${GREEN}truststorepassword:${NC} ********"  # Replace with actual truststore password
 echo -e "🔐 ${GREEN}keystore:${NC} $keystore"
 echo -e "🔐 ${GREEN}truststore:${NC} $truststore"
+echo -e "🔐 ${GREEN}keystore_p12:${NC} $keystore"
+echo -e "🔐 ${GREEN}truststore_p12:${NC} $truststore"
 echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
 
 echo -e "ℹ️  ${GREEN}Make sure Keystore:${NC} $keystore"
