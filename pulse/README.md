@@ -8,7 +8,7 @@ The `pulse_server_info` script is used to collect important information about th
 
 - **script** [pulse_server_info](https://github.com/acceldata-io/ce-utils/blob/main/pulse/pulse_server_info.sh)
 
-The script you provided collects various useful information from the OS level. Here's a summary of what it collects:
+The script collects various useful information from the OS level. Here's a summary of what it collects:
 
 1. **Pulse Server Information**:
    - Hostname
