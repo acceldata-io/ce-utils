@@ -12,7 +12,7 @@ Below is a collection of Bash scripts designed to streamline various tasks in yo
 
 ### 1. Setup SSL on ODP Environment via Bash Script
 - **Script:** [setup_ssl_with_existing_jks.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ssl_with_existing_jks.sh)
-- **Description:** This Bash script automates the setup of SSL for a variety of services, including HDFS, YARN, MapReduce, Infra-Solr, Hive, Ranger, Kafka, HBase, Spark2, Spark3, and Oozie. The script should be executed on the Ambari Server node.
+- **Description:** This Bash script automates the setup of SSL for a variety of services, including **HDFS, YARN, MapReduce, Infra-Solr, Hive, Ranger, Kafka, HBase, Spark2, Spark3,** and **Oozie**. The script should be executed on the Ambari Server node.
 
 To utilize this script for enabling SSL in your ODP environment, please ensure the following steps:
 
