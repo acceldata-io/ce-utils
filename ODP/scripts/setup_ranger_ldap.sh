@@ -109,7 +109,7 @@ enable_ldap_ranger_ui() {
 
 # Display service options
 function display_service_options() {
-    echo "Select services to enable SSL:"
+    echo "Select services to enable LDAP:"
     echo "1) Ranger Usersync LDAP"
     echo "2) Ranger UI LDAP"
     echo "A) All"
