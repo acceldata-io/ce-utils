@@ -1,6 +1,6 @@
 ## Bash Scripts for Automated Tasks
 
-Below is a collection of Bash scripts designed to streamline various tasks in your ODP environment:
+Here is a set of Bash scripts created to streamline various tasks within your ODP environment. The purpose of these scripts is to streamline and automate essential tasks in your ODP environment. Each script is conveniently linked for quick access and utilization. Ensure that you adhere to the provided instructions and personalize the scripts with the specific details of your environment as required.
 
 1. [Setup SSL on ODP Environment](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ssl_with_existing_jks.sh)
 2. [Setup Ambari SSL](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ssl_ambari.sh)
@@ -12,9 +12,9 @@ Below is a collection of Bash scripts designed to streamline various tasks in yo
 
 ### 1. Setup SSL on ODP Environment via Bash Script
 - **Script:** [setup_ssl_with_existing_jks.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ssl_with_existing_jks.sh)
-- **Description:** This Bash script automates the setup of SSL for a variety of services, including **HDFS, YARN, MapReduce, Infra-Solr, Hive, Ranger, Kafka, HBase, Spark2, Spark3,** and **Oozie**. The script should be executed on the Ambari Server node.
+- **Description:** This Bash script automates the setup of SSL for a variety of services, including **HDFS, YARN, MapReduce, Infra-Solr, Hive, Ranger, Kafka, HBase, Spark2, Spark3,** and **Oozie**. The script must be executed on the Ambari Server node.
 
-To utilize this script for enabling SSL in your ODP environment, please ensure the following steps:
+To make use of this script for enabling SSL in your ODP environment, perform the following steps:
 
 - Execute the script on the Ambari Server node.
 - Modify the script to include the following details:
@@ -43,19 +43,16 @@ To utilize this script for enabling SSL in your ODP environment, please ensure t
 ### 3. Setup KNOX SSL
 - **Script:** [knox_ssl.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/knox_ssl.sh)
 - This script can be used to replace the default KNOX self-signed certificate with the provided CA-signed certificate.
-- Download and Execute this Script on the Knox Server node.
-- Make sure the keystore password matches the master secret created earlier, you have an option in the script to reset it.
+- Download and execute this script on the Knox Server node.
+- Verify that the Keystore password aligns with the master secret you created earlier. The script provides an option to reset it if needed.
 
 ### 4. Setup Ambari LDAP
 - **Script:** [setup_ambari_ldap.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ambari_ldap.sh)
 - Modify the script with the correct LDAP/AD details before running the script.
-- Once the script is executed, please restart the Ambari Server and sync ldap user.
+- Once the script is executed, restart the Ambari Server and sync the ldap user.
 
 ### 5. Setup Ranger LDAP
 - **Script:** [setup_ranger_ldap.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ranger_ldap.sh)
-- Modify the script with the correct LDAP/AD details before running the script.
+- Before running the script, make sure to adjust it with the accurate LDAP/AD details.
   
 <img width="712" alt="image" src="https://github.com/acceldata-io/ce-utils/assets/28974904/e7bae7ba-a55e-4545-ba3f-04447e515c56">
-
-
-These scripts are intended to simplify and automate crucial tasks within your ODP environment. Each script is linked for easy access and usage. Be sure to follow the provided instructions and customize the scripts with your environment-specific details as needed.
