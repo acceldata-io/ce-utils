@@ -1,7 +1,6 @@
 #!/bin/bash
 # Acceldata Inc.
 
-
 # User-defined variables
 AMBARISERVER_URL="https://$(hostname -f):8443"
 IMPORT_CERT_PATH="/opt/security/pki/server.pem"
