@@ -72,10 +72,10 @@ enable_hdfs_ssl() {
     set_config "ssl-server" "ssl.server.keystore.location" "$keystore"
     set_config "ssl-server" "ssl.server.truststore.location" "$truststore"
     set_config "ssl-server" "ssl.server.truststore.password" "$truststorepassword"
-    set_config "ssl-server" "ssl.client.keystore.location" "$keystore"
-    set_config "ssl-server" "ssl.client.keystore.password" "$keystorepassword"
-    set_config "ssl-server" "ssl.client.truststore.location" "$truststore"
-    set_config "ssl-server" "ssl.client.truststore.password" "$truststorepassword"
+    set_config "ssl-client" "ssl.client.keystore.location" "$keystore"
+    set_config "ssl-client" "ssl.client.keystore.password" "$keystorepassword"
+    set_config "ssl-client" "ssl.client.truststore.location" "$truststore"
+    set_config "ssl-client" "ssl.client.truststore.password" "$truststorepassword"
     set_config "hdfs-site" "dfs.http.policy" "HTTPS_ONLY"
     set_config "mapred-site" "mapreduce.shuffle.ssl.enabled" "true"
     set_config "mapred-site" "mapreduce.jobhistory.http.policy" "HTTPS_ONLY"
@@ -105,7 +105,7 @@ enable_infra_solr_ssl() {
 enable_hive_ssl() {
     set_config "hive-site" " hive.server2.use.SSL" "true"
     set_config "hive-site" " hive.server2.keystore.path" "$keystore"
-    set_config "hives-site" " hive.server2.keystore.password" "$keystorepassword"
+    set_config "hive-site" " hive.server2.keystore.password" "$keystorepassword"
 }
 
 # Function to enable SSL for Ranger
@@ -200,7 +200,7 @@ enable_hbase_ssl() {
     set_config "hbase-site" "ssl.server.keystore.location" "$keystore"
 }
 
-# Function to enable SSL for Spark2
+# Function to enable SSL for Spark3
 enable_spark3_ssl() {
     set_config "yarn-site" "spark.authenticate" "true"
     set_config "spark3-defaults" "spark.authenticate" "true"
@@ -213,7 +213,6 @@ enable_spark3_ssl() {
     set_config "spark3-defaults" "spark.ssl.trustStore" "$truststore"
     set_config "spark3-defaults" "spark.ssl.trustStorePassword" "$truststorepassword"
     set_config "spark3-defaults" "spark.ui.https.enabled" "true"
-    set_config "spark3-defaults" "spark.ssl.historyServer.port" "18581"
 }
 # Function to enable SSL for Oozie
 enable_oozie_ssl() {
