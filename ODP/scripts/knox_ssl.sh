@@ -48,6 +48,7 @@ update_knox_certificate() {
         echo -e "🔑 Please ensure that you have set all variables correctly."
         echo -e "🔐 ${GREEN}keystore:${NC} $keystore"
         echo -e "🔐 ${GREEN}password:${NC} ${YELLOW}********${NC}"  # Replace with actual keystore password
+        echo -e "🔐 ${GREEN}alias_name:${NC} $alias_name"  # Replace with keystore alias name to be used as PrivateKeyEntry
         echo -e "🔐 ${GREEN}knox_master_secret_password:${NC} ${YELLOW}********${NC}"  # Replace with knox_master_secret_password used during Knox installation.
         echo -e "Do the variables look correct for Knox SSL setup and prceeed?"
         if prompt_yes_no ; then
