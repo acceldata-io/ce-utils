@@ -62,7 +62,7 @@ show_usage() {
 ╚═╝  ╚═╝ ╚═════╝ ╚═════╝╚══════╝╚══════╝╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝        ╚═╝      ╚═════╝ ╚══════╝╚══════╝╚══════╝
     ${NC}
   ${CYAN}/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/ ${NC}
-${YELLOW}Usage: $(basename $0) [check_os_prerequisites, check_docker_prerequisites, install_pulse, configure_ssl_for_pulse]${NC}
+${YELLOW}Usage: $(basename $0) [check_os_prerequisites, check_docker_prerequisites, install_pulse, configure_ssl_for_pulse, enable_gauntlet, setup_pulse_tls ]${NC}
 Parameters:
   - ${BLUE}check_os_prerequisites${NC}: Verify Umask, SELinux, and sysctl settings.
   - ${BLUE}check_docker_prerequisites${NC}: Check and install Docker with required settings.
@@ -71,7 +71,9 @@ Parameters:
   - ${BLUE}configure_ssl_for_pulse${NC}: If SSL is enabled on Hadoop Cluster, Pass cacerts file to Pulse config.
   - ${BLUE}enable_gauntlet${NC}: This component is used to delete elastic indices and run purge/compact operations on the Mongo DB collections.
   - ${BLUE}set_daily_cron_gauntlet${NC}: Change CRON_TAB_DURATION for ad-gauntlet to next 5 min or default value.
-   - ${BLUE}setup_pulse_tls${NC}: Enable SSL for Pulse UI using ad-proxy 
+  - ${BLUE}setup_pulse_tls${NC}: Enable SSL for Pulse UI using ad-proxy 
+  - ${BLUE}collect_docker_logs${NC}: Create a tar file with all pulse container logs.
+  - ${BLUE}backup_pulse_config${NC}: Create a tar file with all pulse configuration files. 
 Examples:
   ./$(basename $0) ${GREEN}check_os_prerequisites${NC}
   ./$(basename $0) ${GREEN}check_docker_prerequisites${NC}
@@ -81,6 +83,8 @@ Examples:
   ./$(basename $0) ${GREEN}enable_gauntlet${NC}
   ./$(basename $0) ${GREEN}set_daily_cron_gauntlet${NC}
   ./$(basename $0) ${GREEN}setup_pulse_tls${NC}
+  ./$(basename $0) ${BLUE}collect_docker_logs${NC}
+  ./$(basename $0) ${BLUE}backup_pulse_config${NC} 
 EOM
   exit 0
 }
@@ -791,7 +795,38 @@ setup_pulse_tls() {
   echo -e "${GREEN}Access Pulse WebUI https://$HOSTNAME:443${NC}"
 }
 
+function collect_docker_logs {
+  current_date=$(date +%Y-%m-%d)
+  for container in $(docker ps --format "{{.Names}}" | grep "^ad-"); do
+    echo "Collecting logs for container: $container"
+    docker logs $container > /tmp/$container.log 2>&1
+  done
+  tar -cvzf /tmp/ad-container-logs-$current_date.tar.gz /tmp/ad-*.log
+  echo "${GREEN}Logs collected and tarred at ${NC}/tmp/ad-container-logs-$current_date.tar.gz"
+}
 
+backup_pulse_config() {
+
+  read -p "Do you want to take a backup of Pulse related configs (yes/no)? " answer
+
+  if [ "$answer" = "yes" ] || [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
+    timestamp=$(date +\%Y\%m\%d\%H\%M\%S)
+    backup_file="/tmp/acceldata_backup_$timestamp.tar.gz"
+
+    # Execute the 'find' and 'tar' commands
+    echo "Creating a backup, please wait..."
+    find "$AcceloHome" -type f \( -name "*.conf" -o -name "accelo.log" -o -name "*.yml" -o -name "*.yaml" -o -name "*.sh" -o -name "*.json" -o -name "*.actions" -o -name "*.xml" -o -name ".activecluster" -o -name ".dist" \) | tar --exclude="*/director/*" --exclude="*/data/*" -zcvf "$backup_file" -T - 2>/dev/null > /dev/null
+
+    # Check if the backup was successful
+    if [ $? -eq 0 ]; then
+      echo -e "✔️ Backup completed successfully. Pulse config file: ${GREEN}$backup_file${NC}"
+    else
+      echo "Backup failed."
+    fi
+  else
+    echo "Backup operation canceled."
+  fi
+}
 
 # Main script logic
 case "$1" in
@@ -819,6 +854,12 @@ case "$1" in
    setup_pulse_tls)
     setup_pulse_tls
     ;;      
+   collect_docker_logs)
+    collect_docker_logs
+    ;;    
+   backup_pulse_config)
+    backup_pulse_config
+    ;;     
   *)
     show_usage
     ;;
