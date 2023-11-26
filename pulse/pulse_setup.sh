@@ -21,6 +21,17 @@ print_success() {
   echo -e "${GREEN}${TICK} Success: $1${NC}"
 }
 
+logStep() {
+    printf "${BLUE}${TICK} $1${NC}\n" 1>&2
+}
+
+logSuccess() {
+    printf "${GREEN}${TICK} $1${NC}\n" 1>&2
+}
+
+logSuccessGrey() {
+    printf "${GREY}${TICK} $1${NC}\n" 1>&2
+}
 # Function to print error messages with red color
 print_error() {
   echo -e "${RED}${CROSS} Error: $1${NC}"
