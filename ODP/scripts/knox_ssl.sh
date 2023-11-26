@@ -4,6 +4,8 @@
 export keystore=/etc/security/certificates/keystore.jks
 export password=PASSWORD
 export knox_master_secret_password=PASSWORD
+# Cmd to get the alias name "keytool -list -keystore "/etc/security/certificates/keystore.jks" -storepass "$password""
+export alias_name=<alias name from keystore.jks to be used>
 
 knox_user_group=$(stat -c %U:%G /etc/knox/conf/gateway-site.xml)
 IFS=':' read -ra knox_user_group_arr <<< "$knox_user_group"
@@ -57,9 +59,11 @@ update_knox_certificate() {
 
             # Copy the new keystore to the specified location
             cp "$keystore" "/var/lib/knox/data/security/keystores/keystore.jks"
-set -x
-            # Get the alias name of keystore.jks
-            alias_name=$(keytool -list -v -keystore "/var/lib/knox/data/security/keystores/keystore.jks" -storepass "$password" | grep "Alias name:" | awk -F' ' '{print $3}')
+
+            # Check if the variable alias_name is not set or Get the alias name from keystore.jks
+           if [ -z "$alias_name" ]; then
+           alias_name=$(keytool -list -v -keystore "/var/lib/knox/data/security/keystores/keystore.jks" -storepass "$password" | grep "Alias name:" | awk -F' ' '{print $3}' | egrep -v "intca|interca|rootca | grep $HOSTNAME")
+           fi
 
             # Change the alias name to "gateway-identity"
             keytool -changealias -keystore "/var/lib/knox/data/security/keystores/keystore.jks" -storepass "$password" -alias "$alias_name" -destalias "gateway-identity"
