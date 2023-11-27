@@ -11,7 +11,7 @@ ICyan=$'\033[0;96m'
 CYAN=$'\033[0;36m'
 NC=$'\e[0m'
 TICK="✅"
-CROSS="❌" # Cross symbol for indicating failed steps
+CROSS="❌"
 
 # Display usage information
 show_usage() {
