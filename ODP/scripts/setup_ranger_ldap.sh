@@ -16,10 +16,10 @@ export LDAP_PORT=636
 export LDAP_URL="ldap://$LDAP_HOSTNAME:$LDAP_PORT"
 export BASE_DN="DC=adsre,DC=com"
 export DOMAIN="adsre.com"
-export GROUP_FILTER=""
-export USER_FILTER=""
+export GROUP_FILTER="" # Add Filters via Ambari UI or use small filter string
+export USER_FILTER="" # Add Filters via Ambari UI, or use small filter string
 export SEARCH_USER_BASE="OU=users,OU=hadoop,DC=adsre,DC=com"
-export BIND_USER="Administrator@ADSRE.COM"
+export BIND_USER="Administrator@ADSRE.COM"  # use UserPrincipalName only, do not use DN name
 export BIND_USER_PASSWORD="PASSWORD"
 export AMBARI_ADMIN_USER=admin
 export AMBARI_ADMIN_PASSWORD=admin
