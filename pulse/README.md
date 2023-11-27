@@ -35,3 +35,36 @@ Overall, the script provides a comprehensive set of information about the Pulse 
 
 <img width="662" alt="image" src="https://github.com/acceldata-io/ce-utils/assets/28974904/09ef6a2e-59ab-4ed1-9f2e-7cb9695e7589">
 
+## 2.pulse_utility.sh
+
+#### Functions
+1. **check_os_prerequisites**
+   - Verify Umask, SELinux, and sysctl settings.
+
+2. **check_docker_prerequisites**
+   - Check and install Docker with required settings.
+
+3. **install_pulse**
+   - Install Acceldata Pulse following specific steps.
+
+4. **full_install_pulse**
+   - Include OS and Docker Pre-req setup along with Pulse initial setup.
+
+5. **configure_ssl_for_pulse**
+   - If SSL is enabled on the Hadoop Cluster, pass cacerts file to Pulse config.
+
+6. **enable_gauntlet**
+   - Delete elastic indices and run purge/compact operations on the Mongo DB collections.
+
+7. **set_daily_cron_gauntlet**
+   - Change CRON_TAB_DURATION for ad-gauntlet to the next 5 minutes or default value.
+
+8. **setup_pulse_tls**
+   - Enable SSL for Pulse UI using ad-proxy.
+
+9. **collect_docker_logs**
+   - Create a tar file with all pulse container logs.
+
+10. **backup_pulse_config**
+    - Create a tar file with all pulse configuration files.
+
