@@ -13,43 +13,6 @@ NC=$'\e[0m'
 TICK="✅"
 CROSS="❌" # Cross symbol for indicating failed steps
 
-print_success1() {
-  echo -e "${BLUE}${TICK} Success: $1${NC}"
-}
-
-print_success() {
-  echo -e "${GREEN}${TICK} Success: $1${NC}"
-}
-
-# Function to print warning message
-print_warning() {
-  echo -e "${YELLOW}Warning: $1${NC}"
-}
-
-logStep() {
-    printf "${BLUE}${TICK} $1${NC}\n" 1>&2
-}
-
-logSuccess() {
-    printf "${GREEN}${TICK} $1${NC}\n" 1>&2
-}
-
-logSuccessGrey() {
-    printf "${GREY}${TICK} $1${NC}\n" 1>&2
-}
-# Function to print error messages with red color
-print_error() {
-  echo -e "${RED}${CROSS} Error: $1${NC}"
-}
-
-# Function to print a message with a separator
-print_message() {
-  separator="${GREY}*********************************************************************${NC}"
-  echo -e "${separator}"
-  echo "$1"
-  echo -e "${separator}"
-}
-
 # Display usage information
 show_usage() {
   cat <<EOM
@@ -87,6 +50,44 @@ Examples:
   ./$(basename $0) ${BLUE}backup_pulse_config${NC} 
 EOM
   exit 0
+}
+
+
+print_success1() {
+  echo -e "${BLUE}${TICK} Success: $1${NC}"
+}
+
+print_success() {
+  echo -e "${GREEN}${TICK} Success: $1${NC}"
+}
+
+# Function to print warning message
+print_warning() {
+  echo -e "${YELLOW}Warning: $1${NC}"
+}
+
+logStep() {
+    printf "${BLUE}${TICK} $1${NC}\n" 1>&2
+}
+
+logSuccess() {
+    printf "${GREEN}${TICK} $1${NC}\n" 1>&2
+}
+
+logSuccessGrey() {
+    printf "${GREY}${TICK} $1${NC}\n" 1>&2
+}
+# Function to print error messages with red color
+print_error() {
+  echo -e "${RED}${CROSS} Error: $1${NC}"
+}
+
+# Function to print a message with a separator
+print_message() {
+  separator="${GREY}*********************************************************************${NC}"
+  echo -e "${separator}"
+  echo "$1"
+  echo -e "${separator}"
 }
 
 # Check if a command-line argument is provided
