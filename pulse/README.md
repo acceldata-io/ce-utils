@@ -35,7 +35,7 @@ Overall, the script provides a comprehensive set of information about the Pulse 
 
 <img width="662" alt="image" src="https://github.com/acceldata-io/ce-utils/assets/28974904/09ef6a2e-59ab-4ed1-9f2e-7cb9695e7589">
 
-## 2.pulse_utility.sh
+## 2. pulse_utility.sh
 
 #### Functions
 1. **check_os_prerequisites**
