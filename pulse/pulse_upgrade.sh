@@ -742,7 +742,7 @@ if [[ ( "$current_version" == 3.0.* || "$current_version" == 3.2.* || "$current_
   upgrade_docker_if_needed
   execute_command "yes | accelo admin database push-config -a" "$log_file"
   execute_command "accelo reconfig cluster -a" "$log_file"
-  execute_command "accelo migrate -v $VERSION -i $current_version -a" "$log_file"
+  execute_command "accelo migrate -v 3.0.0 -i $current_version -a" "$log_file"
   execute_command "yes | accelo admin database push-config -a" "$log_file"
 
   echo -e "${BOLD_MAGENTA}Do you have internet access to pull Docker images? (yes/no):${NC}\c"
