@@ -35,6 +35,7 @@ export Groupsearchbase="OU=groups,OU=hadoop,DC=adsre,DC=com"
 CLUSTER=$(curl -s -k -u "$USER:$PASSWORD" -i -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters" | sed -n 's/.*"cluster_name" : "\([^\"]*\)".*/\1/p')
 
 # Display LDAP-related variables with color
+echo -e "${GREEN}Ambari URL:-${NC} $PROTOCOL://$AMBARISERVER:$PORT"
 echo -e "${GREEN}LDAP Configuration Variables:${NC}"
 echo -e "${GREEN}LDAP Hostname:${NC} $LDAP_HOSTNAME"
 echo -e "${GREEN}LDAP Port:${NC} $LDAP_PORT"
