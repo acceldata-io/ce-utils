@@ -1,5 +1,6 @@
 #!/bin/bash
 # Acceldata Inc.
+# ODP-3.2.2.0-1
 
 GREEN='\033[0;32m'
 NC='\033[0m'  # No Color
@@ -9,8 +10,8 @@ export USER=admin
 export PASSWORD=admin
 export PORT=8080
 export PROTOCOL=http
-export keystorepassword=Password
-export truststorepassword=Password
+export keystorepassword=keystore_Password       # Replace with actual keystore password
+export truststorepassword=truststore_Password   # Replace with actual truststore password
 export keystore=/opt/security/pki/server.jks
 export truststore=/opt/security/pki/ca-certs.jks
 
@@ -19,26 +20,26 @@ export truststore=/opt/security/pki/ca-certs.jks
 export keystore_p12=/opt/security/pki/server.p12
 export truststore_p12=/opt/security/pki/ca-certs.p12
 
+# Make sure the Ranger keystore alias is set correctly for the "ranger.service.https.attrib.keystore.keyalias" property by default is set to Ranger node hostname.
+
 # curl command to get the required details from Ambari Cluster
 CLUSTER=$(curl -s -k -u "$USER:$PASSWORD" -i -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters" | sed -n 's/.*"cluster_name" : "\([^\"]*\)".*/\1/p')
 timelineserver=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=APP_TIMELINE_SERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//')
 historyserver=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=HISTORYSERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//')
-
 rangeradmin=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=RANGER_ADMIN" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  |head -n 1)
-
 OOZIE_HOSTNAME=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=OOZIE_SERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  |head -n 1)
 
 echo -e "🔑 Please ensure that you have set all variables correctly."
 echo -e "⚙️  ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
 echo -e "👤 ${GREEN}USER:${NC} $USER"
-echo -e "🔒 ${GREEN}PASSWORD:${NC} ********"  # Replace with actual password
+echo -e "🔒 ${GREEN}PASSWORD:${NC} ********"
 echo -e "🌐 ${GREEN}PORT:${NC} $PORT"
-echo -e "🔐 ${GREEN}keystorepassword:${NC} ********"  # Replace with actual keystore password
-echo -e "🔐 ${GREEN}truststorepassword:${NC} ********"  # Replace with actual truststore password
+echo -e "🔐 ${GREEN}keystorepassword:${NC} ********"  
+echo -e "🔐 ${GREEN}truststorepassword:${NC} ********"
 echo -e "🔐 ${GREEN}keystore:${NC} $keystore"
 echo -e "🔐 ${GREEN}truststore:${NC} $truststore"
-echo -e "🔐 ${GREEN}keystore_p12:${NC} $keystore"
-echo -e "🔐 ${GREEN}truststore_p12:${NC} $truststore"
+echo -e "🔐 ${GREEN}keystore_p12:${NC} $keystore_p12"
+echo -e "🔐 ${GREEN}truststore_p12:${NC} $truststore_p12"
 echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
 
 echo -e "ℹ️  ${GREEN}Make sure Keystore:${NC} $keystore"
@@ -103,9 +104,9 @@ enable_infra_solr_ssl() {
 
 # Function to enable SSL for Hive
 enable_hive_ssl() {
-    set_config "hive-site" " hive.server2.use.SSL" "true"
-    set_config "hive-site" " hive.server2.keystore.path" "$keystore"
-    set_config "hive-site" " hive.server2.keystore.password" "$keystorepassword"
+    set_config "hive-site" "hive.server2.use.SSL" "true"
+    set_config "hive-site" "hive.server2.keystore.path" "$keystore"
+    set_config "hive-site" "hive.server2.keystore.password" "$keystorepassword"
 }
 
 # Function to enable SSL for Ranger
@@ -156,7 +157,6 @@ enable_ranger_ssl() {
     set_config "ranger-kafka-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
     set_config "ranger-kafka-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
     set_config "ranger-kafka-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"
-
     set_config "ranger-knox-security" "ranger.plugin.knox.policy.rest.url" "https://$rangeradmin:6182"
     set_config "ranger-kms-security" "ranger.plugin.kms.policy.rest.url" "https://$rangeradmin:6182"
     set_config "ranger-hbase-security" "ranger.plugin.hbase.policy.rest.url" "https://$rangeradmin:6182"
@@ -240,8 +240,6 @@ function display_service_options() {
     echo "A) All"
     echo "Q) Quit"
 }
-
-
 
 # Select services to enable SSL
 while true; do
