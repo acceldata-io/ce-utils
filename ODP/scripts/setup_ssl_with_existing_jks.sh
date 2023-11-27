@@ -228,7 +228,7 @@ enable_oozie_ssl() {
 # Display service options
 function display_service_options() {
     echo "Select services to enable SSL:"
-    echo "1) HDFS"
+    echo "1) HDFS YARN MR"
     echo "2) Infra-Solr"
     echo "3) Hive"
     echo "4) Ranger"
