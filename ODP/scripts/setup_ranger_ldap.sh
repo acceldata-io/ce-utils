@@ -104,7 +104,7 @@ enable_ldap_ranger_ui() {
     set_config "ranger-admin-site" "ranger.ldap.ad.domain" "$DOMAIN"
     set_config "ranger-admin-site" "ranger.ldap.ad.user.searchfilter" "(sAMAccountName={0})"
     set_config "ranger-admin-site" "ranger.ldap.ad.base.dn" "$BASE_DN"
-
+    set_config "ranger-admin-site" "ranger.ldap.ad.url" "$LDAP_URL"
 }
 
 # Display service options
