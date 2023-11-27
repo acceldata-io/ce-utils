@@ -25,7 +25,7 @@ echo -e "${YELLOW}Upgrade Path for Pulse Versions:${NC}"
 echo -e "If current Pulse version is ${BLUE}2.x.x${NC}, upgrade path to the latest Pulse version is:"
 echo -e "   ${GREEN}Pulse 2.x.x${NC} --> ${GREEN}latest Pulse 3.0.x${NC} --> ${GREEN}latest Pulse 3.2.x|3.x${NC}"
 echo -e "If current Pulse version is ${BLUE}3.0.x or 3.1.x or 3.2.x${NC}, upgrade path to the latest Pulse version is:"
-echo -e "   ${GREEN}Pulse 3.0.x or 3.1.x or 3.2.x${NC} --> ${GREEN}latest Pulse 3.2.x|3.x${NC}"
+echo -e "   ${GREEN}Pulse 3.0.x or 3.1.x or 3.2.x${NC} --> ${GREEN}latest Pulse 3.2.x|3.3.x${NC}"
 echo -e "${BLUE}where x is the latest available Pulse version"
 
 # Function to execute a command and log output
@@ -735,7 +735,7 @@ if [[ "$current_version" == 3.2.* && "$VERSION" == 3.2.* ]]; then
 fi
 
 # Check if 3.3.x version is provided
-if [[ ( "$current_version" == 3.0.* || "$current_version" == 3.2.* ) && "$VERSION" == 3.3.* ]]; then
+if [[ ( "$current_version" == 3.0.* || "$current_version" == 3.2.* || "$current_version" == 3.3.* ) && "$VERSION" == 3.3.* ]]; then
   echo "Upgrading from Pulse $current_version to 3.3.x"
   source /etc/profile.d/ad.sh
   # Call the function to upgrade Docker if needed
