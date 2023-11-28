@@ -87,7 +87,7 @@ enable_ldap_usersync() {
     set_config "ranger-ugsync-site"  "ranger.usersync.ldap.user.searchbase" "$BASE_DN"
     set_config "ranger-ugsync-site"  "ranger.usersync.group.memberattributename" "$groupMembershipAttr"
     set_config "ranger-ugsync-site"  "ranger.usersync.enabled" "true"
-    set_config "ranger-ugsync-site"  "ranger.usersync.user.searchenabled" "false"
+    set_config "ranger-ugsync-site"  "ranger.usersync.user.searchenabled" "true"
     set_config "ranger-ugsync-site"  "ranger.usersync.ldap.binddn" "$BIND_USER"
     set_config "ranger-ugsync-site"  "ranger.usersync.ldap.user.searchbase" "$SEARCH_USER_BASE"
     set_config "ranger-ugsync-site"  "ranger.usersync.ldap.user.searchfilter" "$USER_FILTER"
