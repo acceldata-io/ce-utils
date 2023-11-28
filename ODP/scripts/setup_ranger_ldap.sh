@@ -13,7 +13,8 @@ export PROTOCOL=http
 
 export LDAP_HOSTNAME="ad.adsre.com"
 export LDAP_PORT=636
-export LDAP_URL="ldap://$LDAP_HOSTNAME:$LDAP_PORT"
+# If LDAP is non-ssl make below change from ldaps to ldap protocol
+export LDAP_URL="ldaps://$LDAP_HOSTNAME:$LDAP_PORT"
 export BASE_DN="DC=adsre,DC=com"
 export DOMAIN="adsre.com"
 export GROUP_FILTER="" # Add Filters via Ambari UI or use small filter string
