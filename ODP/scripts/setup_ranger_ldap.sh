@@ -70,7 +70,7 @@ set_config() {
 }
 
 enable_ldap_usersync() {
-    set_config "ranger-ugsync-site"  "ranger.usersync.group.nameattribute" "groupNamingAttr"
+    set_config "ranger-ugsync-site"  "ranger.usersync.group.nameattribute" "$groupNamingAttr"
     set_config "ranger-ugsync-site"  "ranger.usersync.sink.impl.class" "org.apache.ranger.unixusersync.process.PolicyMgrUserGroupBuilder"
     set_config "ranger-ugsync-site"  "ranger.usersync.ldap.referral" "$referral"
     set_config "ranger-ugsync-site"  "ranger.usersync.group.searchenabled" "true"
