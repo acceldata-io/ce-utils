@@ -63,7 +63,7 @@ update_knox_certificate() {
 
             # Check if the variable alias_name is not set or Get the alias name from keystore.jks
            if [ -z "$alias_name" ]; then
-           alias_name=$(keytool -list -v -keystore "/var/lib/knox/data/security/keystores/keystore.jks" -storepass "$password" | grep "Alias name:" | awk -F' ' '{print $3}' | egrep -v "intca|interca|rootca | grep $HOSTNAME")
+           alias_name=$(keytool -list -v -keystore "/var/lib/knox/data/security/keystores/keystore.jks" -storepass "$password" | grep "Alias name:" | awk -F' ' '{print $3}' | egrep -v "intca|interca|rootca" | grep $HOSTNAME)
            fi
 
             # Change the alias name to "gateway-identity"
