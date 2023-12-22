@@ -1,5 +1,7 @@
+#!/bin/bash
+# Acceldata Inc.
 ## Generating jks and cert
-## This is a sample instructionlist for internal service testing. You may configure the commands as per your setup requirements.
+## Note: This is a sample instructionlist for internal service testing. You may configure the commands as per your setup requirements.
 
 # sample password and Java_home values:
 password="password"
