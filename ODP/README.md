@@ -7,6 +7,7 @@ Here is a set of Bash scripts created to streamline various tasks within your OD
 3. [Setup KNOX SSL](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/knox_ssl.sh)
 4. [Setup Ambari LDAP](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ambari_ldap.sh)
 5. [Setup Ranger LDAP](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ranger_ldap.sh)
+6. [Ambari Service Configuration backup and Restore](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/config_backup_restore.sh)
 
 ## Detailed Information
 
@@ -56,3 +57,26 @@ To make use of this script for enabling SSL in your ODP environment, perform the
 - Before running the script, make sure to adjust it with the accurate LDAP/AD details.
   
 <img width="712" alt="image" src="https://github.com/acceldata-io/ce-utils/assets/28974904/e7bae7ba-a55e-4545-ba3f-04447e515c56">
+
+### 6. Ambari Service Configuration Backup and Restore
+- **Script:** [Ambari Service Configuration backup and Restore](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/config_backup_restore.sh)
+This script allows you to backup and restore configurations for various services managed by Ambari, including Hue, Impala, Kafka, Ranger, Ranger KMS, Spark3, and NiFi. The script supports both SSL and non-SSL Ambari configurations and provides options for individual service or all-service backup and restore.
+
+**Variables to Modify**
+**:AMBARISERVER**:: The fully qualified domain name of the Ambari server.
+**USER**: The username for Ambari authentication.
+**PASSWORD**: The password for Ambari authentication.
+**PORT**: The port number on which Ambari is running (8080 for HTTP, 8443 for HTTPS).
+**PROTOCOL**: The protocol used for Ambari server communication (http or https).
+
+*How to Use It*
+Set Variables: Ensure that you have set the variables AMBARISERVER, USER, PASSWORD, PORT, and PROTOCOL correctly at the beginning of the script.
+
+Run the Script: Execute the script using the following command:
+
+```bash
+./config_backup_restore.sh
+```
+***Choose Action:*** The script will prompt you to choose whether you want to backup or restore configurations.*
+
+**Select Service:** Depending on your choice, you will be asked to select the service for which you want to perform the action. You can also choose the "All" option to perform the action on all supported services.
