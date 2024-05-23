@@ -314,7 +314,7 @@ backup_service_configs() {
     echo -e "5. Ranger KMS"
     echo -e "6. Spark3"    
     echo -e "7. NiFi"
-    echo -e "8. All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS)"    
+    echo -e "8. All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi)"    
     read -p "Enter your choice: " choice
 
     case "$choice" in
@@ -369,7 +369,7 @@ restore_service_configs() {
     echo -e "5. Ranger KMS"
     echo -e "6. Spark3"
     echo -e "7. NiFi"     
-    echo -e "8. All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS)"        
+    echo -e "8. All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi)"        
     read -p "Enter your choice: " choice
 
     case "$choice" in
