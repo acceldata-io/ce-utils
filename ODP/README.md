@@ -73,13 +73,14 @@ To make use of this script for enabling SSL in your ODP environment, perform the
 - **PROTOCOL**: The protocol used for Ambari server communication (http or https).
 
 *How to Use It*
-Set Variables: Ensure that you have set the variables AMBARISERVER, USER, PASSWORD, PORT, and PROTOCOL correctly at the beginning of the script.
 
-Run the Script: Execute the script using the following command:
+- Set Variables: Ensure that you have set the variables AMBARISERVER, USER, PASSWORD, PORT, and PROTOCOL correctly at the beginning of the script.
+
+- Run the Script: Execute the script using the following command:
 
 ```bash
 ./config_backup_restore.sh
 ```
-***Choose Action:*** The script will prompt you to choose whether you want to backup or restore configurations.*
+- ***Choose Action:*** The script will prompt you to choose whether you want to backup or restore configurations.*
 
-**Select Service:** Depending on your choice, you will be asked to select the service for which you want to perform the action. You can also choose the "All" option to perform the action on all supported services.
+- **Select Service:** Depending on your choice, you will be asked to select the service for which you want to perform the action. You can also choose the "All" option to perform the action on all supported services.
