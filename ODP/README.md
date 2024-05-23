@@ -62,14 +62,15 @@ To make use of this script for enabling SSL in your ODP environment, perform the
 
 ### 6. Ambari Services Configuration Backup and Restore
 - **Script:** [Ambari Service Configuration backup and Restore](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/config_backup_restore.sh)
-This script allows you to backup and restore configurations for various services managed by Ambari, including Hue, Impala, Kafka, Ranger, Ranger KMS, Spark3, and NiFi. The script supports both SSL and non-SSL Ambari configurations and provides options for individual service or all-service backup and restore.
+
+- This script allows you to backup and restore configurations for various services managed by Ambari, including Hue, Impala, Kafka, Ranger, Ranger KMS, Spark3, and NiFi. The script supports both SSL and non-SSL Ambari configurations and provides options for individual service or all-service backup and restore.
 
 **Variables to Modify**
-**:AMBARISERVER**:: The fully qualified domain name of the Ambari server.
-**USER**: The username for Ambari authentication.
-**PASSWORD**: The password for Ambari authentication.
-**PORT**: The port number on which Ambari is running (8080 for HTTP, 8443 for HTTPS).
-**PROTOCOL**: The protocol used for Ambari server communication (http or https).
+- **:AMBARISERVER**:: The fully qualified domain name of the Ambari server.
+- **USER**: The username for Ambari authentication.
+- **PASSWORD**: The password for Ambari authentication.
+- **PORT**: The port number on which Ambari is running (8080 for HTTP, 8443 for HTTPS).
+- **PROTOCOL**: The protocol used for Ambari server communication (http or https).
 
 *How to Use It*
 Set Variables: Ensure that you have set the variables AMBARISERVER, USER, PASSWORD, PORT, and PROTOCOL correctly at the beginning of the script.
