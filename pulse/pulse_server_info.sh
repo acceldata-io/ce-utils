@@ -21,9 +21,9 @@ display_list() {
   for item in "$@"; do
     item=$(echo "$item" | sed 's/^ *- *//')
     if [ $item_number -eq 1 ]; then
-      printf "${GREEN}➟  %s${NC}\n" "$item"
+      printf "${GREEN}|  %s${NC}\n" "$item"
     else
-      printf "${GREEN}➟  %s${NC}\n" "$item"
+      printf "${GREEN}|  -  %s${NC}\n" "$item"
     fi
     ((item_number++))
   done
@@ -35,16 +35,17 @@ display_list() {
 print_pulse_info() {
   print_section "Pulse Server Information"
   printf "Hostname:\t\t|  %s\n" "$pulse_hostname"
-  printf "Avaialble Root Dir:\t|  %.2f GB\n" "$available_space_root_gb"
-  printf "AcceloHome Directory:\t|  %.2f GB\n" "$available_space_accelo_gb"
-  printf "Total Memory:\t\t|  %.2f GB\n" "$total_memory_gb"
-  printf "Free Memory:\t\t|  %.2f GB\n" "$free_memory_gb"
-  printf "Available Memory:\t|  %.2f GB\n" "$available_memory_gb"  
+  printf "AcceloHome Used Space:\t|  %s\n" "$used_space_accelo"
+  printf "AcceloHome Free Space:\t|  %s\n" "$available_space_accelo"
+  printf "Total Memory:\t\t|  %s\n" "$total_memory"
+  printf "Free Memory:\t\t|  %s\n" "$free_memory"
   printf "CPU Cores:\t\t|  %d\n" "$cpu_cores"
   printf "Sockets:\t\t|  %d\n" "$sockets"
   printf "Cores per Socket:\t|  %d\n" "$cores_per_socket"
   printf "Pulse Version:\t\t|  %s\n" "$pulse_version"
   printf "ImageTag Version:\t|  %s\n" "$image_tag"
+  printf "OS Version:\t\t|  %s\n" "$os_version"
+  printf "SELinux Status:\t\t|  %s\n" "$selinux_status"
 }
 
 # Check if Pulse is installed
@@ -56,19 +57,24 @@ fi
 # Get Pulse Hostname
 pulse_hostname=$(hostname)
 
-# Get available disk space for the root directory
-df_root_output=$(df -h /)
-available_space_root_gb=$(echo "$df_root_output" | awk 'NR==2 {gsub(/G/,"",$4); print $4}')
+# Get used and available disk space for the AcceloHome directory
+df_accelo_output=$(df -h "$AcceloHome")
+used_space_accelo=$(echo "$df_accelo_output" | awk 'NR==2 {print $3}')
+available_space_accelo=$(echo "$df_accelo_output" | awk 'NR==2 {print $4}')
+
+# Total and free memory
+memory_output=$(free -h | awk 'NR==2')
+total_memory=$(echo "$memory_output" | awk '{print $2}')
+free_memory=$(echo "$memory_output" | awk '{print $7}')
+
+available_memory=$(echo "$memory_output" | awk '{print $7}')
 
 # Get available disk space for the AcceloHome directory
 df_accelo_output=$(df -h "$AcceloHome")
 available_space_accelo_gb=$(echo "$df_accelo_output" | awk 'NR==2 {gsub(/G/,"",$4); print $4}')
 
 # Free Memory
-available_memory_gb=$(free -g | awk 'NR==2 {print $7}')
 free_memory_gb=$(free -g | awk 'NR==2 {print $4}')
-total_memory_gb=$(free -g | awk 'NR==2 {print $2}')
-
 
 # Number of CPU Cores, Sockets, and Cores per socket
 cpu_cores=$(nproc)
@@ -82,7 +88,6 @@ pulse_version=$(echo "$accelo_info_output" | grep "Accelo CLI Version:" | awk '{
 services=($(echo "$accelo_info_output" | awk '/Services running in this stack:/ {flag=1; next} flag; /^$/ {flag=0}' | sed 's/^[ \-]*//'))
 
 # Get list of Cluster added to Pulse Server
-AcceloHome="/data01/acceldata"
 work_directory="$AcceloHome/work"
 if [ -d "$work_directory" ]; then
   # Use 'find' to search for directories with both files
@@ -105,6 +110,12 @@ if [ -f "$accelo_config_file" ]; then
   image_tag=$(grep 'ImageTag:' "$accelo_config_file" | awk '{print $2}')
 fi
 
+# OS Version
+os_version=$(lsb_release -a 2>/dev/null | grep Description | awk -F ':\t' '{print $2}')
+
+# SELinux status
+selinux_status=$(sestatus 2>/dev/null | awk '/SELinux status:/ {printf "%s ", $3}; /Current mode:/ {print $3}')
+
 # Call the function to print Pulse Server information
 print_pulse_info
 
@@ -115,31 +126,31 @@ display_list "${services[@]}"
 # Call the function to print Clusters
 print_section "Clusters added to Pulse Server"
 for cluster in $clusters; do
-  printf "${GREEN}⬨  %s${NC}\n" "$cluster"
+  printf "${GREEN}|  %s${NC}\n" "$cluster"
 done
 
 # Call the function to print Disk Space Utilization
 print_section "Disk Space Utilized by Each Folder in $AcceloHome/data"
 du_output=$(du -sh $AcceloHome/data/*)
 while read -r line; do
-  printf "${YELLOW}‣  %s${NC}\n" "$line"
+  printf "${YELLOW}|  %s${NC}\n" "$line"
 done <<< "$du_output"
 
 backup_pulse_config() {
 
   read -p "Do you want to take a backup of Pulse related configs (yes/no)? " answer
 
-  if [ "$answer" = "yes" ] || [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
-    timestamp=$(date +\%Y\%m\%d\%H\%M\%S)
-    backup_file="$AcceloHome/acceldata_backup_$timestamp.tar.gz"
+  if [ "$answer" = "yes" ]; then
+
+    backup_file="$AcceloHome/acceldata_backup_$(date +\%Y\%m\%d).tar.gz"
 
     # Execute the 'find' and 'tar' commands
-    echo "Creating a backup, please wait..."
-    find "$AcceloHome" -type f \( -name "*.conf" -o -name "accelo.log" -o -name "*.yml" -o -name "*.yaml" -o -name "*.sh" -o -name "*.json" -o -name "*.actions" -o -name "*.xml" -o -name ".activecluster" -o -name ".dist" \) | tar --exclude="*/director/*" --exclude="*/data/*" -zcvf "$backup_file" -T - 2>/dev/null > /dev/null
+    find "$AcceloHome" -type f \( -name "*.conf" -o -name "accelo.log" -o -name "*.yml" -o -name "*.yaml" -o -name "*.sh" -o -name "*.json" -o -name "*.actions" -o -name "*.xml" -o -name ".activecluster" -o -name ".dist" \) | tar --exclude="*/director/*" --exclude="*/data/*" -zcvf "$backup_file" -T - > backup_output.txt
 
     # Check if the backup was successful
     if [ $? -eq 0 ]; then
-      echo -e "✔️ Backup completed successfully. Pulse config file: ${GREEN}$backup_file${NC}"
+      echo "Backup completed successfully. Backup file: $backup_file"
+      echo "Backup output has been saved to backup_output.txt"
     else
       echo "Backup failed."
     fi
@@ -147,4 +158,72 @@ backup_pulse_config() {
     echo "Backup operation canceled."
   fi
 }
+
+source /etc/profile.d/ad.sh
+
+# Define variables
+export mongo_url="mongodb://accel:ACCELUSER_01082018@localhost:27017/admin"
+export output_file="/tmp/output.txt"
+
+# Export db_name
+export db_name=$(ls -1 "$AcceloHome/work" | grep -v "license" | head -n 1)
+
+# Execute MongoDB commands and disk usage command
+docker exec -it ad-db_default bash -c "mongo $mongo_url <<-EOSQL
+use $db_name;
+// Function to convert bytes to human-readable format
+function bytesToHuman(bytes) {
+    var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var size = bytes;
+    var unit = 0;
+    while (size >= 1024 && unit < units.length) {
+        size /= 1024;
+        unit++;
+    }
+    return size.toFixed(2) + ' ' + units[unit];
+}
+// Output file path
+var outputContent = '';
+// Get collection sizes
+var collections = db.getCollectionNames();
+collections.forEach(function(collection) {
+    var stats = db[collection].stats();
+    var sizeInBytes = stats.size;
+    var sizeHumanReadable = bytesToHuman(sizeInBytes);
+    outputContent += 'Collection: ' + collection + ', Size: ' + sizeHumanReadable + '\n';
+});
+// Get database sizes
+var databases = db.adminCommand('listDatabases').databases;
+databases.forEach(function(database) {
+    var sizeInBytes = database.sizeOnDisk;
+    var sizeHumanReadable = bytesToHuman(sizeInBytes);
+    outputContent += 'Database: ' + database.name + ', Size: ' + sizeHumanReadable + '\n';
+});
+// Print the content
+print(outputContent);
+EOSQL" > $output_file
+
+  echo ""
+  printf "${BLUE} Mongo Collection Size:${NC}\n"
+  echo ""
+cat $output_file | grep -v db.getCollectionNames |egrep "Collection|Database"
+
+  echo ""
+  printf "${BLUE} Docker Stats:${NC}\n"
+  echo ""
+
+docker stats --no-stream
+
+  echo ""
+  printf "${BLUE} accelo info:${NC}\n"
+  echo ""
+
+accelo info
+
+  echo ""
+  printf "${BLUE} Memory:${NC}\n"
+  echo ""
+
+  free -h
+
 backup_pulse_config
