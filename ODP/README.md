@@ -7,7 +7,7 @@ Here is a set of Bash scripts created to streamline various tasks within your OD
 3. [Setup KNOX SSL](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/knox_ssl.sh)
 4. [Setup Ambari LDAP](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ambari_ldap.sh)
 5. [Setup Ranger LDAP](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ranger_ldap.sh)
-6. [Ambari Service Configuration backup and Restore](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/config_backup_restore.sh)
+6. [Ambari Services Configuration backup and Restore](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/config_backup_restore.sh)
 
 ## Detailed Information
 
@@ -58,7 +58,7 @@ To make use of this script for enabling SSL in your ODP environment, perform the
   
 <img width="712" alt="image" src="https://github.com/acceldata-io/ce-utils/assets/28974904/e7bae7ba-a55e-4545-ba3f-04447e515c56">
 
-### 6. Ambari Service Configuration Backup and Restore
+### 6. Ambari Services Configuration Backup and Restore
 - **Script:** [Ambari Service Configuration backup and Restore](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/config_backup_restore.sh)
 This script allows you to backup and restore configurations for various services managed by Ambari, including Hue, Impala, Kafka, Ranger, Ranger KMS, Spark3, and NiFi. The script supports both SSL and non-SSL Ambari configurations and provides options for individual service or all-service backup and restore.
 
