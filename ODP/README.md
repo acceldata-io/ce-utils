@@ -84,3 +84,4 @@ To make use of this script for enabling SSL in your ODP environment, perform the
 - ***Choose Action:*** The script will prompt you to choose whether you want to backup or restore configurations.*
 
 - **Select Service:** Depending on your choice, you will be asked to select the service for which you want to perform the action. You can also choose the "All" option to perform the action on all supported services.
+<img width="1220" alt="image" src="https://github.com/acceldata-io/ce-utils/assets/28974904/9777115f-aea8-4cc8-b569-1a53cf0cda06">
