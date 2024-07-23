@@ -91,19 +91,22 @@ To make use of this script for enabling SSL in your ODP environment, perform the
 This script configures the Ambari server for SSL using the provided keystore and truststore files. Ensure to modify the values to match your environment.
 
 ```bash
-# Change these values as per your environment
-export AMBARISERVER=`hostname -f`
-export USER=admin
-export PASSWORD=admin
-export PORT=8080
-export keystorekey=/opt/cloudera/security/pki/server.key
-export keystorepem=/opt/cloudera/security/pki/server.pem
-export truststorpem=/opt/cloudera/security/pki/ca-certs.pem
-export PROTOCOL=http
+#!/bin/bash
 
-python /var/lib/ambari-server/resources/scripts/configs.py -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k ssl_private_key -v $keystorekey
-python /var/lib/ambari-server/resources/scripts/configs.py -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k ssl_server_certificate -v $keystorepem
-python /var/lib/ambari-server/resources/scripts/configs.py -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k ssl_client_ca_certificate -v $truststorpem
-python /var/lib/ambari-server/resources/scripts/configs.py -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k client_services_ssl_enabled -v true
+AMBARISERVER=`hostname -f`
+USER=admin
+PASSWORD=admin
+PORT=8080
+KEYSTORE_KEY=/opt/cloudera/security/pki/server.key
+KEYSTORE_PEM=/opt/cloudera/security/pki/server.pem
+TRUSTSTORE_PEM=/opt/cloudera/security/pki/ca-certs.pem
+PROTOCOL=http
+
+CONFIG_SCRIPT=/var/lib/ambari-server/resources/scripts/configs.py
+
+python $CONFIG_SCRIPT -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k ssl_private_key -v $KEYSTORE_KEY
+python $CONFIG_SCRIPT -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k ssl_server_certificate -v $KEYSTORE_PEM
+python $CONFIG_SCRIPT -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k ssl_client_ca_certificate -v $TRUSTSTORE_PEM
+python $CONFIG_SCRIPT -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k client_services_ssl_enabled -v true
 ```
 ```
