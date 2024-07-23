@@ -8,6 +8,7 @@ Here is a set of Bash scripts created to streamline various tasks within your OD
 4. [Setup Ambari LDAP](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ambari_ldap.sh)
 5. [Setup Ranger LDAP](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ranger_ldap.sh)
 6. [Ambari Services Configuration backup and Restore](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/config_backup_restore.sh)
+7. [Impala SSL](https://github.com/acceldata-io/ce-utils/blob/main/ODP/README.md#7-impala-configuration-for-ssl)
 
 ## Detailed Information
 
