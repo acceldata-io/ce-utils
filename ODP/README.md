@@ -85,3 +85,25 @@ To make use of this script for enabling SSL in your ODP environment, perform the
 
 - **Select Service:** Depending on your choice, you will be asked to select the service for which you want to perform the action. You can also choose the "All" option to perform the action on all supported services.
 <img width="1220" alt="image" src="https://github.com/acceldata-io/ce-utils/assets/28974904/9777115f-aea8-4cc8-b569-1a53cf0cda06">
+
+### 7. Impala Configuration for SSL
+
+This script configures the Ambari server for SSL using the provided keystore and truststore files. Ensure to modify the values to match your environment.
+
+```bash
+# Change these values as per your environment
+export AMBARISERVER=`hostname -f`
+export USER=admin
+export PASSWORD=admin
+export PORT=8080
+export keystorekey=/opt/cloudera/security/pki/server.key
+export keystorepem=/opt/cloudera/security/pki/server.pem
+export truststorpem=/opt/cloudera/security/pki/ca-certs.pem
+export PROTOCOL=http
+
+python /var/lib/ambari-server/resources/scripts/configs.py -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k ssl_private_key -v $keystorekey
+python /var/lib/ambari-server/resources/scripts/configs.py -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k ssl_server_certificate -v $keystorepem
+python /var/lib/ambari-server/resources/scripts/configs.py -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k ssl_client_ca_certificate -v $truststorpem
+python /var/lib/ambari-server/resources/scripts/configs.py -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k client_services_ssl_enabled -v true
+```
+```
