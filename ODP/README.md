@@ -111,7 +111,7 @@ python $CONFIG_SCRIPT -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMB
 python $CONFIG_SCRIPT -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k client_services_ssl_enabled -v true
 ```
 
-### 8. # JAR Management Script
+### 8. JAR Management Script
 
 This script provides functionalities to backup, replace, and restore JAR files in a specified directory. It is designed to handle JAR files used in applications, allowing you to safely back up, replace with a specific JAR, and restore files as needed.
 
