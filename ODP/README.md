@@ -144,7 +144,7 @@ Back up the specified JAR files to the backup directory.
 
 ```bash
 ./manage_jars.sh backup
-
+```
 
 ### 2. Replace JAR Files
 
