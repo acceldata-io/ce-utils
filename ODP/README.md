@@ -99,9 +99,9 @@ AMBARISERVER=`hostname -f`
 USER=admin
 PASSWORD=admin
 PORT=8080
-KEYSTORE_KEY=/opt/cloudera/security/pki/server.key
-KEYSTORE_PEM=/opt/cloudera/security/pki/server.pem
-TRUSTSTORE_PEM=/opt/cloudera/security/pki/ca-certs.pem
+KEYSTORE_KEY=/opt/odp/security/pki/server.key
+KEYSTORE_PEM=/opt/odp/security/pki/server.pem
+TRUSTSTORE_PEM=/opt/odp/security/pki/ca-certs.pem
 PROTOCOL=http
 
 CONFIG_SCRIPT=/var/lib/ambari-server/resources/scripts/configs.py
