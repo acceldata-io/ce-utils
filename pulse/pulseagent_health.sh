@@ -174,8 +174,19 @@ if [ -d "$LOG_DIR" ]; then
 
     if [ -n "$LOG_FILES" ]; then
         for file in $LOG_FILES; do
-            echo -e "\n${CYAN}Tail of $(basename "$file") (${file}):${RESET}"
-            tail -n 2 "$file" | sed "s/^/${RED}/"
+            if [ -s "$file" ]; then  # Check if the file is not empty
+                echo -e "\n${CYAN}Tail of $(basename "$file") (${file}):${RESET}"
+                # Color code lines with errors only
+                tail -n 2 "$file" | while IFS= read -r line; do
+                    if [[ "$line" == *"ERROR"* ]]; then
+                        echo -e "${RED}${line}${RESET}"
+                    else
+                        echo -e "${line}"
+                    fi
+                done
+            else
+                echo -e "${YELLOW}Skipping empty log file: $(basename "$file")${RESET}"
+            fi
         done
     else
         echo -e "${RED}No log files found for today.${RESET}"
