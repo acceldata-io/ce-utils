@@ -101,7 +101,7 @@ if [ -f "$HYDRA_LOG" ]; then
     # Check for errors in the log file and validate the timestamps
     echo -e "\n${BOLD}Checking for Errors in Hydra Log File...${RESET}"
 
-    ERRORS=$(tail "$HYDRA_LOG" | grep "ERROR")
+    ERRORS=$(tail -n3 "$HYDRA_LOG" | grep "ERROR")
 
     if [ -n "$ERRORS" ]; then
         any_recent_errors=false
