@@ -32,8 +32,6 @@ Parameters:
   - ${BLUE}install_pulse${NC}: Install Acceldata Pulse following specific steps.
   - ${BLUE}full_install_pulse${NC}: Include OS and Docker Pre-req setup and along with Pulse initial setup.
   - ${BLUE}configure_ssl_for_pulse${NC}: If SSL is enabled on Hadoop Cluster, Pass cacerts file to Pulse config.
-  - ${BLUE}enable_gauntlet${NC}: This component is used to delete elastic indices and run purge/compact operations on the Mongo DB collections.
-  - ${BLUE}set_daily_cron_gauntlet${NC}: Change CRON_TAB_DURATION for ad-gauntlet to next 5 min or default value.
   - ${BLUE}setup_pulse_tls${NC}: Enable SSL for Pulse UI using ad-proxy 
   - ${BLUE}collect_docker_logs${NC}: Create a tar file with all pulse container logs.
   - ${BLUE}backup_pulse_config${NC}: Create a tar file with all pulse configuration files. 
@@ -43,8 +41,6 @@ Examples:
   ./$(basename $0) ${GREEN}install_pulse${NC}
   ./$(basename $0) ${GREEN}full_install_pulse${NC}
   ./$(basename $0) ${GREEN}configure_ssl_for_pulse${NC}
-  ./$(basename $0) ${GREEN}enable_gauntlet${NC}
-  ./$(basename $0) ${GREEN}set_daily_cron_gauntlet${NC}
   ./$(basename $0) ${GREEN}setup_pulse_tls${NC}
   ./$(basename $0) ${BLUE}collect_docker_logs${NC}
   ./$(basename $0) ${BLUE}backup_pulse_config${NC} 
@@ -514,157 +510,6 @@ esac
 
 }
 
-# Function to enable gauntlet
-enable_gauntlet() {
-  # Source the ad.sh profile
-  source /etc/profile.d/ad.sh
-
-  # Check if AcceloHome variable is set
-  if [ -z "$AcceloHome" ]; then
-    logFailure "Error: AcceloHome variable is not set."
-    return 1
-  fi
-
-version=$(accelo info | grep "Accelo CLI Version" | awk -F ":" '{print $2}' | sed 's/^[ \t]*//')
-
-if [[ "$version" =~ ^3\.[2-9]\.[0-9]+ || "$version" =~ ^[4-9]\.[0-9]+\.[0-9]+ ]]; then
-    echo "Accelo CLI Version is $version, which is 3.2.x or higher."
-else
-    echo "Accelo CLI Version is $version, which is lower than 3.2.x. Exiting script."
-    exit 1
-fi
-
-  # Check if accelo.yml exists
-  accelo_yml="$AcceloHome/config/accelo.yml"
-  if [ ! -f "$accelo_yml" ]; then
-    logFailure "Error: $accelo_yml not found."
-    return 1
-  fi
-
-  # Check if enable_gauntlet is set to false in accelo.yml
-  enable_gauntlet=$(grep "enable_gauntlet:" "$accelo_yml" | awk '{print $2}')
-
-  # Check and update DRY_RUN_ENABLE in ad-core.yml
-  ad_core_yml="$AcceloHome/config/docker/ad-core.yml"
-  dry_run_enable=$(awk '/ad-gauntlet:/,/extra_hosts:/' "$ad_core_yml" | grep "DRY_RUN_ENABLE" | cut -d'=' -f2)
-  if [ "$enable_gauntlet" == "true" ] && [ "$dry_run_enable" == "false" ]; then
-    logSuccess "Gauntlet is already enabled."
-    return 0
-  fi
-
-  read -p "Gauntlet is currently disabled. Do you want to enable it? (y/n): " enable_response
-  if [ "$enable_response" == "y" ]; then
-    sed -i 's/enable_gauntlet: false/enable_gauntlet: true/' "$accelo_yml"
-    logSuccess "Gauntlet is now enabled."
-  else
-    logStep "Gauntlet remains disabled."
-    exit 1
-  fi
-
-  # Check if ad-core.yml exists
-  ad_core_yml="$AcceloHome/config/docker/ad-core.yml"
-  if [ ! -f "$ad_core_yml" ]; then
-    logStep "ad-core.yml not found. Generating it..."
-    echo "accelo admin makeconfig ad-core"
-    accelo admin makeconfig ad-core
-  fi
-
-  # Check and update DRY_RUN_ENABLE in ad-core.yml
-  dry_run_enable=$(awk '/ad-gauntlet:/,/extra_hosts:/' "$ad_core_yml" | grep "DRY_RUN_ENABLE" | cut -d'=' -f2)
-  if [ "$dry_run_enable" == "true" ]; then
-    logStep "Setting DRY_RUN_ENABLE to false for ad-gauntlet in ad-core.yml file."
-    sed -i 's/DRY_RUN_ENABLE=true/DRY_RUN_ENABLE=false/' "$ad_core_yml"
-  fi
-
-  # Execute the commands
-  logStep "Executing the following commands:"
-  logStep "accelo admin database push-config"
-  echo "y" | accelo admin database push-config
-  logStep "accelo restart ad-gauntlet"
-  echo "y" | accelo restart ad-gauntlet
-}
-
-function set_daily_cron_gauntlet() {
-  # Set AcceloHome variable
-  source /etc/profile.d/ad.sh
-
-version=$(accelo info | grep "Accelo CLI Version" | awk -F ":" '{print $2}' | sed 's/^[ \t]*//')
-
-if [[ "$version" =~ ^3\.[2-9]\.[0-9]+ || "$version" =~ ^[4-9]\.[0-9]+\.[0-9]+ ]]; then
-    echo "Accelo CLI Version is $version, which is 3.2.x or higher."
-else
-    echo "Accelo CLI Version is $version, which is lower than 3.2.x. Exiting script."
-    exit 1
-fi
-  # Check if ad-core.yml exists
-  ad_core_yml="$AcceloHome/config/docker/ad-core.yml"
-  if [ ! -f "$ad_core_yml" ]; then
-    logFailure "ad-core.yml not found. Generating it..."
-    accelo admin makeconfig ad-core
-  fi
-
-  # Check if default CRON_TAB_DURATION is already configured
-  default_cron_configured=$(grep "CRON_TAB_DURATION=0 0 */2 * *" "$ad_core_yml")
-
-  if [ -n "$default_cron_configured" ]; then
-    logSuccess "Default CRON_TAB_DURATION is already configured in ad-core.yml."
-    return
-  fi
-
-  # Calculate the next 5 minutes
-  next_5_minutes=$(date -d '+5 minutes' '+%M %H')
-
-  # Extract minutes and hours
-  next_5_minutes_array=($next_5_minutes)
-  next_minutes=${next_5_minutes_array[0]}
-  next_hours=${next_5_minutes_array[1]}
-
-  # Set the cron expression
-  CRON_TAB_DURATION_5="$next_minutes $next_hours * * *"
-
-  # Display the calculated cron expression
-  logStep "CRON_TAB_DURATION_5 set to: $CRON_TAB_DURATION_5"
-  # Prompt user to change CRON_TAB_DURATION to next 5 minutes
-  read -p "Do you want to set CRON_TAB_DURATION to the next 5 minutes? (y/n): " change_cron_response
-
-  if [ "$change_cron_response" == "y" ]; then
-    # Get the current value from the file
-    current_cron_value=$(grep "CRON_TAB_DURATION=" "$ad_core_yml" | cut -d'=' -f2)
-    # Take a backup of ad-core.yml
-    backup_file="$AcceloHome/config/docker/ad-core.yml.bak"
-    cp "$ad_core_yml" "$backup_file"
-    logSuccessGrey "Backup of ad-core.yml created: $backup_file"
-
-    # Update CRON_TAB_DURATION in ad-core.yml
-
-    sed -i "/CRON_TAB_DURATION/s|.*|    - CRON_TAB_DURATION='$CRON_TAB_DURATION_5'|" "$ad_core_yml"
-    logStep "accelo restart ad-gauntlet"
-    echo "y" | accelo restart ad-gauntlet
-    logSuccess "CRON_TAB_DURATION updated to next 5 minutes :- "$CRON_TAB_DURATION_5" in ad-core.yml."
-  else
-    # Prompt user to switch back to the default value
-    read -p "Do you want to switch back to the default CRON_TAB_DURATION (0 0 */2 * *)? (y/n): " switch_default_response
-
-    if [ "$switch_default_response" == "y" ]; then
-      # Get the current value from the file
-      current_cron_value=$(grep "CRON_TAB_DURATION=" "$ad_core_yml" | cut -d'=' -f2)
-
-      # Take a backup of ad-core.yml
-      backup_file="$AcceloHome/config/docker/ad-core.yml.bak"
-      cp "$ad_core_yml" "$backup_file"
-      logSuccessGrey "Backup of ad-core.yml created: $backup_file"
-
-      # Update CRON_TAB_DURATION to the default value in ad-core.yml
-      sed -i '/CRON_TAB_DURATION/s|.*|    - CRON_TAB_DURATION=0 0 */2 * *|' "$ad_core_yml"
-      logStep "accelo restart ad-gauntlet"
-      echo "y" | accelo restart ad-gauntlet
-      logSuccess "CRON_TAB_DURATION switched back to the default value in ad-core.yml."
-    else
-      logStep "No Change to CRON_TAB_DURATION value, existing."
-    fi
-  fi
-}
-
 # Function to check command existence
 check_command_existence() {
   local cmd="$1"
@@ -845,13 +690,7 @@ case "$1" in
     ;;
   configure_ssl_for_pulse)
     configure_ssl_for_pulse
-    ;;
-  enable_gauntlet)
-    enable_gauntlet
-    ;;
-   set_daily_cron_gauntlet)
-    set_daily_cron_gauntlet
-    ;;   
+    ;; 
    setup_pulse_tls)
     setup_pulse_tls
     ;;      
