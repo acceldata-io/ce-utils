@@ -63,8 +63,30 @@ Overall, the script provides a comprehensive set of information about the Pulse 
    - Enable SSL for Pulse UI using ad-proxy.
 
 9. **collect_docker_logs**
+
+## 3. Pulse Agent health Check:
+
+[pulseagent_health.sh](https://github.com/acceldata-io/ce-utils/blob/main/pulse/pulseagent_health.sh)
+
+### Script Summary:
+
+This bash script performs a validation check on various Pulse components and services. Below is a summary of each step:
+
+1. **Check Installation of Pulse Agents**: Verifies the installation of directories related to Pulse components (`node`, `logs`, `jmx`, `log`, and `hydra`).
+
+2. **Check Status of Pulse Services**: Checks the running status of Pulse services (`pulsenode`, `pulselogs`, `pulsejmx`, `hydra`). It also identifies if services are running as standalone processes.
+
+3. **Validate Hydra Service**: Verifies if the Hydra service log file is up-to-date (modified within the last 5 minutes) and checks for any recent errors in the Hydra log.
+
+4. **Validate PulseNode Configuration and Logs**: Confirms the presence of the PulseNode configuration file and logs, lists log files modified today, and checks for errors in the logs.
+
+5. **Validate PulseLogs Directory and Files**: Checks the configuration directory and log files for PulseLogs, listing today's logs and configuration files, and validating their contents.
+
+6. **Validate PulseJMX Directory and Files**: Ensures the presence of PulseJMX configuration files and logs, listing those modified today, and checks for any issues.
+
+Finally, the script prints a completion message with the current time and hostname.
    - Create a tar file with all pulse container logs.
 
-10. **backup_pulse_config**
+11. **backup_pulse_config**
     - Create a tar file with all pulse configuration files.
 
