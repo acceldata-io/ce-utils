@@ -53,16 +53,15 @@ Overall, the script provides a comprehensive set of information about the Pulse 
 5. **configure_ssl_for_pulse**
    - If SSL is enabled on the Hadoop Cluster, pass cacerts file to Pulse config.
 
-6. **enable_gauntlet**
-   - Delete elastic indices and run purge/compact operations on the Mongo DB collections.
-
-7. **set_daily_cron_gauntlet**
-   - Change CRON_TAB_DURATION for ad-gauntlet to the next 5 minutes or default value.
-
-8. **setup_pulse_tls**
+6. **setup_pulse_tls**
    - Enable SSL for Pulse UI using ad-proxy.
 
-9. **collect_docker_logs**
+7. **collect_docker_logs**
+Finally, the script prints a completion message with the current time and hostname.
+   - Create a tar file with all pulse container logs.
+
+8. **backup_pulse_config**
+    - Create a tar file with all pulse configuration files.
 
 ## 3. Pulse Agent health Check:
 
@@ -83,10 +82,3 @@ This bash script performs a validation check on various Pulse components and ser
 5. **Validate PulseLogs Directory and Files**: Checks the configuration directory and log files for PulseLogs, listing today's logs and configuration files, and validating their contents.
 
 6. **Validate PulseJMX Directory and Files**: Ensures the presence of PulseJMX configuration files and logs, listing those modified today, and checks for any issues.
-
-Finally, the script prints a completion message with the current time and hostname.
-   - Create a tar file with all pulse container logs.
-
-11. **backup_pulse_config**
-    - Create a tar file with all pulse configuration files.
-
