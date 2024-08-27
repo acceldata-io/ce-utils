@@ -84,12 +84,16 @@ CURRENT_EPOCH=$(date +%s)
 HYDRA_LOG="/opt/pulse/hydra/log/hydra.log"
 CONFIG_FILE="/opt/pulse/hydra/config/hydra.yml"
 
-# Check if the log file is up-to-date
+# Check if the Hydra log file exists and is up-to-date
 echo -e "${BOLD}Checking Hydra Log File...${RESET}"
 
 if [ -f "$HYDRA_LOG" ]; then
-    LOG_MOD_TIME=$(stat -c %Y "$HYDRA_LOG")
-    TIME_DIFF=$((CURRENT_EPOCH - LOG_MOD_TIME))
+    LOG_SIZE=$(stat -c %s "$HYDRA_LOG")
+    LOG_MOD_TIME=$(stat -c %y "$HYDRA_LOG")
+    TIME_DIFF=$((CURRENT_EPOCH - $(stat -c %Y "$HYDRA_LOG")))
+
+    echo -e "${CYAN}Log file size: ${LOG_SIZE} bytes${RESET}"
+    echo -e "${CYAN}Last modified: ${LOG_MOD_TIME}${RESET}"
 
     if [ "$TIME_DIFF" -le 300 ]; then
         echo -e "${GREEN}Hydra log file is up-to-date (modified within the last 5 minutes).${RESET}"
@@ -97,40 +101,67 @@ if [ -f "$HYDRA_LOG" ]; then
         echo -e "${YELLOW}Hydra log file is older (last modified more than 5 minutes ago).${RESET}"
     fi
 
-    # Check for errors in the log file and validate the timestamps
-    echo -e "\n${BOLD}Checking for Errors in Hydra Log File...${RESET}"
+    # Check for different log levels in the log file and validate timestamps
+    echo -e "\n${BOLD}Checking for Log Levels in Hydra Log File...${RESET}"
 
-    ERRORS=$(tail -n3 "$HYDRA_LOG" | grep "ERROR")
+    for LEVEL in "ERROR" "WARN" "CRITICAL"; do
+        LOG_ENTRIES=$(tail -n3 "$HYDRA_LOG" | grep "$LEVEL")
 
-    if [ -n "$ERRORS" ]; then
-        any_recent_errors=false
-        echo -e "${RED}Errors found in Hydra log file:${RESET}"
-        echo "$ERRORS" | while IFS= read -r line; do
-            ERROR_DATE=$(echo "$line" | awk -F'T' '{print $1}')
-            ERROR_TIME=$(echo "$line" | awk -F'T' '{print $2}' | cut -d'.' -f1)
-            ERROR_TIMESTAMP=$(date -d "$ERROR_DATE $ERROR_TIME" +%s)
-            ERROR_TIME_DIFF=$((CURRENT_EPOCH - ERROR_TIMESTAMP))
+        if [ -n "$LOG_ENTRIES" ]; then
+            any_recent_entries=false
+            echo -e "${RED}${LEVEL} entries found in Hydra log file:${RESET}"
+            echo "$LOG_ENTRIES" | while IFS= read -r line; do
+                ERROR_DATE=$(echo "$line" | awk -F'T' '{print $1}')
+                ERROR_TIME=$(echo "$line" | awk -F'T' '{print $2}' | cut -d'.' -f1)
+                ERROR_TIMESTAMP=$(date -d "$ERROR_DATE $ERROR_TIME" +%s)
+                ERROR_TIME_DIFF=$((CURRENT_EPOCH - ERROR_TIMESTAMP))
 
-            if [ "$ERROR_TIME_DIFF" -le 300 ]; then
-                echo -e "${RED}$line${RESET} ${YELLOW}(Error within the last 5 minutes)${RESET}"
-                any_recent_errors=true
-            elif [ "$ERROR_DATE" == "$CURRENT_DATE" ]; then
-                echo -e "${YELLOW}$line${RESET} (Error today but older than 5 minutes)"
-                any_recent_errors=true
-            else
-                # Ignore older errors not from today
-                continue
+                if [ "$ERROR_TIME_DIFF" -le 300 ]; then
+                    echo -e "${RED}$line${RESET} ${YELLOW}(Within the last 5 minutes)${RESET}"
+                    any_recent_entries=true
+                elif [ "$ERROR_DATE" == "$CURRENT_DATE" ]; then
+                    echo -e "${YELLOW}$line${RESET} (Today but older than 5 minutes)"
+                    any_recent_entries=true
+                else
+                    continue
+                fi
+            done
+
+            if [ "$any_recent_entries" = false ]; then
+                echo -e "${GREEN}No recent ${LEVEL} entries found in Hydra log file.${RESET}"
             fi
-        done
-
-        if [ "$any_recent_errors" = false ]; then
-            echo -e "${GREEN}No recent errors found in Hydra log file.${RESET}"
+        else
+            echo -e "${GREEN}No ${LEVEL} entries found in Hydra log file.${RESET}"
         fi
-    else
-        echo -e "${GREEN}No errors found in Hydra log file.${RESET}"
-    fi
+    done
 else
     echo -e "${RED}Hydra log file not found at $HYDRA_LOG!${RESET}"
+fi
+
+# Check if Hydra service is active or running
+echo -e "\n${BOLD}Checking Hydra Service Status...${RESET}"
+
+if systemctl is-active --quiet hydra; then
+    echo -e "${GREEN}Hydra service is active and running.${RESET}"
+else
+    echo -e "${RED}Hydra service is not running!${RESET}"
+fi
+
+# Validate Hydra configuration file
+echo -e "\n${BOLD}Validating Hydra Config File...${RESET}"
+
+if [ -f "$CONFIG_FILE" ]; then
+    echo -e "${GREEN}Hydra config file found at $CONFIG_FILE.${RESET}"
+
+    # Checking base_url configuration
+    BASE_URL=$(grep -oP 'base_url:\s*\K.+' "$CONFIG_FILE")
+    if [[ "$BASE_URL" =~ http://.*:[0-9]+ ]]; then
+        echo -e "${GREEN}Base URL is valid: $BASE_URL${RESET}"
+    else
+        echo -e "${RED}Base URL is invalid or missing in the config file.${RESET}"
+    fi
+else
+    echo -e "${RED}Hydra config file not found at $CONFIG_FILE!${RESET}"
 fi
 
 # STEP 4: Validate PulseNode Configuration and Logs
