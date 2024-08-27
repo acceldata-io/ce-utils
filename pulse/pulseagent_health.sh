@@ -1,6 +1,5 @@
 #!/bin/bash
 #Acceldata Inc.
-
 # Define color codes
 GREEN="\e[32m"
 RED="\e[31m"
