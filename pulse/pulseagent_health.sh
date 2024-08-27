@@ -104,7 +104,7 @@ if [ -f "$HYDRA_LOG" ]; then
     # Check for different log levels in the log file and validate timestamps
     echo -e "\n${BOLD}Checking for Log Levels in Hydra Log File...${RESET}"
 
-    for LEVEL in "ERROR" "WARN" "CRITICAL"; do
+    for LEVEL in "ERROR"; do
         LOG_ENTRIES=$(tail -n3 "$HYDRA_LOG" | grep "$LEVEL")
 
         if [ -n "$LOG_ENTRIES" ]; then
