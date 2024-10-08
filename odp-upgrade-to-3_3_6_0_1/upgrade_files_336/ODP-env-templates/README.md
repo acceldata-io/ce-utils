@@ -1,6 +1,7 @@
 ### These Template Files are for reference purpose only.
-# Following Flags Needs to be added in the Hadoop, Hbase, Hive env file before the start of service .
+# Following Flags Needs to be added in the Hadoop, Hbase, Hive Env.
 
+### The following flags should be added after upgrading Hadoop, HBase, and Hive env files before starting the services in a JDK11 environment.
 ### Hadoop-env -
 
 The Java 11 flags have been addressed in the else block, which will need to be updated after the upgrade is completed during the service start process.
