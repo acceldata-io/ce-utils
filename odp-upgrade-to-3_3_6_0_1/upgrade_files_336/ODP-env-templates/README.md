@@ -4,19 +4,9 @@
 ### The following flags should be added after upgrading Hadoop, HBase, and Hive env files before starting the services in a JDK11 environment.
 ### Hadoop-env -
 
-The Java 11 flags have been addressed in the else block, which will need to be updated after the upgrade is completed during the service start process.
+The Java 11 flags have been addressed in the _**${else}**_ block, which will need to be updated after the upgrade is completed during the service start process.
 ```
-{% if java_version < 8 %}
-      SHARED_HDFS_NAMENODE_OPTS="-server -XX:ParallelGCThreads=8 -XX:+UseConcMarkSweepGC -XX:ErrorFile={{hdfs_log_dir_prefix}}/$USER/hs_err_pid%p.log -XX:NewSize={{namenode_opt_newsize}} -XX:MaxNewSize={{namenode_opt_maxnewsize}} -XX:PermSize={{namenode_opt_permsize}} -XX:MaxPermSize={{namenode_opt_maxpermsize}} -Xloggc:{{hdfs_log_dir_prefix}}/$USER/gc.log-`date +'%Y%m%d%H%M'` -verbose:gc -XX:+PrintGCDetails -XX:+PrintGCTimeStamps -XX:+PrintGCDateStamps -XX:CMSInitiatingOccupancyFraction=70 -XX:+UseCMSInitiatingOccupancyOnly -Xms{{namenode_heapsize}} -Xmx{{namenode_heapsize}} -Dhadoop.security.logger=INFO,DRFAS -Dhdfs.audit.logger=INFO,DRFAAUDIT"
-      export HDFS_NAMENODE_OPTS="${SHARED_HDFS_NAMENODE_OPTS} -XX:OnOutOfMemoryError=\"/usr/odp/current/hadoop-hdfs-namenode/bin/kill-name-node\" -Dorg.mortbay.jetty.Request.maxFormContentSize=-1 ${HDFS_NAMENODE_OPTS}"
-      export HDFS_DATANODE_OPTS="-server -XX:ParallelGCThreads=4 -XX:+UseConcMarkSweepGC -XX:OnOutOfMemoryError=\"/usr/odp/current/hadoop-hdfs-datanode/bin/kill-data-node\" -XX:ErrorFile=/var/log/hadoop/$USER/hs_err_pid%p.log -XX:NewSize=200m -XX:MaxNewSize=200m -XX:PermSize=128m -XX:MaxPermSize=256m -Xloggc:/var/log/hadoop/$USER/gc.log-`date +'%Y%m%d%H%M'` -verbose:gc -XX:+PrintGCDetails -XX:+PrintGCTimeStamps -XX:+PrintGCDateStamps -Xms{{dtnode_heapsize}} -Xmx{{dtnode_heapsize}} -Dhadoop.security.logger=INFO,DRFAS -Dhdfs.audit.logger=INFO,DRFAAUDIT ${HDFS_DATANODE_OPTS} -XX:CMSInitiatingOccupancyFraction=70 -XX:+UseCMSInitiatingOccupancyOnly"
-
-      export HDFS_SECONDARYNAMENODE_OPTS="${SHARED_HDFS_NAMENODE_OPTS} -XX:OnOutOfMemoryError=\"/usr/odp/current/hadoop-hdfs-secondarynamenode/bin/kill-secondary-name-node\" ${HDFS_SECONDARYNAMENODE_OPTS}"
-
-      # The following applies to multiple commands (fs, dfs, fsck, distcp etc)
-      export HADOOP_CLIENT_OPTS="-Xmx${HADOOP_HEAPSIZE}m -XX:MaxPermSize=512m $HADOOP_CLIENT_OPTS"
-
-      {% elif java_version == 8 %}
+{% elif java_version == 8 %}
       SHARED_HDFS_NAMENODE_OPTS="-server -XX:ParallelGCThreads=8 -XX:+UseG1GC -XX:ErrorFile={{hdfs_log_dir_prefix}}/$USER/hs_err_pid%p.log -XX:NewSize={{namenode_opt_newsize}} -XX:MaxNewSize={{namenode_opt_maxnewsize}} -Xlog:gc*,gc+heap=debug,gc+phases=debug:file={{hdfs_log_dir_prefix}}/$USER/gc.log-`date +'%Y%m%d%H%M'`:time,level,tags -XX:InitiatingHeapOccupancyPercent=70 -Xms{{namenode_heapsize}} -Xmx{{namenode_heapsize}} -Dhadoop.security.logger=INFO,DRFAS -Dhdfs.audit.logger=INFO,DRFAAUDIT"
       export HDFS_NAMENODE_OPTS="${SHARED_HDFS_NAMENODE_OPTS} -XX:OnOutOfMemoryError=\"/usr/odp/current/hadoop-hdfs-namenode/bin/kill-name-node\" -Dorg.mortbay.jetty.Request.maxFormContentSize=-1 ${HDFS_NAMENODE_OPTS}"
       export HDFS_DATANODE_OPTS="-server -XX:ParallelGCThreads=4 -XX:+UseG1GC -XX:OnOutOfMemoryError=\"/usr/odp/current/hadoop-hdfs-datanode/bin/kill-data-node\" -XX:ErrorFile=/var/log/hadoop/$USER/hs_err_pid%p.log -XX:NewSize=200m -XX:MaxNewSize=200m -Xlog:gc*,gc+heap=debug,gc+phases=debug:file=/var/log/hadoop/$USER/gc.log-`date +'%Y%m%d%H%M'`:time,level,tags -Xms{{dtnode_heapsize}} -Xmx{{dtnode_heapsize}} -Dhadoop.security.logger=INFO,DRFAS -Dhdfs.audit.logger=INFO,DRFAAUDIT ${HDFS_DATANODE_OPTS} -XX:InitiatingHeapOccupancyPercent=70"      export HDFS_SECONDARYNAMENODE_OPTS="${SHARED_HDFS_NAMENODE_OPTS} -XX:OnOutOfMemoryError=\"/usr/odp/current/hadoop-hdfs-secondarynamenode/bin/kill-secondary-name-node\" ${HDFS_SECONDARYNAMENODE_OPTS}"
@@ -36,8 +26,11 @@ The Java 11 flags have been addressed in the else block, which will need to be u
 ### Hbase-env -
 Hbase Java 11 flags -
 ```
+{% if java_version < 8 %}
+JDK_DEPENDED_OPTS="-XX:PermSize=128m -XX:MaxPermSize=128m -XX:ReservedCodeCacheSize=256m"
+{% endif %}
  # Determine the Java version (major version only)
-        java_version=$(java -version 2>&1 | awk -F[\".] '/version/ {print $2}')
+
         if [ "$java_version" -eq 8 ]; then
         # For Java version  8
         export SERVER_GC_OPTS="-verbose:gc -XX:-PrintGCCause -XX:+PrintAdaptiveSizePolicy -XX:+PrintGCDetails -XX:+PrintGCDateStamps -Xloggc:{{log_dir}}/gc.log-`date +'%Y%m%d%H%M'` -XX:+PrintHeapAtGC -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCTimeStamps -XX:+PrintTenuringDistribution"
@@ -77,3 +70,30 @@ if [ "$SERVICE" = "hiveserver2" ]; then
 fi
 ```
 ---
+### Infra-solr-env -
+Infra-solr Java11 flags-
+```
+
+if [ "$java_version" -lt 11 ]; then
+  # For JDK 8 and below
+  infra_solr_gc_log_opts="-verbose:gc -XX:+PrintHeapAtGC -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintTenuringDistribution -XX:+PrintGCApplicationStoppedTime -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=15 -XX:GCLogFileSize=200M"
+  GC_LOG_OPTS="{{infra_solr_gc_log_opts}} -Xloggc:{{infra_solr_log_dir}}/solr_gc.log"
+
+  infra_solr_gc_tune="-XX:NewRatio=3 -XX:SurvivorRatio=4 -XX:TargetSurvivorRatio=90 -XX:MaxTenuringThreshold=8 -XX:+UseConcMarkSweepGC -XX:+UseParNewGC -XX:ConcGCThreads=4 -XX:ParallelGCThreads=4 -XX:+CMSScavengeBeforeRemark -XX:PretenureSizeThreshold=64m -XX:+UseCMSInitiatingOccupancyOnly -XX:CMSInitiatingOccupancyFraction=50 -XX:CMSMaxAbortablePrecleanTime=6000 -XX:+CMSParallelRemarkEnabled -XX:+ParallelRefProcEnabled"
+else
+  # For JDK 11 and above
+ # Garbage Collection Logging
+ GC_LOG_OPTS="-Xlog:gc*=info:file={{infra_solr_log_dir}}/solr_gc.log:time,uptime"
+
+  # Use separate options to handle log file rotation and size
+  LOG_ROTATION_OPTS="-XX:NumberOfGCLogFiles=15 -XX:GCLogFileSize=200M"
+
+  # Garbage Collection Tuning
+  infra_solr_gc_tune="-XX:NewRatio=3 -XX:SurvivorRatio=4 -XX:TargetSurvivorRatio=90 -XX:MaxTenuringThreshold=8 -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:ConcGCThreads=4 -XX:ParallelGCThreads=4 -XX:+DisableExplicitGC"
+
+  # Combine all options
+  JAVA_OPTS="${GC_LOG_OPTS} ${LOG_ROTATION_OPTS} ${infra_solr_gc_tune}"
+fi
+```
+----
+
