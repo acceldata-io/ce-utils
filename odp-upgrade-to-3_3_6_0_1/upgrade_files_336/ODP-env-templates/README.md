@@ -49,7 +49,7 @@ Hive Java 11 flags will be updated in 2 places,
 Both have been addressed below.
 ```
 # The heap size of the jvm, and jvm args stared by hive shell script can be controlled via:
-java_version=$(java -version 2>&1 | awk -F[\".] '/version/ {print $2}')
+
 if [ "$SERVICE" = "metastore" ]; then
       export HADOOP_HEAPSIZE={{hive_metastore_heapsize}} # Setting for HiveMetastore
       if [ "$java_version" -eq 8 ]; then
@@ -96,4 +96,35 @@ else
 fi
 ```
 ----
+### Druid-env -
+Druid Java11 flags-
+```
+  if [ "$java_version" -eq 8 ]; then
+      # Java 8 JVM options
+      export druid.broker.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCApplicationConcurrentTime -Xloggc:${log_dir}/broker.gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=50 -XX:GCLogFileSize=10m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/broker.hprof -Djava.security.auth.login.config=${jaas_file}"
 
+      export druid.coordinator.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCApplicationConcurrentTime -Xloggc:${log_dir}/coordinator.gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=50 -XX:GCLogFileSize=10m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/coordinator.hprof -Djava.security.auth.login.config=${jaas_file}"
+
+      export druid.middlemanager.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCApplicationConcurrentTime -Xloggc:${log_dir}/middlemanager.gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=50 -XX:GCLogFileSize=10m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/middlemanager.hprof -Djava.security.auth.login.config=${jaas_file}"
+
+      export druid.historical.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCApplicationConcurrentTime -Xloggc:${log_dir}/historical.gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=50 -XX:GCLogFileSize=10m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/historical.hprof -Djava.security.auth.login.config=${jaas_file}"
+
+      export druid.overlord.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCApplicationConcurrentTime -Xloggc:${log_dir}/overlord.gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=50 -XX:GCLogFileSize=10m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/overlord.hprof -Djava.security.auth.login.config=${jaas_file}"
+
+      export druid.router.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCApplicationConcurrentTime -Xloggc:${log_dir}/router.gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=50 -XX:GCLogFileSize=10m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/router.hprof -Djava.security.auth.login.config=${jaas_file}"
+
+      else
+      # Java 11 JVM options
+      export druid.broker.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -Xlog:gc*,gc+heap=debug,gc+phases=debug:file=${log_dir}/broker.gc.log:time,level,tags:filecount=50,filesize=10M -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/broker.hprof -Djava.security.auth.login.config=${jaas_file}"
+
+      export druid.coordinator.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -Xlog:gc*,gc+heap=debug,gc+phases=debug:file=${log_dir}/coordinator.gc.log:time,level,tags:filecount=50,filesize=10M -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/coordinator.hprof -Djava.security.auth.login.config=${jaas_file}"
+
+      export druid.middlemanager.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -Xlog:gc*,gc+heap=debug,gc+phases=debug:file=${log_dir}/middlemanager.gc.log:time,level,tags:filecount=50,filesize=10M -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/middlemanager.hprof -Djava.security.auth.login.config=${jaas_file}"
+
+      export druid.historical.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -Xlog:gc*,gc+heap=debug,gc+phases=debug:file=${log_dir}/historical.gc.log:time,level,tags:filecount=50,filesize=10M -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/historical.hprof -Djava.security.auth.login.config=${jaas_file}"
+
+      export druid.overlord.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -Xlog:gc*,gc+heap=debug,gc+phases=debug:file=${log_dir}/overlord.gc.log:time,level,tags:filecount=50,filesize=10M -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/overlord.hprof -Djava.security.auth.login.config=${jaas_file}"
+
+      export druid.router.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -Xlog:gc*,gc+heap=debug,gc+phases=debug:file=${log_dir}/router.gc.log:time,level,tags:filecount=50,filesize=10M -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/router.hprof -Djava.security.auth.login.config=${jaas_file}"
+      fi
+```
