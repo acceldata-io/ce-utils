@@ -81,7 +81,7 @@
                 <unique>false</unique>
             </repo>
         </os>
-        <os family="ubuntu-20">
+        <os family="ubuntu20">
             <repo>
                 <baseurl>https://mirror.odp.acceldata.dev/ODP/ubuntu20/3.3.6.0-1/</baseurl>
                 <repoid>ODP-3.3</repoid>
