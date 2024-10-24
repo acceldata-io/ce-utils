@@ -103,6 +103,15 @@ disable_ranger_ssl() {
     set_config "set" "ranger-admin-site" "ranger.service.http.enabled" "true"
     set_config "set" "ranger-admin-site" "ranger.service.https.attrib.clientAuth" "false"
     set_config "set" "ranger-admin-site" "ranger.service.https.attrib.ssl.enabled" "false"
+    set_config "set" "ranger-admin-site" "ranger.externalurl" "http://$rangeradmin:6080"    
+
+    set_config "set" "ranger-knox-security" "ranger.plugin.knox.policy.rest.url" "http://$rangeradmin:6080"
+    set_config "set" "ranger-kms-security" "ranger.plugin.kms.policy.rest.url" "http://$rangeradmin:6080"
+    set_config "set" "ranger-hbase-security" "ranger.plugin.hbase.policy.rest.url" "http://$rangeradmin:6080"
+    set_config "set" "ranger-yarn-security" "ranger.plugin.yarn.policy.rest.url" "http://$rangeradmin:6080"
+    set_config "set" "ranger-hdfs-security" "ranger.plugin.hdfs.policy.rest.url" "http://$rangeradmin:6080"
+    set_config "set" "ranger-kafka-security" "ranger.plugin.kafka.policy.rest.url" "http://$rangeradmin:6080"
+    set_config "set" "ranger-hive-security" "ranger.plugin.hive.policy.rest.url" "http://$rangeradmin:6080"
 }
 
 # Function to disable SSL for HBase
