@@ -1,0 +1,115 @@
+<?xml version="1.0"?>
+<!--
+   Licensed to the Apache Software Foundation (ASF) under one or more
+   contributor license agreements.  See the NOTICE file distributed with
+   this work for additional information regarding copyright ownership.
+   The ASF licenses this file to You under the Apache License, Version 2.0
+   (the "License"); you may not use this file except in compliance with
+   the License.  You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+
+<repository-version xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                    xsi:noNamespaceSchemaLocation="version_definition.xsd">
+
+    <release>
+        <type>STANDARD</type>
+        <stack-id>ODP-3.2</stack-id>
+        <version>3.2.3.1</version>
+        <build>2</build>
+        <compatible-with>3.2.3.[0-9]</compatible-with>
+        <release-notes>https://docs.acceldata.io/odp/odp-3.2.3.1-2/documentation</release-notes>
+    </release>
+
+    <manifest>
+        <service id="HDFS-323" name="HDFS" version="3.2.3" version-id="2" />
+        <service id="ZOOKEEPER-3510" name="ZOOKEEPER" version="3.5.10" version-id="2" />
+        <service id="YARN-323"  name="YARN" version="3.2.3" version-id="2" />
+        <service id="MAPREDUCE2-323" name="MAPREDUCE2" version="3.2.3" version-id="2" />
+        <service id="TEZ-0101" name="TEZ" version="0.10.1" version-id="2" />
+        <service id="HIVE-314" name="HIVE" version="3.1.4" version-id="2" />
+        <service id="RANGER-230" name="RANGER" version="2.3.0" version-id="2" />
+        <service id="RANGER_KMS-230" name="RANGER_KMS" version="2.3.0" version-id="2" />
+        <service id="HBASE-2411" name="HBASE" version="2.4.11" version-id="2" />
+        <service id="SPARK2-248" name="SPARK2" version="2.4.8" version-id="2" />
+        <service id="SPARK3-333" name="SPARK3" version="3.3.3" version-id="2" />
+        <service id="KAFKA-282" name="KAFKA" version="2.8.2" version-id="2" />
+        <service id="KNOX-161" name="KAFKA" version="1.6.1" version-id="2" />
+        <service id="OOZIE-521" name="OOZIE" version="5.2.1" version-id="2" />
+        <service id="ZEPPELIN-0100" name="ZEPPELIN" version="0.10.0" version-id="2" />
+
+
+    </manifest>
+
+    <available-services>
+        <service idref="HDFS-323" />
+        <service idref="ZOOKEEPER-3510" />
+        <service idref="YARN-323" />
+        <service idref="MAPREDUCE2-323" />
+        <service idref="TEZ-0101" />
+        <service idref="HIVE-314" />
+        <service idref="RANGER-230" />
+        <service idref="RANGER_KMS-230" />
+        <service idref="HBASE-2411" />
+        <service idref="SPARK2-248" />
+        <service idref="SPARK3-333" />
+        <service idref="KAFKA-282" />
+        <service idref="KNOX-161" />
+        <service idref="OOZIE-521" />
+        <service idref="ZEPPELIN-0100" />
+    </available-services>
+
+    <repository-info>
+        <os family="redhat7">
+            <repo>
+                <baseurl>https://mirror.odp.acceldata.dev/ODP/rhel/3.2.3.1-2/</baseurl>
+                <repoid>ODP-3.2</repoid>
+                <reponame>ODP</reponame>
+                <unique>true</unique>
+            </repo>
+            <repo>
+                <baseurl>https://mirror.odp.acceldata.dev/ODP/centos/ODP-UTILS-1.1.0.22/centos7/</baseurl>
+                <repoid>ODP-UTILS-1.1.0.20</repoid>
+                <reponame>ODP-UTILS</reponame>
+                <unique>false</unique>
+            </repo>
+        </os>
+        <os family="redhat8">
+            <repo>
+                <baseurl>https://mirror.odp.acceldata.dev/ODP/rhel/3.2.3.1-2/</baseurl>
+                <repoid>ODP-3.2</repoid>
+                <reponame>ODP</reponame>
+                <unique>true</unique>
+            </repo>
+            <repo>
+                <baseurl>https://mirror.odp.acceldata.dev/ODP/centos/ODP-UTILS-1.1.0.22/centos8/</baseurl>
+                <repoid>ODP-UTILS-1.1.0.20</repoid>
+                <reponame>ODP-UTILS</reponame>
+                <unique>false</unique>
+            </repo>
+        </os>
+        <os family="ubuntu20">
+            <repo>
+                <baseurl>https://mirror.odp.acceldata.dev/ODP/ubuntu20/3.2.3.1-2/</baseurl>
+                <repoid>ODP-3.2</repoid>
+                <reponame>ODP</reponame>
+                <unique>true</unique>
+            </repo>
+            <repo>
+                <baseurl>https://mirror.odp.acceldata.dev/ODP/ubuntu20/3.2.3.1-2/</baseurl>
+                <repoid>ODP-UTILS-1.1.0.22</repoid>
+                <reponame>ODP-UTILS</reponame>
+                <unique>false</unique>
+            </repo>
+        </os>
+
+    </repository-info>
+
+</repository-version>
