@@ -23,9 +23,9 @@
         <type>STANDARD</type>
         <stack-id>ODP-3.2</stack-id>
         <version>3.2.2.0</version>
-        <build>201</build>
+        <build>1</build>
         <compatible-with>3.2.2.[0-9]</compatible-with>
-        <release-notes>https://docs.acceldata.io/odp/odp-3.2.2.0-2-201/documentation</release-notes>
+        <release-notes>https://docs.acceldata.io/odp/odp-3.2.2.0-1/documentation</release-notes>
     </release>
 
     <manifest>
@@ -69,7 +69,7 @@
     <repository-info>
         <os family="redhat7">
             <repo>
-                <baseurl>https://mirror.odp.acceldata.dev/ODP/rhel/3.2.2.0-201/</baseurl>
+                <baseurl>https://mirror.odp.acceldata.dev/ODP/centos/3.2.2.0-1/</baseurl>
                 <repoid>ODP-3.2</repoid>
                 <reponame>ODP</reponame>
                 <unique>true</unique>
@@ -83,7 +83,7 @@
         </os>
         <os family="redhat8">
             <repo>
-                <baseurl>https://mirror.odp.acceldata.dev/ODP/rhel/3.2.2.0-201/</baseurl>
+                <baseurl>https://mirror.odp.acceldata.dev/ODP/centos/3.2.2.0-1/</baseurl>
                 <repoid>ODP-3.2</repoid>
                 <reponame>ODP</reponame>
                 <unique>true</unique>
@@ -91,6 +91,20 @@
             <repo>
                 <baseurl>https://mirror.odp.acceldata.dev/ODP/centos/ODP-UTILS-1.1.0.22/centos8/</baseurl>
                 <repoid>ODP-UTILS-1.1.0.20</repoid>
+                <reponame>ODP-UTILS</reponame>
+                <unique>false</unique>
+            </repo>
+        </os>
+        <os family="ubuntu20">
+            <repo>
+                <baseurl>https://mirror.odp.acceldata.dev/ODP/ubuntu/3.2.2.0-1/</baseurl>
+                <repoid>ODP-3.2</repoid>
+                <reponame>ODP</reponame>
+                <unique>true</unique>
+            </repo>
+            <repo>
+                <baseurl>https://mirror.odp.acceldata.dev/ODP/ubuntu/3.2.2.0-1/</baseurl>
+                <repoid>ODP-UTILS-1.1.0.22</repoid>
                 <reponame>ODP-UTILS</reponame>
                 <unique>false</unique>
             </repo>
