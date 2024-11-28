@@ -25,7 +25,7 @@
         <version>3.2.3.2</version>
         <build>203</build>
         <compatible-with>3.2.3.[0-9]</compatible-with>
-        <release-notes>https://docs.acceldata.io/odp/documentation/release-notes-odp-3-2-3-2-203</release-notes>
+        <release-notes>https://docs.acceldata.io/odp/odp-3.2.3.2-203/documentation</release-notes>
     </release>
 
     <manifest>
