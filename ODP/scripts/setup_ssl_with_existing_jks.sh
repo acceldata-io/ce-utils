@@ -213,6 +213,7 @@ enable_spark3_ssl() {
     set_config "spark3-defaults" "spark.ssl.trustStore" "$truststore"
     set_config "spark3-defaults" "spark.ssl.trustStorePassword" "$truststorepassword"
     set_config "spark3-defaults" "spark.ui.https.enabled" "true"
+    set_config "spark3-defaults" "spark.ssl.historyServer.port" "18482"
 }
 # Function to enable SSL for Oozie
 enable_oozie_ssl() {
