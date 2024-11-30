@@ -241,7 +241,7 @@ enable_oozie_ssl() {
 # Display service options
 function display_service_options() {
     echo -e "${YELLOW}Select services to enable SSL:${NC}"
-    echo -e "${GREEN}1) HDFS YARN MR${NC}"
+    echo -e "${GREEN}1) HDFS, YARN, and MapReduce${NC}"
     echo -e "${GREEN}2) Infra-Solr${NC}"
     echo -e "${GREEN}3) Hive${NC}"
     echo -e "${GREEN}4) Ranger${NC}"
