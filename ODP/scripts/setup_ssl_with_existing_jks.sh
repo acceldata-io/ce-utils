@@ -20,7 +20,8 @@ export truststore=/opt/security/pki/ca-certs.jks
 export keystore_p12=/opt/security/pki/server.p12
 export truststore_p12=/opt/security/pki/ca-certs.p12
 
-# Make sure the Ranger keystore alias is set correctly for the "ranger.service.https.attrib.keystore.keyalias" property by default is set to Ranger node hostname.
+# Ensure that the keystore alias for the ranger.service.https.attrib.keystore.keyalias property is correctly configured. By default, it is set to the Ranger node's hostname. To verify, log in to the Ranger node and run the following command:
+# keytool -list -keystore /opt/security/pki/server.jks
 
 # curl command to get the required details from Ambari Cluster
 CLUSTER=$(curl -s -k -u "$USER:$PASSWORD" -i -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters" | sed -n 's/.*"cluster_name" : "\([^\"]*\)".*/\1/p')
@@ -44,6 +45,9 @@ echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
 
 echo -e "ℹ️  ${GREEN}Make sure Keystore:${NC} $keystore"
 echo -e "ℹ️  ${GREEN}Truststore:${NC} $truststore ${GREEN}are present on all cluster nodes.${NC}"
+echo -e "ℹ️  ${GREEN}Verify the keystore alias name on the Ranger node using the command:${NC}"
+echo -e "🔍  keytool -list -keystore $keystore"
+echo -e "ℹ️  ${GREEN}Check the alias name for the keystore.${NC} If it matches the FQDN, no changes are required as it is set by default. If it uses a custom alias, update the 'ranger.service.https.attrib.keystore.keyalias' property with the custom alias in the Ranger configuration."
 
 # Function to set configurations
 set_config() {
