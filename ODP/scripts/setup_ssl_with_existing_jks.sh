@@ -2,8 +2,11 @@
 # Acceldata Inc.
 # ODP-3.2.2.0-1
 
-GREEN='\033[0;32m'
-NC='\033[0m'  # No Color
+# Define color variables using ANSI escape codes
+GREEN='\e[32m'
+YELLOW='\e[33m'
+RED='\e[31m'
+NC='\e[0m'  # No Color
 
 export AMBARISERVER=`hostname -f`
 export USER=admin
@@ -30,7 +33,7 @@ historyserver=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PR
 rangeradmin=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=RANGER_ADMIN" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  |head -n 1)
 OOZIE_HOSTNAME=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=OOZIE_SERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  |head -n 1)
 
-echo -e "🔑 Please ensure that you have set all variables correctly."
+echo -e "${YELLOW}🔑 Please ensure that you have set all variables correctly.${NC}\n"
 echo -e "⚙️  ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
 echo -e "👤 ${GREEN}USER:${NC} $USER"
 echo -e "🔒 ${GREEN}PASSWORD:${NC} ********"
@@ -39,15 +42,20 @@ echo -e "🔐 ${GREEN}keystorepassword:${NC} ********"
 echo -e "🔐 ${GREEN}truststorepassword:${NC} ********"
 echo -e "🔐 ${GREEN}keystore:${NC} $keystore"
 echo -e "🔐 ${GREEN}truststore:${NC} $truststore"
+echo -e "ℹ️ ${YELLOW}Make sure to create the .p12 keystore and truststore on the Infra-Solr node:${NC}"
 echo -e "🔐 ${GREEN}keystore_p12:${NC} $keystore_p12"
 echo -e "🔐 ${GREEN}truststore_p12:${NC} $truststore_p12"
-echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
+echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL\n"
 
-echo -e "ℹ️  ${GREEN}Make sure Keystore:${NC} $keystore"
-echo -e "ℹ️  ${GREEN}Truststore:${NC} $truststore ${GREEN}are present on all cluster nodes.${NC}"
-echo -e "ℹ️  ${GREEN}Verify the keystore alias name on the Ranger node using the command:${NC}"
-echo -e "🔍  keytool -list -keystore $keystore"
-echo -e "ℹ️  ${GREEN}Check the alias name for the keystore.${NC} If it matches the FQDN, no changes are required as it is set by default. If it uses a custom alias, update the 'ranger.service.https.attrib.keystore.keyalias' property with the custom alias in the Ranger configuration."
+echo -e "ℹ️  ${YELLOW}Make sure the Keystore:${NC} $keystore"
+echo -e "ℹ️  ${YELLOW}Truststore:${NC} $truststore ${YELLOW}are present on all cluster nodes.${NC}\n"
+echo -e "ℹ️  ${YELLOW}Verify the keystore alias name on the Ranger node using the command:${NC}"
+echo -e "🔍  ${GREEN}keytool -list -keystore $keystore${NC}\n"
+echo -e "ℹ️  ${YELLOW}Check the alias name for the keystore.${NC}"
+echo -e "   If it matches the FQDN, no changes are required as it is set by default."
+echo -e "   If it uses a custom alias, update the '${GREEN}ranger.service.https.attrib.keystore.keyalias${NC}'"
+echo -e "   property with the custom alias in the Ranger configuration.\n"
+
 
 # Function to set configurations
 set_config() {
@@ -232,21 +240,21 @@ enable_oozie_ssl() {
 
 # Display service options
 function display_service_options() {
-    echo "Select services to enable SSL:"
-    echo "1) HDFS YARN MR"
-    echo "2) Infra-Solr"
-    echo "3) Hive"
-    echo "4) Ranger"
-    echo "5) Spark2"
-    echo "6) Kafka"
-    echo "7) Hbase"
-    echo "8) Spark3"
-    echo "9) Oozie"
-    echo "A) All"
-    echo "Q) Quit"
+    echo -e "${YELLOW}Select services to enable SSL:${NC}"
+    echo -e "${GREEN}1) HDFS YARN MR${NC}"
+    echo -e "${GREEN}2) Infra-Solr${NC}"
+    echo -e "${GREEN}3) Hive${NC}"
+    echo -e "${GREEN}4) Ranger${NC}"
+    echo -e "${GREEN}5) Spark2${NC}"
+    echo -e "${GREEN}6) Kafka${NC}"
+    echo -e "${GREEN}7) HBase${NC}"
+    echo -e "${GREEN}8) Spark3${NC}"
+    echo -e "${GREEN}9) Oozie${NC}"
+    echo -e "${GREEN}A) All${NC}"
+    echo -e "${RED}Q) Quit${NC}"
 }
 
-# Select services to enable SSL
+# Main menu for selecting services
 while true; do
     display_service_options
     read -p "Enter your choice: " choice
@@ -285,11 +293,11 @@ while true; do
             done
             ;;
         [Qq])
-            echo "Exiting..."
+            echo -e "${GREEN}Exiting...${NC}"
             break
             ;;
         *)
-            echo "Invalid choice"
+            echo -e "${YELLOW}Invalid choice. Please try again.${NC}"
             ;;
     esac
 done
@@ -302,5 +310,6 @@ else
     echo "No JSON files found to move."
 fi
 
-echo "Script execution completed."
-echo -e "${GREEN}Access the Ambari UI and initiate a restart for the affected services in order to apply the SSL changes.${NC}"
+echo -e "${GREEN}Script execution completed.${NC}"
+echo -e "${YELLOW}Access the Ambari UI and initiate a restart for the affected services to apply the SSL changes.${NC}"
+
