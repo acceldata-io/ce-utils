@@ -25,7 +25,7 @@
         <version>3.3.6.0</version>
         <build>1</build>
         <compatible-with>3.3.6.[0-9]</compatible-with>
-        <release-notes>https://docs.acceldata.io/odp/documentation/release-notes-odp-3-3-6-0-1</release-notes>
+        <release-notes>https://docs.acceldata.io/odp/odp-3.3.6.0-1/documentation</release-notes>
     </release>
 
     <manifest>
@@ -63,7 +63,7 @@
         <service idref="KNOX-200" />
         <service idref="ZEPPELIN-0112" />
 
-        
+
     </available-services>
 
     <repository-info>
@@ -89,7 +89,7 @@
                 <unique>true</unique>
             </repo>
             <repo>
-                <baseurl>https://mirror.odp.acceldata.dev/ODP/ubuntu20/ODP-UTILS-1.1.0.22/</baseurl>
+                <baseurl>https://mirror.odp.acceldata.dev/ODP/ubuntu20/3.3.6.0-1/</baseurl>
                 <repoid>ODP-UTILS-1.1.0.22</repoid>
                 <reponame>ODP-UTILS</reponame>
                 <unique>false</unique>
