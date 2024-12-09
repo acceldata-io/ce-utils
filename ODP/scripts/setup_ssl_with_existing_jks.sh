@@ -1,6 +1,7 @@
 #!/bin/bash
 # Acceldata Inc.
-# ODP-3.2.2.0-1
+# ODP
+# Author: [Pravin Bhagade]
 
 # Define color variables using ANSI escape codes
 GREEN='\e[32m'
