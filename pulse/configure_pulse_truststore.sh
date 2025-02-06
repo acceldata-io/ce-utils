@@ -95,8 +95,10 @@ update_volume_in_config() {
     local section
     section=$(awk "/$section_start/,/$section_end/" "$file")
 
-    if echo "$section" | grep -q "$src_path"; then
-        log_info "The volume mapping for ${src_path} is already present in ${file}."
+
+    # Check if any volume mapping already exists for cacerts or jssecacerts.
+    if echo "$section" | grep -Eq "[-\s]+.+/cacerts:.+/cacerts|[-\s]+.+/jssecacerts:.+/jssecacerts"; then
+        log_info "A volume mapping for cacerts/jssecacerts is already present in ${file}. Skipping."
     else
         # Insert the volume mapping after the first occurrence of "volumes:" in the section.
         sed -i "/$section_start/,/$section_end/ s|volumes:|volumes:\n    - ${src_path}:${dest_path}|" "$file"
