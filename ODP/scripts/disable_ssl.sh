@@ -19,6 +19,7 @@ timelineserver=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$P
 historyserver=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=HISTORYSERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//')
 rangeradmin=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=RANGER_ADMIN" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  | head -n 1)
 OOZIE_HOSTNAME=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=OOZIE_SERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  | head -n 1)
+rangerkms=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=RANGER_KMS_SERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  |head -n 1)
 
 echo -e "🔑 Please ensure that you have set all variables correctly."
 echo -e "⚙️  ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
@@ -114,6 +115,21 @@ disable_ranger_ssl() {
     set_config "set" "ranger-hive-security" "ranger.plugin.hive.policy.rest.url" "http://$rangeradmin:6080"
 }
 
+# Function to disable SSL for ODP Ranger KMS (Revert changes)
+disable_ranger_kms_ssl() {
+    echo -e "${YELLOW}Reverting SSL configuration for ODP Ranger KMS...${NC}"
+    
+    # Disable SSL for Ranger KMS in ranger-kms-site
+    set_config "ranger-kms-site" "ranger.service.https.attrib.ssl.enabled" "false"
+    
+    # Revert HDFS encryption key provider properties to use HTTP
+    set_config "hdfs-site" "dfs.encryption.key.provider.uri" "kms://http@$rangerkms:9292/kms"
+    set_config "hdfs-site" "hadoop.security.key.provider.path" "kms://http@$rangerkms:9292/kms"
+    
+    echo -e "${GREEN}ODP Ranger KMS SSL configuration reverted.${NC}"
+}
+
+
 # Function to disable SSL for HBase
 disable_hbase_ssl() {
     set_config "set" "hbase-site" "hbase.ssl.enabled" "false"
@@ -170,6 +186,7 @@ display_service_options() {
     echo "7) HBase"
     echo "8) Spark3"
     echo "9) Oozie"
+    echo "10) Ranger KMS"
     echo "A) All"
     echo "Q) Quit"
 }
@@ -206,7 +223,10 @@ while true; do
             ;;
         9)
             disable_oozie_ssl
-            ;;            
+            ;; 
+        10)
+            disable_ranger_kms_ssl
+            ;;          
         [Aa])
             disable_hdfs_ssl
             disable_infra_solr_ssl
@@ -217,6 +237,7 @@ while true; do
             disable_hbase_ssl
             disable_spark3_ssl
             disable_oozie_ssl
+            disable_ranger_kms_ssl
             ;;            
         [Qq])
             echo "Exiting..."
