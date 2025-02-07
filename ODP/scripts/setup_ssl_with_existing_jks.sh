@@ -34,6 +34,7 @@ timelineserver=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$P
 historyserver=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=HISTORYSERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//')
 rangeradmin=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=RANGER_ADMIN" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  |head -n 1)
 OOZIE_HOSTNAME=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=OOZIE_SERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  |head -n 1)
+rangerkms=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=RANGER_KMS_SERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  |head -n 1)
 
 echo -e "${YELLOW}🔑 Please ensure that you have set all variables correctly.${NC}\n"
 echo -e "⚙️  ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
@@ -180,6 +181,23 @@ enable_ranger_ssl() {
     set_config "ranger-hive-security" "ranger.plugin.hive.policy.rest.url" "https://$rangeradmin:6182"
 }
 
+# Function to enable SSL for ODP Ranger KMS
+enable_ranger_kms_ssl() {
+    echo -e "${YELLOW}Configuring SSL for ODP Ranger KMS...${NC}"
+    
+    # Configure properties in the ranger-kms-site configuration
+    set_config "ranger-kms-site" "ranger.service.https.attrib.ssl.enabled" "true"
+    set_config "ranger-kms-site" "ranger.service.https.attrib.client.auth" "false"
+    set_config "ranger-kms-site" "ranger.service.https.attrib.keystore.file" "$keystore"
+    set_config "ranger-kms-site" "ranger.service.https.attrib.keystore.keyalias" "$rangerkms"
+    set_config "ranger-kms-site" "ranger.service.https.attrib.keystore.pass" "$keystorepassword"
+    # Configure HDFS encryption properties to use Ranger KMS as the key provider
+    set_config "hdfs-site" "dfs.encryption.key.provider.uri" "kms://https@$rangerkms:9393/kms"
+    set_config "hdfs-site" "hadoop.security.key.provider.path" "kms://https@$rangerkms:9393/kms"
+    
+    echo -e "${GREEN}ODP Ranger KMS SSL configuration applied.${NC}"
+}
+
 # Function to enable SSL for Spark2
 enable_spark2_ssl() {
     set_config "yarn-site" "spark.authenticate" "true"
@@ -252,6 +270,7 @@ function display_service_options() {
     echo -e "${GREEN}7) HBase${NC}"
     echo -e "${GREEN}8) Spark3${NC}"
     echo -e "${GREEN}9) Oozie${NC}"
+    echo -e "${GREEN}10) Ranger KMS${NC}"    
     echo -e "${GREEN}A) All${NC}"
     echo -e "${RED}Q) Quit${NC}"
 }
@@ -289,8 +308,11 @@ while true; do
         9)
             enable_oozie_ssl
             ;;
+        10)
+            enable_ranger_kms_ssl
+            ;;           
         [Aa])
-            for service in "hdfs" "infra_solr" "hive" "ranger" "spark2" "kafka" "hbase" "spark3" "oozie"; do
+            for service in "hdfs" "infra_solr" "hive" "ranger" "spark2" "kafka" "hbase" "spark3" "oozie" "ranger_kms"; do
                 enable_${service}_ssl
             done
             ;;
@@ -314,4 +336,3 @@ fi
 
 echo -e "${GREEN}Script execution completed.${NC}"
 echo -e "${YELLOW}Access the Ambari UI and initiate a restart for the affected services to apply the SSL changes.${NC}"
-
