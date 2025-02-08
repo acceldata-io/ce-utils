@@ -1,17 +1,6 @@
 #!/bin/bash
 ###############################################################################
 # Script to configure SSL for various Ambari-managed services.
-#
-# Prerequisites:
-#   - curl
-#   - python (used by Ambari’s configs.py script)
-#
-# This script uses environment variables and interactive input to configure
-# SSL properties via Ambari’s REST API. It avoids hard‑coding sensitive
-# information where possible.
-#
-# Author: [Pravin Bhagade] (Improved by ChatGPT)
-# Date: 2025-02-08
 ###############################################################################
 
 # Color definitions using ANSI escape codes
@@ -32,8 +21,6 @@ command -v python >/dev/null 2>&1 || { echo -e "${RED}Error: python is required 
 ###############################################################################
 
 export AMBARISERVER=$(hostname -f)
-
-# Avoid conflict with reserved variables (USER, PASSWORD)
 export AMBARI_USER="admin"
 export AMBARI_PASSWORD="admin"
 export PORT="8080"
