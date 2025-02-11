@@ -92,6 +92,8 @@ disable_kafka_ssl() {
 # Function to disable SSL for Hive
 disable_hive_ssl() {
     set_config "set" "hive-site" "hive.server2.use.SSL" "false"
+    set_config "delete" "hive-site" "hive.server2.keystore.path"
+    set_config "delete" "hive-site" "hive.server2.keystore.password"
 }
 
 # Function to disable SSL for Infra-Solr
