@@ -200,9 +200,9 @@ enable_ranger_kms_ssl() {
 
 # Function to enable SSL for Spark2
 enable_spark2_ssl() {
-    set_config "yarn-site" "spark.authenticate" "true"
-    set_config "spark2-defaults" "spark.authenticate" "true"
-    set_config "spark2-defaults" "spark.authenticate.enableSaslEncryption" "true"
+    set_config "yarn-site" "spark.authenticate" "false"
+    set_config "spark2-defaults" "spark.authenticate" "false"
+    set_config "spark2-defaults" "spark.authenticate.enableSaslEncryption" "false"
     set_config "spark2-defaults" "spark.ssl.enabled" "true"
     set_config "spark2-defaults" "spark.ssl.keyPassword" "$keystorepassword"
     set_config "spark2-defaults" "spark.ssl.keyStore" "$keystore"
@@ -234,9 +234,9 @@ enable_hbase_ssl() {
 
 # Function to enable SSL for Spark3
 enable_spark3_ssl() {
-    set_config "yarn-site" "spark.authenticate" "true"
-    set_config "spark3-defaults" "spark.authenticate" "true"
-    set_config "spark3-defaults" "spark.authenticate.enableSaslEncryption" "true"
+    set_config "yarn-site" "spark.authenticate" "false"
+    set_config "spark3-defaults" "spark.authenticate" "false"
+    set_config "spark3-defaults" "spark.authenticate.enableSaslEncryption" "false"
     set_config "spark3-defaults" "spark.ssl.enabled" "true"
     set_config "spark3-defaults" "spark.ssl.keyPassword" "$keystorepassword"
     set_config "spark3-defaults" "spark.ssl.keyStore" "$keystore"
