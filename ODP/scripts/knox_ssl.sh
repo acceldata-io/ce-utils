@@ -87,7 +87,7 @@ update_knox_certificate() {
             fi
 
             # Create the alias and rename the keystore
-            "$knox_keytool" create-alias gateway-identity-passphrase --value "$password"
+            "$knox_keytool" create-alias gateway-identity --value "$password"
             mv "/var/lib/knox/data/security/keystores/keystore.jks" "/var/lib/knox/data/security/keystores/gateway.jks"
 
             # Ensure ownership and group ownership are set correctly for the files
