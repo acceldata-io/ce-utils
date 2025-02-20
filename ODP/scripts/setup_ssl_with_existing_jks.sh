@@ -24,7 +24,7 @@ export truststore=/opt/security/pki/ca-certs.jks
 export keystore_p12=/opt/security/pki/server.p12
 export truststore_p12=/opt/security/pki/ca-certs.p12
 
-# Ensure that the keystore alias for the ranger.service.https.attrib.keystore.keyalias property is correctly configured. By default, it is set to the Ranger node's hostname. To verify, log in to the Ranger node and run the following command:
+# Ensure that the keystore alias for the ranger.service.https.attrib.keystore.keyalias property is correctly configured. By default, it is set to the Ranger and KMS node's hostname. To verify, log in to the Ranger node and run the following command:
 # keytool -list -keystore /opt/security/pki/server.jks
 
 export PYTHONHTTPSVERIFY=0
@@ -56,7 +56,7 @@ echo -e "ℹ️  ${YELLOW}Verify the keystore alias name on the Ranger node usin
 echo -e "🔍  ${GREEN}keytool -list -keystore $keystore${NC}\n"
 echo -e "ℹ️  ${YELLOW}Check the alias name for the keystore.${NC}"
 echo -e "   If it matches the FQDN, no changes are required as it is set by default."
-echo -e "   If it uses a custom alias, update the '${GREEN}ranger.service.https.attrib.keystore.keyalias${NC}'"
+echo -e "   If it uses a custom alias for Ranger and Ranger KMS nodes, update the '${GREEN}ranger.service.https.attrib.keystore.keyalias${NC}'"
 echo -e "   property with the custom alias in the Ranger configuration.\n"
 
 
