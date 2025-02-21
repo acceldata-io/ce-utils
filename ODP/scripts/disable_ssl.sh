@@ -1,8 +1,6 @@
 #!/bin/bash
 # Disable SSL for Hadoop Services
 # Acceldata Inc
-# Author: [Pravin Bhagade]
-# Date: [23 Oct 2024]
 
 GREEN='\033[0;32m'
 NC='\033[0m'  # No Color
