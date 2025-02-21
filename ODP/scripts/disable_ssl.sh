@@ -1,85 +1,154 @@
 #!/bin/bash
-# Disable SSL for Hadoop Services
-# Acceldata Inc
+##########################################################################
+# Disable SSL for Hadoop Services - Enhanced Interactive Version
+# Company: Acceldata Inc
+#
+# This script disables SSL configurations for various Hadoop-related
+# services via Ambari’s API.
+#
+# Usage:
+#   ./disable_ssl.sh [-s <ambari_server>] [-u <user>] [-p <password>] [-P <port>] [-r <protocol>]
+#
+##########################################################################
 
+# Color definitions
 GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+RED='\033[0;31m'
 NC='\033[0m'  # No Color
 
-export AMBARISERVER=`hostname -f`
-export USER=admin
-export PASSWORD=admin
-export PORT=8080
-export PROTOCOL=http
+# Log file location
+LOGFILE="/tmp/disable_ssl.log"
+touch "$LOGFILE"
 
-# Retrieve cluster and host information
-CLUSTER=$(curl -s -k -u "$USER:$PASSWORD" -i -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters" | sed -n 's/.*"cluster_name" : "\([^\"]*\)".*/\1/p')
-timelineserver=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=APP_TIMELINE_SERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//')
-historyserver=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=HISTORYSERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//')
-rangeradmin=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=RANGER_ADMIN" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  | head -n 1)
-OOZIE_HOSTNAME=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=OOZIE_SERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  | head -n 1)
-rangerkms=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/host_components?HostRoles/component_name=RANGER_KMS_SERVER" | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//'  |head -n 1)
+# Default values (editable by the user)
+AMBARISERVER_DEFAULT=$(hostname -f)
+USER_DEFAULT="admin"
+PASSWORD_DEFAULT="admin"
+PORT_DEFAULT=8080
+PROTOCOL_DEFAULT="http"
 
+# Simplified log function: prints colored messages without timestamps or level labels.
+log() {
+    local message="$1"
+    local color="$2"
+    echo -e "${color}${message}${NC}" | tee -a "$LOGFILE"
+}
+
+# Usage information
+usage() {
+    echo "Usage: $0 [-s <ambari_server>] [-u <user>] [-p <password>] [-P <port>] [-r <protocol>]"
+    echo "  -s <server>      Ambari server hostname (default: ${AMBARISERVER_DEFAULT})"
+    echo "  -u <user>        Username (default: ${USER_DEFAULT})"
+    echo "  -p <password>    Password (default: ${PASSWORD_DEFAULT})"
+    echo "  -P <port>        Port (default: ${PORT_DEFAULT})"
+    echo "  -r <protocol>    Protocol (default: ${PROTOCOL_DEFAULT})"
+    echo "  -h               Show help"
+}
+
+# Process command-line options
+while getopts "s:u:p:P:r:h" opt; do
+    case $opt in
+        s) AMBARISERVER_DEFAULT="$OPTARG" ;;
+        u) USER_DEFAULT="$OPTARG" ;;
+        p) PASSWORD_DEFAULT="$OPTARG" ;;
+        P) PORT_DEFAULT="$OPTARG" ;;
+        r) PROTOCOL_DEFAULT="$OPTARG" ;;
+        h) usage; exit 0 ;;
+        *) usage; exit 1 ;;
+    esac
+done
+
+# Export environment variables
+export AMBARISERVER="${AMBARISERVER_DEFAULT}"
+export USER="${USER_DEFAULT}"
+export PASSWORD="${PASSWORD_DEFAULT}"
+export PORT="${PORT_DEFAULT}"
+export PROTOCOL="${PROTOCOL_DEFAULT}"
+
+# Display current configuration with emojis
 echo -e "🔑 Please ensure that you have set all variables correctly."
-echo -e "⚙️  ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
-echo -e "👤 ${GREEN}USER:${NC} $USER"
+echo -e "⚙️  ${GREEN}AMBARISERVER:${NC} ${AMBARISERVER}"
+echo -e "👤 ${GREEN}USER:${NC} ${USER}"
 echo -e "🔒 ${GREEN}PASSWORD:${NC} ********"
-echo -e "🌐 ${GREEN}PORT:${NC} $PORT"
-echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
+echo -e "🌐 ${GREEN}PORT:${NC} ${PORT}"
+echo -e "🌐 ${GREEN}PROTOCOL:${NC} ${PROTOCOL}"
 
-# Function to set configurations
+# Handle interruptions gracefully
+cleanup() {
+    log "Script interrupted. Exiting..." "${RED}"
+    exit 1
+}
+trap cleanup SIGINT SIGTERM
+
+# Retrieve the cluster name from Ambari API
+CLUSTER=$(curl -s -k -u "${USER}:${PASSWORD}" -i -H 'X-Requested-By: ambari' \
+    "${PROTOCOL}://${AMBARISERVER}:${PORT}/api/v1/clusters" | \
+    sed -n 's/.*"cluster_name" : "\([^\"]*\)".*/\1/p')
+
+if [ -z "$CLUSTER" ]; then
+    log "Failed to retrieve cluster name. Check your Ambari server settings." "${RED}"
+    exit 1
+fi
+
+# Function to get host for a given component
+get_host_for_component() {
+    local component="$1"
+    local endpoint="${PROTOCOL}://${AMBARISERVER}:${PORT}/api/v1/clusters/${CLUSTER}/host_components?HostRoles/component_name=${component}"
+    curl -s -k -u "${USER}:${PASSWORD}" -H 'X-Requested-By: ambari' "$endpoint" | \
+        grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//' | head -n 1
+}
+
+# Retrieve host information for various components
+timelineserver=$(get_host_for_component "APP_TIMELINE_SERVER")
+historyserver=$(get_host_for_component "HISTORYSERVER")
+rangeradmin=$(get_host_for_component "RANGER_ADMIN")
+OOZIE_HOSTNAME=$(get_host_for_component "OOZIE_SERVER")
+rangerkms=$(get_host_for_component "RANGER_KMS_SERVER")
+
+# Function to set or delete configurations via Ambari API
 set_config() {
-    local action=$1
-    local config_file=$2
-    local key=$3
-    local value=$4
-
-    if [ "$action" == "delete" ]; then
-        python /var/lib/ambari-server/resources/scripts/configs.py \
-            -u $USER -p $PASSWORD -s $PROTOCOL -a delete -t $PORT -l $AMBARISERVER -n $CLUSTER \
-            -c $config_file -k $key
+    local action="$1"
+    local config_file="$2"
+    local key="$3"
+    local value="$4"
+    
+    local cmd="python /var/lib/ambari-server/resources/scripts/configs.py -u ${USER} -p ${PASSWORD} -s ${PROTOCOL} -a ${action} -t ${PORT} -l ${AMBARISERVER} -n ${CLUSTER} -c ${config_file} -k ${key}"
+    if [ "$action" != "delete" ]; then
+        cmd+=" -v ${value}"
+    fi
+    eval "$cmd"
+    if [ $? -ne 0 ]; then
+        log "Failed to ${action} config ${key} in ${config_file}." "${RED}"
     else
-        python /var/lib/ambari-server/resources/scripts/configs.py \
-            -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER \
-            -c $config_file -k $key -v $value
+        log "Successfully ${action}ed ${key} in ${config_file}." "${GREEN}"
     fi
 }
 
-# Function to disable SSL for HDFS
+# Service-specific SSL disable functions
 disable_hdfs_ssl() {
-    # HADOOP
+    log "Disabling SSL for HDFS/YARN/MR and related components..." "${GREEN}"
     set_config "set" "core-site" "hadoop.ssl.require.client.cert" "false"
     set_config "set" "core-site" "hadoop.ssl.hostname.verifier" "DEFAULT"
     set_config "set" "core-site" "hadoop.ssl.keystores.factory.class" "org.apache.hadoop.security.ssl.FileBasedKeyStoresFactory"
     set_config "set" "core-site" "hadoop.ssl.server.conf" "ssl-server.xml"
     set_config "set" "core-site" "hadoop.ssl.client.conf" "ssl-client.xml"
-
-    # HDFS
     set_config "set" "core-site" "hadoop.rpc.protection" "authentication"
     set_config "set" "hdfs-site" "dfs.encrypt.data.transfer" "false"
-
-    # HDFS UI
     set_config "set" "hdfs-site" "dfs.http.policy" "HTTP_ONLY"
     set_config "set" "hdfs-site" "dfs.https.enable" "false"
-
-    # MR Shuffle
     set_config "set" "mapred-site" "mapreduce.shuffle.ssl.enabled" "false"
-
-    # MapReduce2 UI
     set_config "set" "mapred-site" "mapreduce.jobhistory.http.policy" "HTTP_ONLY"
-
-    # YARN
     set_config "set" "yarn-site" "yarn.http.policy" "HTTP_ONLY"
-    set_config "set" "yarn-site" "yarn.log.server.url" "http://$historyserver:19888/jobhistory/logs"
-    set_config "set" "yarn-site" "yarn.log.server.web-service.url" "http://$timelineserver:8188/ws/v1/applicationhistory"
+    set_config "set" "yarn-site" "yarn.log.server.url" "http://${historyserver}:19888/jobhistory/logs"
+    set_config "set" "yarn-site" "yarn.log.server.web-service.url" "http://${timelineserver}:8188/ws/v1/applicationhistory"
     set_config "delete" "yarn-site" "yarn.nodemanager.webapp.https.address"
-
-    # TEZ
     set_config "set" "tez-site" "tez.runtime.shuffle.ssl.enable" "false"
     set_config "set" "tez-site" "tez.runtime.shuffle.keep-alive.enabled" "false"
 }
 
-# Function to disable SSL for Kafka
 disable_kafka_ssl() {
+    log "Disabling SSL for Kafka..." "${GREEN}"
     set_config "delete" "kafka-broker" "ssl.keystore.location"
     set_config "delete" "kafka-broker" "ssl.keystore.password"
     set_config "delete" "kafka-broker" "ssl.key.password"
@@ -87,56 +156,50 @@ disable_kafka_ssl() {
     set_config "delete" "kafka-broker" "ssl.truststore.password"
 }
 
-# Function to disable SSL for Hive
 disable_hive_ssl() {
+    log "Disabling SSL for Hive..." "${GREEN}"
     set_config "set" "hive-site" "hive.server2.use.SSL" "false"
     set_config "delete" "hive-site" "hive.server2.keystore.path"
     set_config "delete" "hive-site" "hive.server2.keystore.password"
 }
 
-# Function to disable SSL for Infra-Solr
 disable_infra_solr_ssl() {
+    log "Disabling SSL for Infra-Solr..." "${GREEN}"
     set_config "set" "infra-solr-env" "infra_solr_ssl_enabled" "false"
 }
 
-# Function to disable SSL for Ranger Admin
 disable_ranger_ssl() {
+    log "Disabling SSL for Ranger Admin..." "${GREEN}"
     set_config "set" "ranger-admin-site" "ranger.service.http.enabled" "true"
     set_config "set" "ranger-admin-site" "ranger.service.https.attrib.clientAuth" "false"
     set_config "set" "ranger-admin-site" "ranger.service.https.attrib.ssl.enabled" "false"
-    set_config "set" "ranger-admin-site" "ranger.externalurl" "http://$rangeradmin:6080"    
-
-    set_config "set" "ranger-knox-security" "ranger.plugin.knox.policy.rest.url" "http://$rangeradmin:6080"
-    set_config "set" "ranger-kms-security" "ranger.plugin.kms.policy.rest.url" "http://$rangeradmin:6080"
-    set_config "set" "ranger-hbase-security" "ranger.plugin.hbase.policy.rest.url" "http://$rangeradmin:6080"
-    set_config "set" "ranger-yarn-security" "ranger.plugin.yarn.policy.rest.url" "http://$rangeradmin:6080"
-    set_config "set" "ranger-hdfs-security" "ranger.plugin.hdfs.policy.rest.url" "http://$rangeradmin:6080"
-    set_config "set" "ranger-kafka-security" "ranger.plugin.kafka.policy.rest.url" "http://$rangeradmin:6080"
-    set_config "set" "ranger-hive-security" "ranger.plugin.hive.policy.rest.url" "http://$rangeradmin:6080"
+    set_config "set" "ranger-admin-site" "ranger.externalurl" "http://${rangeradmin}:6080"
+    set_config "set" "ranger-knox-security" "ranger.plugin.knox.policy.rest.url" "http://${rangeradmin}:6080"
+    set_config "set" "ranger-kms-security" "ranger.plugin.kms.policy.rest.url" "http://${rangeradmin}:6080"
+    set_config "set" "ranger-hbase-security" "ranger.plugin.hbase.policy.rest.url" "http://${rangeradmin}:6080"
+    set_config "set" "ranger-yarn-security" "ranger.plugin.yarn.policy.rest.url" "http://${rangeradmin}:6080"
+    set_config "set" "ranger-hdfs-security" "ranger.plugin.hdfs.policy.rest.url" "http://${rangeradmin}:6080"
+    set_config "set" "ranger-kafka-security" "ranger.plugin.kafka.policy.rest.url" "http://${rangeradmin}:6080"
+    set_config "set" "ranger-hive-security" "ranger.plugin.hive.policy.rest.url" "http://${rangeradmin}:6080"
 }
 
-# Function to disable SSL for ODP Ranger KMS (Revert changes)
 disable_ranger_kms_ssl() {
-    echo -e "${YELLOW}Reverting SSL configuration for ODP Ranger KMS...${NC}"
-    
-    # Disable SSL for Ranger KMS in ranger-kms-site
-    set_config set "ranger-kms-site" "ranger.service.https.attrib.ssl.enabled" "false"
-
-    # Revert HDFS encryption key provider properties to use HTTP
-    set_config set "hdfs-site" "dfs.encryption.key.provider.uri" "kms://http@$rangerkms:9292/kms"
-    set_config set "core-site" "hadoop.security.key.provider.path" "kms://http@$rangerkms:9292/kms"    
-    echo -e "${GREEN}ODP Ranger KMS SSL configuration reverted.${NC}"
+    log "Reverting SSL configuration for ODP Ranger KMS..." "${GREEN}"
+    set_config "set" "ranger-kms-site" "ranger.service.https.attrib.ssl.enabled" "false"
+    set_config "set" "hdfs-site" "dfs.encryption.key.provider.uri" "kms://http@${rangerkms}:9292/kms"
+    set_config "set" "core-site" "hadoop.security.key.provider.path" "kms://http@${rangerkms}:9292/kms"
+    set_config "set" "kms-env" "kms_port" "9292"
+    log "ODP Ranger KMS SSL configuration reverted." "${GREEN}"
 }
 
-
-# Function to disable SSL for HBase
 disable_hbase_ssl() {
+    log "Disabling SSL for HBase..." "${GREEN}"
     set_config "set" "hbase-site" "hbase.ssl.enabled" "false"
     set_config "set" "hbase-site" "hadoop.ssl.enabled" "false"
 }
 
-# Function to disable SSL for Spark2
 disable_spark2_ssl() {
+    log "Disabling SSL for Spark2..." "${GREEN}"
     set_config "set" "yarn-site" "spark.authenticate" "false"
     set_config "set" "spark2-defaults" "spark.authenticate" "false"
     set_config "set" "spark2-defaults" "spark.authenticate.enableSaslEncryption" "false"
@@ -144,21 +207,18 @@ disable_spark2_ssl() {
     set_config "set" "spark2-defaults" "spark.ui.https.enabled" "false"
     set_config "set" "spark2-hive-site-override" "hive.server2.transport.mode" "binary"
     set_config "set" "spark2-hive-site-override" "hive.server2.use.SSL" "false"
-
-    # Delete Livy SSL configurations
     set_config "delete" "livy2-conf" "livy.keystore"
     set_config "delete" "livy2-conf" "livy.keystore.password"
     set_config "delete" "livy2-conf" "livy.key-password"
 }
 
 disable_spark3_ssl() {
+    log "Disabling SSL for Spark3..." "${GREEN}"
     set_config "set" "yarn-site" "spark.authenticate" "false"
     set_config "set" "spark3-defaults" "spark.authenticate" "false"
     set_config "set" "spark3-defaults" "spark.authenticate.enableSaslEncryption" "false"
     set_config "set" "spark3-defaults" "spark.ssl.enabled" "false"
     set_config "set" "spark3-defaults" "spark.ui.https.enabled" "false"
-
-    # Delete SSL configurations
     set_config "delete" "spark3-defaults" "spark.ssl.keyPassword"
     set_config "delete" "spark3-defaults" "spark.ssl.keyStore"
     set_config "delete" "spark3-defaults" "spark.ssl.keyStorePassword"
@@ -167,65 +227,45 @@ disable_spark3_ssl() {
     set_config "delete" "spark3-defaults" "spark.ssl.trustStorePassword"
 }
 
-# Function to disable SSL for Oozie
 disable_oozie_ssl() {
+    log "Disabling SSL for Oozie..." "${GREEN}"
     set_config "set" "oozie-site" "oozie.https.enabled" "false"
-    set_config "set" "oozie-site" "oozie.base.url" "http://$OOZIE_HOSTNAME:11000/oozie"
+    set_config "set" "oozie-site" "oozie.base.url" "http://${OOZIE_HOSTNAME}:11000/oozie"
 }
 
-# Function to display service options
+# Interactive menu with colored output
 display_service_options() {
-    echo "Select services to disable SSL:"
-    echo "1) HDFS YARN MR"
-    echo "2) Infra-Solr"
-    echo "3) Hive"
-    echo "4) Ranger Admin"
-    echo "5) Spark2"
-    echo "6) Kafka"
-    echo "7) HBase"
-    echo "8) Spark3"
-    echo "9) Oozie"
-    echo "10) Ranger KMS"
-    echo "A) All"
-    echo "Q) Quit"
+    echo -e "\n${GREEN}Choose the services for which to disable SSL:${NC}"
+    echo -e "${CYAN}1) HDFS/YARN/MR${NC}"
+    echo -e "${CYAN}2) Infra-Solr${NC}"
+    echo -e "${CYAN}3) Hive${NC}"
+    echo -e "${CYAN}4) Ranger Admin${NC}"
+    echo -e "${CYAN}5) Spark2${NC}"
+    echo -e "${CYAN}6) Kafka${NC}"
+    echo -e "${CYAN}7) HBase${NC}"
+    echo -e "${CYAN}8) Spark3${NC}"
+    echo -e "${CYAN}9) Oozie${NC}"
+    echo -e "${CYAN}10) Ranger KMS${NC}"
+    echo -e "${GREEN}A) All Services${NC}"
+    echo -e "${RED}Q) Quit${NC}"
+    echo -ne "${GREEN}Enter your choice: ${NC}"
 }
 
-# Select services to disable SSL
+# Main interactive loop
 while true; do
     display_service_options
-    read -p "Enter your choice: " choice
-
+    read choice
     case $choice in
-        1)
-            disable_hdfs_ssl
-            ;;
-        2)
-            disable_infra_solr_ssl
-            ;;
-        3)
-            disable_hive_ssl
-            ;;
-        4)
-            disable_ranger_ssl
-            ;;
-        5)
-            disable_spark2_ssl
-            ;;
-        6)
-            disable_kafka_ssl
-            ;;
-        7)
-            disable_hbase_ssl
-            ;;
-        8)
-            disable_spark3_ssl
-            ;;
-        9)
-            disable_oozie_ssl
-            ;; 
-        10)
-            disable_ranger_kms_ssl
-            ;;          
+        1)  disable_hdfs_ssl ;;
+        2)  disable_infra_solr_ssl ;;
+        3)  disable_hive_ssl ;;
+        4)  disable_ranger_ssl ;;
+        5)  disable_spark2_ssl ;;
+        6)  disable_kafka_ssl ;;
+        7)  disable_hbase_ssl ;;
+        8)  disable_spark3_ssl ;;
+        9)  disable_oozie_ssl ;;
+        10) disable_ranger_kms_ssl ;;
         [Aa])
             disable_hdfs_ssl
             disable_infra_solr_ssl
@@ -237,24 +277,22 @@ while true; do
             disable_spark3_ssl
             disable_oozie_ssl
             disable_ranger_kms_ssl
-            ;;            
-        [Qq])
-            echo "Exiting..."
-            break
             ;;
+        [Qq])
+            log "Exiting script as requested by user." "${RED}"
+            break ;;
         *)
-            echo "Invalid choice"
+            log "Invalid choice. Please try again." "${RED}"
             ;;
     esac
 done
 
-# Move generated JSON files to /tmp if they exist
+# Post-execution: Move generated JSON files to /tmp if they exist
 if ls doSet_version* 1> /dev/null 2>&1; then
     mv doSet_version* /tmp
-    echo "JSON files moved to /tmp."
+    echo -e "${GREEN}JSON files moved to /tmp.${NC}"
 else
-    echo "No JSON files found to move."
+    echo -e "${CYAN}No JSON files found to move.${NC}"
 fi
 
-echo "Script execution completed."
-echo -e "${GREEN}Access the Ambari UI and initiate a restart for the affected services to apply the changes.${NC}"
+echo -e "${GREEN}Script execution completed. Access the Ambari UI and restart affected services to apply changes.${NC}"
