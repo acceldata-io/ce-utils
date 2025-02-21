@@ -126,7 +126,7 @@ disable_ranger_kms_ssl() {
 
     # Revert HDFS encryption key provider properties to use HTTP
     set_config set "hdfs-site" "dfs.encryption.key.provider.uri" "kms://http@$rangerkms:9292/kms"
-    set_config set "hdfs-site" "hadoop.security.key.provider.path" "kms://http@$rangerkms:9292/kms"    
+    set_config set "core-site" "hadoop.security.key.provider.path" "kms://http@$rangerkms:9292/kms"    
     echo -e "${GREEN}ODP Ranger KMS SSL configuration reverted.${NC}"
 }
 
