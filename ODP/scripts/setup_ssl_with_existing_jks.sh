@@ -194,6 +194,8 @@ enable_ranger_kms_ssl() {
     # Configure HDFS encryption properties to use Ranger KMS as the key provider
     set_config "hdfs-site" "dfs.encryption.key.provider.uri" "kms://https@$rangerkms:9393/kms"
     set_config "core-site" "hadoop.security.key.provider.path" "kms://https@$rangerkms:9393/kms"
+    # Set KMS port for Alert
+    set_config "kms-env" "kms_port" "9393"
     
     echo -e "${GREEN}ODP Ranger KMS SSL configuration applied.${NC}"
 }
