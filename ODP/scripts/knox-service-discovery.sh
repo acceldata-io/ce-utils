@@ -320,6 +320,11 @@ write_sso_provider() {
         "hadoop.security.group.mapping.ldap.search.attr.group.name": "${LDAP_GROUP_ID_ATTRIBUTE}",
         "hadoop.security.group.mapping.ldap.search.filter.group": "${LDAP_GROUP_SEARCH_FILTER}"
       }
+    },
+    {
+      "role": "authorization",
+      "name": "AclsAuthz",
+      "enabled": "true"
     }
   ]
 }
