@@ -325,6 +325,21 @@ write_sso_provider() {
       "role": "authorization",
       "name": "AclsAuthz",
       "enabled": "true"
+    },
+    {
+      "role": "ha",
+      "name": "HaProvider",
+      "enabled": "true",
+      "params": {
+        "HIVE": "maxFailoverAttempts=10;failoverSleep=1000;maxRetryAttempts=5;retrySleep=1000;enableStickySession=true;enabled=auto",
+        "YARN": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=auto",
+        "WEBHDFS": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=auto",
+        "WEBHBASE": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=auto",
+        "OOZIE": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=auto",
+        "KAFKA": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=auto",
+        "HBASE": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=auto",
+        "YARN": "maxFailoverAttempts=5;failoverSleep=5000;maxRetryAttempts=3;retrySleep=1000;enabled=auto"
+      }
     }
   ]
 }
