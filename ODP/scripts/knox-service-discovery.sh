@@ -189,7 +189,7 @@ sleep 5
 # Write Knox Custom Provider Configuration
 #---------------------------
 write_custom_provider() {
-    KNOX_CUSTOM_PROVIDER="/etc/knox/conf/shared-providers/custom-provider.xml"
+    KNOX_CUSTOM_PROVIDER="/etc/knox/conf/shared-providers/custom-provider.json"
     TARGET_DIR=$(dirname "${KNOX_CUSTOM_PROVIDER}")
     if [[ ! -d "${TARGET_DIR}" ]]; then
       error "Directory ${TARGET_DIR} does not exist. Exiting."
@@ -197,86 +197,71 @@ write_custom_provider() {
     fi
     info "Writing Knox custom provider configuration to ${KNOX_CUSTOM_PROVIDER}..."
     cat <<EOF > "${KNOX_CUSTOM_PROVIDER}"
-<gateway>
-	<provider>
-		<role>authentication</role>
-		<name>ShiroProvider</name>
-		<enabled>true</enabled>
-		<param>
-			<name>sessionTimeout</name>
-			<value>30</value>
-		</param>
-		<param>
-			<name>main.ldapRealm</name>
-			<value>org.apache.hadoop.gateway.shirorealm.KnoxLdapRealm</value>
-		</param>
-		<param>
-			<name>main.ldapContextFactory</name>
-			<value>org.apache.hadoop.gateway.shirorealm.KnoxLdapContextFactory</value>
-		</param>
-		<!-- main.ldapRealm.contextFactory needs to be placed before other main.ldapRealm.contextFactory* entries  -->
-		<param>
-			<name>main.ldapRealm.contextFactory</name>
-			<value>\$ldapContextFactory</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.contextFactory.url</name>
-			<value>${LDAP_PROTOCOL}://${LDAP_HOST}:${LDAP_PORT}</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.contextFactory.systemUsername</name>
-			<value>${LDAP_BIND_USER}</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.contextFactory.systemPassword</name>
-			<value>${LDAP_BIND_PASSWORD}</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.contextFactory.authenticationMechanism</name>
-			<value>simple</value>
-		</param>
-		<param>
-			<name>urls./**</name>
-			<value>authcBasic</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.searchBase</name>
-			<value>${LDAP_BASE_DN}</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.userSearchBase</name>
-			<value>${LDAP_USER_SEARCH_BASE}</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.userSearchFilter</name>
-			<value>${LDAP_USER_SEARCH_FILTER}</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.userObjectClass</name>
-			<value>${LDAP_USER_OBJECT_CLASS}</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.userSearchAttributeName</name>
-			<value>${LDAP_USER_SEARCH_ATTRIBUTE}</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.groupSearchBase</name>
-			<value>${LDAP_GROUP_SEARCH_BASE}</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.groupObjectClass</name>
-			<value>${LDAP_GROUP_OBJECT_CLASS}</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.memberAttribute</name>
-			<value>${LDAP_MEMBER_ATTRIBUTE}</value>
-		</param>
-		<param>
-			<name>main.ldapRealm.groupIdAttribute</name>
-			<value>${LDAP_GROUP_ID_ATTRIBUTE}</value>
-		</param>
-	</provider>
-</gateway>
+{
+  "providers": [
+    {
+      "role": "authentication",
+      "name": "ShiroProvider",
+      "enabled": "true",
+      "params": {
+        "sessionTimeout": "30",
+        "main.ldapRealm": "org.apache.hadoop.gateway.shirorealm.KnoxLdapRealm",
+        "main.ldapContextFactory": "org.apache.hadoop.gateway.shirorealm.KnoxLdapContextFactory",
+        "main.ldapRealm.contextFactory": "\$ldapContextFactory",
+        "main.ldapRealm.contextFactory.url": "${LDAP_URL}",
+        "main.ldapRealm.contextFactory.systemUsername": "${LDAP_BIND_USER}",
+        "main.ldapRealm.contextFactory.systemPassword": "${LDAP_BIND_PASSWORD}",
+        "main.ldapRealm.contextFactory.authenticationMechanism": "simple",
+        "urls./**": "authcBasic",
+        "main.ldapRealm.searchBase": "${LDAP_BASE_DN}",
+        "main.ldapRealm.userSearchBase": "${LDAP_USER_SEARCH_BASE}",
+        "main.ldapRealm.userSearchFilter": "${LDAP_USER_SEARCH_FILTER}",
+        "main.ldapRealm.userObjectClass": "${LDAP_USER_OBJECT_CLASS}",
+        "main.ldapRealm.userSearchAttributeName": "${LDAP_USER_SEARCH_ATTRIBUTE}",
+        "main.ldapRealm.groupSearchBase": "${LDAP_GROUP_SEARCH_BASE}",
+        "main.ldapRealm.groupObjectClass": "${LDAP_GROUP_OBJECT_CLASS}",
+        "main.ldapRealm.memberAttribute": "${LDAP_MEMBER_ATTRIBUTE}",
+        "main.ldapRealm.groupIdAttribute": "${LDAP_GROUP_ID_ATTRIBUTE}"
+      }
+    },
+    {
+      "role": "identity-assertion",
+      "name": "HadoopGroupProvider",
+      "enabled": "true",
+      "params": {
+        "hadoop.security.group.mapping": "org.apache.hadoop.security.LdapGroupsMapping",
+        "hadoop.security.group.mapping.ldap.url": "${LDAP_URL}",
+        "hadoop.security.group.mapping.ldap.bind.user": "${LDAP_BIND_USER}",
+        "hadoop.security.group.mapping.ldap.bind.password": "${LDAP_BIND_PASSWORD}",
+        "hadoop.security.group.mapping.ldap.base": "${LDAP_BASE_DN}",
+        "hadoop.security.group.mapping.ldap.search.filter.user": "${LDAP_USER_SEARCH_FILTER}",
+        "hadoop.security.group.mapping.ldap.search.attr.member": "${LDAP_MEMBER_ATTRIBUTE}",
+        "hadoop.security.group.mapping.ldap.search.attr.group.name": "${LDAP_GROUP_ID_ATTRIBUTE}",
+        "hadoop.security.group.mapping.ldap.search.filter.group": "${LDAP_GROUP_SEARCH_FILTER}"
+      }
+    },
+    {
+      "role": "authorization",
+      "name": "AclsAuthz",
+      "enabled": "true"
+    },
+    {
+      "role": "ha",
+      "name": "HaProvider",
+      "enabled": "true",
+      "params": {
+        "HIVE": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enableStickySession=true;enabled=true",
+        "YARN": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=true",
+        "WEBHDFS": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=true",
+        "WEBHBASE": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=true",
+        "OOZIE": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=true",
+        "KAFKA": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=true",
+        "HBASE": "maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=true",
+        "YARN": "maxFailoverAttempts=5;failoverSleep=5000;maxRetryAttempts=3;retrySleep=1000;enabled=true"
+      }
+    }
+  ]
+}
 EOF
     chown knox:hadoop "${KNOX_CUSTOM_PROVIDER}"
     info "Custom provider configuration updated successfully."
