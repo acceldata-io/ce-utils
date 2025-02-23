@@ -10,7 +10,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
-
+MAGENTA="\033[0;35m"
 #---------------------------
 # Check if Knox Process is Running
 #---------------------------
@@ -114,7 +114,7 @@ echo "LDAP_PROTOCOL:           $LDAP_PROTOCOL"
 echo "LDAP_PORT:               $LDAP_PORT"
 echo "LDAP_URL:                $LDAP_URL"
 echo "LDAP_BIND_USER:          $LDAP_BIND_USER"
-echo "LDAP_BIND_PASSWORD:      $LDAP_BIND_PASSWORD"
+echo "LDAP_BIND_PASSWORD:      ***************"
 echo "LDAP_BASE_DN:            $LDAP_BASE_DN"
 echo "LDAP_USER_SEARCH_FILTER: $LDAP_USER_SEARCH_FILTER"
 echo "LDAP_GROUP_SEARCH_FILTER: $LDAP_GROUP_SEARCH_FILTER"
@@ -127,8 +127,8 @@ echo "LDAP_GROUP_ID_ATTR:      $LDAP_GROUP_ID_ATTRIBUTE"
 echo "LDAP_MEMBER_ATTR:        $LDAP_MEMBER_ATTRIBUTE"
 echo "TOPOLOGY_SSO_PROXY_UI:   $TOPOLOGY_SSO_PROXY_UI"
 echo "TOPOLOGY_PROXY:          $TOPOLOGY_PROXY"
-echo "========================================================${NC}\n"
-echo -e "${YELLOW}Proceed with these configuration variables? (y/n): ${NC}"
+echo -e "========================================================${NC}\n"
+echo -e "${MAGENTA}Proceed with these configuration variables? (y/n): ${NC}"
 read -r confirm
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
     echo -e "${RED}User aborted. Exiting.${NC}"
