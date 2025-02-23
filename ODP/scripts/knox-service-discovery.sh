@@ -1,16 +1,21 @@
 #!/bin/bash
 # Acceldata Inc.
+#
+# Copyright (c) 2025 Acceldata Inc.
+# All rights reserved.
 set -euo pipefail
 IFS=$'\n\t'
 
 #---------------------------
 # Color Variables
 #---------------------------
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-MAGENTA="\033[0;35m"
+RED="\033[1;31m"
+GREEN="\033[1;32m"
+YELLOW="\033[1;33m"
+MAGENTA="\033[1;35m"
+CYAN="\033[1;36m"
+NC="\033[0m"
+
 #---------------------------
 # Check if Knox Process is Running
 #---------------------------
@@ -97,43 +102,95 @@ fetch_cluster() {
 # Fetch cluster name first so it can be shown to the user.
 fetch_cluster
 
-#---------------------------
-# Display Configuration & Confirm
-#---------------------------
-echo -e "${YELLOW}========================================================"
-echo "Configuration Variables:"
-echo "--------------------------------------------------------"
-echo "AMBARI_SERVER:           $AMBARI_SERVER"
-echo "AMBARI_USER:             $AMBARI_USER"
-echo "AMBARI_PASSWORD:         $AMBARI_PASSWORD"
-echo "AMBARI_PORT:             $AMBARI_PORT"
-echo "AMBARI_PROTOCOL:         $AMBARI_PROTOCOL"
-echo "Cluster Name:            $CLUSTER"
-echo "LDAP_HOST:               $LDAP_HOST"
-echo "LDAP_PROTOCOL:           $LDAP_PROTOCOL"
-echo "LDAP_PORT:               $LDAP_PORT"
-echo "LDAP_URL:                $LDAP_URL"
-echo "LDAP_BIND_USER:          $LDAP_BIND_USER"
-echo "LDAP_BIND_PASSWORD:      ***************"
-echo "LDAP_BASE_DN:            $LDAP_BASE_DN"
-echo "LDAP_USER_SEARCH_FILTER: $LDAP_USER_SEARCH_FILTER"
-echo "LDAP_GROUP_SEARCH_FILTER: $LDAP_GROUP_SEARCH_FILTER"
-echo "LDAP_USER_SEARCH_BASE:   $LDAP_USER_SEARCH_BASE"
-echo "LDAP_GROUP_SEARCH_BASE:  $LDAP_GROUP_SEARCH_BASE"
-echo "LDAP_USER_OBJECT_CLASS:  $LDAP_USER_OBJECT_CLASS"
-echo "LDAP_USER_SEARCH_ATTR:   $LDAP_USER_SEARCH_ATTRIBUTE"
-echo "LDAP_GROUP_OBJECT_CLASS: $LDAP_GROUP_OBJECT_CLASS"
-echo "LDAP_GROUP_ID_ATTR:      $LDAP_GROUP_ID_ATTRIBUTE"
-echo "LDAP_MEMBER_ATTR:        $LDAP_MEMBER_ATTRIBUTE"
-echo "TOPOLOGY_SSO_PROXY_UI:   $TOPOLOGY_SSO_PROXY_UI"
-echo "TOPOLOGY_PROXY:          $TOPOLOGY_PROXY"
-echo -e "========================================================${NC}\n"
-echo -e "${MAGENTA}Proceed with these configuration variables? (y/n): ${NC}"
-read -r confirm
-if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    echo -e "${RED}User aborted. Exiting.${NC}"
-    exit 1
+# Set width variables (adjust these as needed)
+TITLE_WIDTH=93
+TABLE_WIDTH=93
+
+# Function to print a centered title line within a decorative banner
+print_title() {
+  local title="$1"
+  local padding=$(( (TITLE_WIDTH - ${#title}) / 2 ))
+  # Top border
+  printf "${CYAN}╔"
+  for ((i=1; i<=TITLE_WIDTH; i++)); do printf "═"; done
+  printf "╗\n"
+  # Title line (using spaces to center)
+  printf "║%*s%s%*s║\n" "$padding" "" "$title" "$padding" ""
+  # If title length is odd, add one extra space for balance
+  (( ${#title} % 2 )) && printf "║ %*s%s%*s║\n" 0 "" "" 0 ""
+  # Bottom border
+  printf "╚"
+  for ((i=1; i<=TITLE_WIDTH; i++)); do printf "═"; done
+  printf "╝${NC}\n"
+}
+
+# Function to print a configuration line within the table
+print_config_line() {
+  local label="$1"
+  local value="$2"
+  # Adjust formatting: label left-aligned with fixed width, then colon and value left-aligned
+  printf "${YELLOW}║ ${MAGENTA}%-28s${YELLOW} : ${GREEN}%-$(($TABLE_WIDTH - 34))s${YELLOW} ║${NC}\n" "$label" "$value"
+}
+
+# Clear screen and display ASCII art header
+clear
+cat << "EOF"
+ ▗▄▖ ▗▄▄▄ ▗▄▄▖     ▗▖ ▗▖▗▖  ▗▖ ▗▄▖ ▗▖  ▗▖
+▐▌ ▐▌▐▌  █▐▌ ▐▌    ▐▌▗▞▘▐▛▚▖▐▌▐▌ ▐▌ ▝▚▞▘ 
+▐▌ ▐▌▐▌  █▐▛▀▘     ▐▛▚▖ ▐▌ ▝▜▌▐▌ ▐▌  ▐▌  
+▝▚▄▞▘▐▙▄▄▀▐▌       ▐▌ ▐▌▐▌  ▐▌▝▚▄▞▘▗▞▘▝▚▖                         
+EOF
+
+# Display the title banner with configuration header
+print_title "Knox LDAP Configuration Variables"
+
+# Top border for configuration table
+printf "${YELLOW}╔"
+for ((i=1; i<=TABLE_WIDTH; i++)); do printf "═"; done
+printf "╗${NC}\n"
+
+# Print configuration items
+print_config_line "AMBARI_SERVER"           "$AMBARI_SERVER"
+print_config_line "AMBARI_USER"             "$AMBARI_USER"
+print_config_line "AMBARI_PASSWORD"         "$AMBARI_PASSWORD"
+print_config_line "AMBARI_PORT"             "$AMBARI_PORT"
+print_config_line "AMBARI_PROTOCOL"         "$AMBARI_PROTOCOL"
+print_config_line "Cluster Name"            "$CLUSTER"
+print_config_line "LDAP_HOST"               "$LDAP_HOST"
+print_config_line "LDAP_PROTOCOL"           "$LDAP_PROTOCOL"
+print_config_line "LDAP_PORT"               "$LDAP_PORT"
+print_config_line "LDAP_URL"                "$LDAP_URL"
+print_config_line "LDAP_BIND_USER"          "$LDAP_BIND_USER"
+print_config_line "LDAP_BIND_PASSWORD"      "***************"
+print_config_line "LDAP_BASE_DN"            "$LDAP_BASE_DN"
+print_config_line "LDAP_USER_SEARCH_FILTER" "$LDAP_USER_SEARCH_FILTER"
+print_config_line "LDAP_GROUP_SEARCH_FILTER" "$LDAP_GROUP_SEARCH_FILTER"
+print_config_line "LDAP_USER_SEARCH_BASE"   "$LDAP_USER_SEARCH_BASE"
+print_config_line "LDAP_GROUP_SEARCH_BASE"  "$LDAP_GROUP_SEARCH_BASE"
+print_config_line "LDAP_USER_OBJECT_CLASS"  "$LDAP_USER_OBJECT_CLASS"
+print_config_line "LDAP_USER_SEARCH_ATTR"   "$LDAP_USER_SEARCH_ATTRIBUTE"
+print_config_line "LDAP_GROUP_OBJECT_CLASS" "$LDAP_GROUP_OBJECT_CLASS"
+print_config_line "LDAP_GROUP_ID_ATTR"      "$LDAP_GROUP_ID_ATTRIBUTE"
+print_config_line "LDAP_MEMBER_ATTR"        "$LDAP_MEMBER_ATTRIBUTE"
+print_config_line "TOPOLOGY_SSO_PROXY_UI"   "$TOPOLOGY_SSO_PROXY_UI"
+print_config_line "TOPOLOGY_PROXY"          "$TOPOLOGY_PROXY"
+
+# Bottom border for configuration table
+printf "${YELLOW}╚"
+for ((i=1; i<=TABLE_WIDTH; i++)); do printf "═"; done
+printf "╝${NC}\n\n"
+
+# Interactive confirmation prompt with a blinking cursor effect
+read -p "$(echo -e ${MAGENTA}'Proceed with these configuration variables? (y/n): '${NC})" -n1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+  echo -e "${GREEN}Proceeding...${NC}"
+else
+  echo -e "${RED}Aborted.${NC}"
+  exit 1
 fi
+
+
 
 #---------------------------
 # Function to Get Host for a Component
@@ -222,22 +279,6 @@ write_custom_provider() {
         "main.ldapRealm.groupObjectClass": "${LDAP_GROUP_OBJECT_CLASS}",
         "main.ldapRealm.memberAttribute": "${LDAP_MEMBER_ATTRIBUTE}",
         "main.ldapRealm.groupIdAttribute": "${LDAP_GROUP_ID_ATTRIBUTE}"
-      }
-    },
-    {
-      "role": "identity-assertion",
-      "name": "HadoopGroupProvider",
-      "enabled": "true",
-      "params": {
-        "hadoop.security.group.mapping": "org.apache.hadoop.security.LdapGroupsMapping",
-        "hadoop.security.group.mapping.ldap.url": "${LDAP_URL}",
-        "hadoop.security.group.mapping.ldap.bind.user": "${LDAP_BIND_USER}",
-        "hadoop.security.group.mapping.ldap.bind.password": "${LDAP_BIND_PASSWORD}",
-        "hadoop.security.group.mapping.ldap.base": "${LDAP_BASE_DN}",
-        "hadoop.security.group.mapping.ldap.search.filter.user": "${LDAP_USER_SEARCH_FILTER}",
-        "hadoop.security.group.mapping.ldap.search.attr.member": "${LDAP_MEMBER_ATTRIBUTE}",
-        "hadoop.security.group.mapping.ldap.search.attr.group.name": "${LDAP_GROUP_ID_ATTRIBUTE}",
-        "hadoop.security.group.mapping.ldap.search.filter.group": "${LDAP_GROUP_SEARCH_FILTER}"
       }
     },
     {
