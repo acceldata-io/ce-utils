@@ -314,7 +314,7 @@ write_sso_provider() {
         "hadoop.security.group.mapping.ldap.url": "${LDAP_URL}",
         "hadoop.security.group.mapping.ldap.bind.user": "${LDAP_BIND_USER}",
         "hadoop.security.group.mapping.ldap.bind.password": "${LDAP_BIND_PASSWORD}",
-        "hadoop.security.group.mapping.ldap.base": "${LDAP_GROUP_SEARCH_BASE}",
+        "hadoop.security.group.mapping.ldap.base": "${LDAP_BASE_DN}",
         "hadoop.security.group.mapping.ldap.search.filter.user": "${LDAP_USER_SEARCH_FILTER}",
         "hadoop.security.group.mapping.ldap.search.attr.member": "${LDAP_MEMBER_ATTRIBUTE}",
         "hadoop.security.group.mapping.ldap.search.attr.group.name": "${LDAP_GROUP_ID_ATTRIBUTE}",
