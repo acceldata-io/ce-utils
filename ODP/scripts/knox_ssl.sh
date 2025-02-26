@@ -1,33 +1,57 @@
 #!/bin/bash
 # Acceldata Inc.
-# Set environment variables
-export keystore=/etc/security/certificates/keystore.jks
-export password=PASSWORD
-export knox_master_secret_password=PASSWORD
-# Cmd to get the alias name "keytool -list -keystore "/etc/security/certificates/keystore.jks" -storepass "$password""
-export alias_name=<alias name from keystore.jks to be used>
+# Script to update Knox SSL certificate and reset Knox master secret password if required.
+# Incorporates backup of all keystore files, auto-detection of alias, configuration confirmation,
+# and an option (FORCE=true) to bypass all user prompts.
 
+# Set environment variables
+export KEYSTORE="/opt/security/pki/keystore.jks"
+export KEYSTORE_PASS="privateKeyPass"             # Set the keystore password here
+export KNox_MASTER_SECRET_PASS="privateKeyPass"     # Set the Knox master secret password (used during Knox installation). Ensure that this matches the keystore password; otherwise, the script may reset it. It needs to be same.
+# Optionally, provide an alias name. If left blank, the script will auto-detect the keystore alias to be used as the PrivateKeyEntry.
+export ALIAS_NAME=""
+
+# Set Knox installation and data directories
+export KNox_DIR="/usr/odp/current/knox-server"
+export DATA_DIR="$KNox_DIR/data/security/keystores"
+export KNox_KEYTOOL="$KNox_DIR/bin/knoxcli.sh"
+
+
+
+# Retrieve Knox user and group from the gateway configuration file
 knox_user_group=$(stat -c %U:%G /etc/knox/conf/gateway-site.xml)
 IFS=':' read -ra knox_user_group_arr <<< "$knox_user_group"
-knox_user="${knox_user_group_arr[0]}"
-knox_group="${knox_user_group_arr[1]}"
-export knox_user
-export knox_group
-export knox_dir=/usr/odp/current/knox-server
-export knox_keytool="$knox_dir/bin/knoxcli.sh"
+export KNox_USER="${knox_user_group_arr[0]}"
+export KNox_GROUP="${knox_user_group_arr[1]}"
 
+# Define colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+GRAY='\033[90m'
 NC='\033[0m'  # No Color
 
-# Function to log errors and exit
+# Logging error and exit
 log_error() {
-    echo "Error: $1" >&2
+    echo -e "${YELLOW}Error:${NC} $1" >&2
     exit 1
 }
 
-# Function to prompt yes/no and proceed
+# Run important commands and display them in gray
+run_important_cmd() {
+    echo -e "${GRAY}Running: $*${NC}"
+    "$@"
+    local status=$?
+    if [ $status -ne 0 ]; then
+        log_error "Important command failed: $*"
+    fi
+}
+
+# Prompt for yes/no, unless FORCE=true
 prompt_yes_no() {
+    if [ "$FORCE" == "true" ]; then
+        echo -e "${GRAY}FORCE enabled: Skipping prompt '$1'${NC}"
+        return 0
+    fi
     while true; do
         read -r -p "$1 (yes/no): " choice
         case "$choice" in
@@ -38,73 +62,118 @@ prompt_yes_no() {
     done
 }
 
-# Function to update Knox with the new certificate
-update_knox_certificate() {
-    # Check if the Common Name (CN) in the issuer and subject are the same
-    if [ "$issuer_cn" == "$subject_cn" ]; then
-        echo -e "The ${GREEN}KNOX certificate${NC} is ${GREEN}self-signed${NC} as the subject and issuer are the same."
-        echo -e "Replacing Knox Self-Signed Certificate with the Provided Certificate......"
-        echo ""
-        echo -e "🔑 Please ensure that you have set all variables correctly."
-        echo -e "🔐 ${GREEN}keystore:${NC} $keystore"
-        echo -e "🔐 ${GREEN}password:${NC} ${YELLOW}********${NC}"  # Replace with actual keystore password
-        echo -e "🔐 ${GREEN}alias_name:${NC} $alias_name"  # Replace with keystore alias name to be used as PrivateKeyEntry
-        echo -e "🔐 ${GREEN}knox_master_secret_password:${NC} ${YELLOW}********${NC}"  # Replace with knox_master_secret_password used during Knox installation.
-        echo -e "Do the variables look correct for Knox SSL setup and prceeed?"
-        if prompt_yes_no ; then
-            # Take a backup with the date
-            date=$(date +"%Y%m%d")
-            backup_dir="/var/lib/knox/data/security/keystores/backup$date"
-            mkdir -p "$backup_dir"
-            mv "/var/lib/knox/data/security/keystores/__gateway-credentials.jceks" "$backup_dir/gateway.jks"
+# Create a timestamped backup of all files in the keystore directory
+backup_keystore() {
+    local base_backup_dir="$DATA_DIR/backup_$(date +"%Y%m%d")"
+    local backup_dir="$base_backup_dir"
+    local counter=1
 
-            # Copy the new keystore to the specified location
-            cp "$keystore" "/var/lib/knox/data/security/keystores/keystore.jks"
+    # Ensure unique backup directory if one already exists.
+    while [ -d "$backup_dir" ]; do
+        backup_dir="${base_backup_dir}_$counter"
+        counter=$((counter + 1))
+    done
 
-            # Check if the variable alias_name is not set or Get the alias name from keystore.jks
-           if [ -z "$alias_name" ]; then
-           alias_name=$(keytool -list -v -keystore "/var/lib/knox/data/security/keystores/keystore.jks" -storepass "$password" | grep "Alias name:" | awk -F' ' '{print $3}' | egrep -v "intca|interca|rootca" | grep $HOSTNAME)
-           fi
+    mkdir -p "$backup_dir" || log_error "Cannot create backup directory $backup_dir."
+    # Move all files from DATA_DIR to the backup directory.
+    mv "$DATA_DIR"/* "$backup_dir"/ || log_error "Failed to move files to backup directory."
+    echo -e "Backup created at: ${YELLOW}$backup_dir${NC}"
+}
 
-            # Change the alias name to "gateway-identity"
-            keytool -changealias -keystore "/var/lib/knox/data/security/keystores/keystore.jks" -storepass "$password" -alias "$alias_name" -destalias "gateway-identity"
-
-            echo -e "Do you Want to Reset the Knox Master Secret Password?"
-
-            # Check if $password and $knox_master_secret_password are the same
-            if prompt_yes_no; then
-                # The user answered "yes," so reset the Knox Master Secret Password
-                rm -rf "$knox_dir/data/security/master"
-
-                # Switch to the user and execute the knoxcli commands
-                sudo -u "$knox_user" "$knox_keytool" create-master --force --master "$password"
-
-                # Ensure ownership and group ownership are the same as "/etc/knox/conf/gateway-site.xml" file
-                chown "$knox_user:$knox_group" "$knox_dir/data/security/master"
-            else
-                echo "Exiting..."
-                return 1  # Exit the function with a non-zero status
+# Verify keystore access and auto-detect alias if not provided.
+detect_alias() {
+    echo -e "Verifying keystore accessibility..."
+    if ! keytool -list -keystore "$KEYSTORE" -storepass "$KEYSTORE_PASS" -alias "$ALIAS_NAME" &>/dev/null; then
+        if [ -z "$ALIAS_NAME" ]; then
+            if ! keytool -list -keystore "$KEYSTORE" -storepass "$KEYSTORE_PASS" &>/dev/null; then
+                log_error "Unable to open keystore '$KEYSTORE'. Check that the password is correct."
             fi
-
-            # Create the alias and rename the keystore
-            "$knox_keytool" create-alias gateway-identity --value "$password"
-            mv "/var/lib/knox/data/security/keystores/keystore.jks" "/var/lib/knox/data/security/keystores/gateway.jks"
-
-            # Ensure ownership and group ownership are set correctly for the files
-            chown "$knox_user:$knox_group" "/var/lib/knox/data/security/keystores/gateway.jks"
-            chown "$knox_user:$knox_group" "/var/lib/knox/data/security/keystores/__gateway-credentials.jceks"
-
-            echo -e "${GREEN}Replacing Knox Self-Signed Certificate with CA Certificate is successful.${NC}"
-
-            echo -e "Knox Backup files stored under ${YELLOW}$backup_dir${NC}"
-            echo -e "Please restart the Knox Service from Ambari UI to apply the changes."
         else
-            echo "Exiting..."
-            exit 1
+            log_error "Alias '$ALIAS_NAME' not found or keystore password is incorrect. Please verify the alias and password."
         fi
-    else
-        log_error "The certificate is not self-signed or the subject and issuer are different."
     fi
+
+    if [ -z "$ALIAS_NAME" ]; then
+        echo "No keystore alias specified. Attempting to detect alias from keystore..."
+        alias_list=$(keytool -list -v -keystore "$KEYSTORE" -storepass "$KEYSTORE_PASS" 2>/dev/null | \
+                     grep -E "Alias name:" | awk '{print $3}' | grep -ivE "intca|interca|rootca")
+        # If multiple aliases exist, filter for ones containing the hostname.
+        if [ -n "$alias_list" ]; then
+            host_aliases=$(echo "$alias_list" | grep -i "$(hostname)" || true)
+            if [ -n "$host_aliases" ]; then
+                alias_list="$host_aliases"
+            fi
+        fi
+        alias_count=$(echo "$alias_list" | sed '/^$/d' | wc -l)
+        if [ "$alias_count" -eq 0 ]; then
+            log_error "Could not auto-determine the alias. Please specify ALIAS_NAME manually."
+        elif [ "$alias_count" -gt 1 ]; then
+            log_error "Multiple alias entries found in keystore ($(echo "$alias_list" | tr '\n' ',' | sed 's/,$//')). Please specify ALIAS_NAME manually."
+        fi
+        ALIAS_NAME=$(echo "$alias_list" | sed -n '1p')
+        echo -e "Detected keystore alias: ${GREEN}$ALIAS_NAME${NC}"
+    fi
+}
+
+# Confirm configuration with user before proceeding.
+confirm_configuration() {
+    echo -e "\n Make sure run Script on Knox node: Please review the settings below before continuing:"
+    echo -e " - ${GREEN}Keystore file:${NC} $KEYSTORE"
+    echo -e " - ${GREEN}Keystore password:${NC} ${YELLOW}********${NC}"
+    echo -e " - ${GREEN}Certificate alias:${NC} $ALIAS_NAME"
+    echo -e " - ${GREEN}Knox master secret (current):${NC} ${YELLOW}********${NC}"
+    if ! prompt_yes_no "Are these details correct? Do you want to continue?"; then
+        log_error "User canceled the certificate replacement."
+    fi
+}
+
+# Update Knox certificate and optionally reset Knox master secret password.
+update_knox_certificate() {
+    detect_alias
+
+    # Confirm configuration details with the user.
+    confirm_configuration
+
+    # Check certificate self-sign status. If FORCE is true, skip the check.
+    if [ "$issuer_cn" == "$subject_cn" ] || [ "$FORCE" == "true" ]; then
+        echo -e "${GREEN}Proceeding with certificate replacement...${NC}"
+    else
+        log_error "Certificate validation failed: The certificate is not self-signed (issuer and subject CNs differ). Use FORCE=true to override."
+    fi
+
+    echo -e "${GREEN}Replacing Knox Self-Signed Certificate with the Provided CA Certificate...${NC}"
+    backup_keystore
+
+    # Copy the new keystore into place.
+    cp "$KEYSTORE" "$DATA_DIR/keystore.jks" || log_error "Failed to copy new keystore."
+
+    # Important command: Change the alias to "gateway-identity"
+    run_important_cmd keytool -changealias -keystore "$DATA_DIR/keystore.jks" \
+        -storepass "$KEYSTORE_PASS" -alias "$ALIAS_NAME" -destalias "gateway-identity"
+
+    # Always prompt whether to reset the Knox master secret password, even if passwords match.
+    if prompt_yes_no "Would you like to reset the Knox master secret password using the keystore password? Both needs to be same. (If unsure, it's recommended)"; then
+        rm -rf "$KNox_DIR/data/security/master" || log_error "Failed to remove Knox master directory."
+        run_important_cmd sudo -u "$KNox_USER" "$KNox_KEYTOOL" create-master --force --master "$KEYSTORE_PASS"
+        chown "$KNox_USER:$KNox_GROUP" "$KNox_DIR/data/security/master" || \
+            log_error "Failed to set ownership for Knox master directory."
+        echo -e "${GREEN}Knox master secret password has been reset successfully.${NC}"
+    else
+        echo -e "${GREEN}Skipping reset of Knox master secret password.${NC}"
+    fi
+
+    # Important command: Create the alias using Knox keytool.
+    run_important_cmd "$KNox_KEYTOOL" create-alias gateway-identity --value "$KEYSTORE_PASS"
+
+    # Rename the keystore to gateway.jks.
+    mv "$DATA_DIR/keystore.jks" "$DATA_DIR/gateway.jks" || log_error "Failed to rename keystore."
+
+    # Ensure correct ownership of the new keystore and credentials files.
+    chown "$KNox_USER:$KNox_GROUP" "$DATA_DIR/gateway.jks" || log_error "Failed to set ownership for gateway.jks."
+    chown "$KNox_USER:$KNox_GROUP" "$DATA_DIR/__gateway-credentials.jceks" 2>/dev/null
+
+    echo -e "${GREEN}Knox certificate replacement was successful.${NC}"
+    echo -e "Please restart the Knox Service (e.g., via Ambari UI) to apply the changes."
 }
 
 # Run the openssl command to extract the certificate and save it to a temporary file
