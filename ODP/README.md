@@ -9,7 +9,8 @@ Here is a set of Bash scripts created to streamline various tasks within your OD
 5. [Setup Ranger LDAP](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ranger_ldap.sh)
 6. [Ambari Services Configuration backup and Restore](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/config_backup_restore.sh)
 7. [Impala SSL](https://github.com/acceldata-io/ce-utils/blob/main/ODP/README.md#7-impala-configuration-for-ssl)
-8. [JAR Management Script](https://github.com/acceldata-io/ce-utils/tree/main/ODP#8-jar-management-script)
+8. [Disable SSL for Hadoop Services]()
+9. [Knox LDAP Configuration and Ambari Integration]()
 
 ## Detailed Information
 
@@ -35,7 +36,8 @@ To make use of this script for enabling SSL in your ODP environment, perform the
   - **keystore_p12:** Ensure the PKCS12 format keystore file is present on the Infra-Solr node.
   - **truststore_p12:** Verify that the PKCS12 format truststore file is present on the Infra-Solr node.
 
-<img width="802" alt="image" src="https://github.com/acceldata-io/ce-utils/assets/28974904/c9d220de-fb52-4cab-8635-05c5c3267d77">
+#<img width="802" alt="image" src="https://github.com/acceldata-io/ce-utils/assets/28974904/c9d220de-fb52-4cab-8635-05c5c3267d77">
+<img width="1511" alt="image" src="https://github.com/user-attachments/assets/0ca72992-4b51-4937-8eca-24743aa555b2" />
 
 ### 2. Setup Ambari SSL
 - **Script:** [setup_ssl_ambari.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ssl_ambari.sh)
@@ -112,88 +114,117 @@ python $CONFIG_SCRIPT -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMB
 python $CONFIG_SCRIPT -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER -c impala-env -k client_services_ssl_enabled -v true
 ```
 
-### 8. JAR Management Script
+### 8. Disable SSL for Hadoop Services
 
-This script provides functionalities to backup, replace, and restore JAR files in a specified directory. It is designed to handle JAR files used in applications, allowing you to safely back up, replace with a specific JAR, and restore files as needed.
+#### Overview
+This script is designed to disable SSL configurations for various Hadoop-related services managed via Ambari API. It provides an interactive menu to selectively disable SSL for specific services or all at once.
 
-## Features
-
-- **Backup**: Backs up specified JAR files to a designated backup directory.
-- **Replace**: Replaces original JAR files with a specified replacement JAR file.
-- **Restore**: Restores JAR files from the backup directory to their original locations.
-- **Dry Run**: Optionally simulate actions without executing them.
-
-## Prerequisites
-
-- Ensure you have read and write permissions to the specified directories.
-- The replacement JAR file (`reload4j-1.2.19.jar`) should be located at `/root/`.
-
-## Script Variables
-
-- `DIR`: Directory containing the JAR files to be managed.
-- `BACKUPDIR`: Directory where backup files will be stored.
-- `JAR_FILES`: Array of JAR filenames to be backed up, replaced, and restored.
-- `REPLACEMENT_JAR`: Path to the replacement JAR file.
-- `DRY_RUN`: Flag to enable or disable dry-run mode (default is `true`).
-
-## Usage
-
-### 1. Backup JAR Files
-
-Back up the specified JAR files to the backup directory.
+#### Usage
+Run the script with the following command-line options:
 
 ```bash
-./manage_jars.sh backup
+./disable_ssl.sh [-s <ambari_server>] [-u <user>] [-p <password>] [-P <port>] [-r <protocol>]
 ```
 
-### 2. Replace JAR Files
+### Options:
+- `-s <server>` : Ambari server hostname (default: detected automatically)
+- `-u <user>` : Ambari API username (default: admin)
+- `-p <password>` : Ambari API password (default: admin)
+- `-P <port>` : Ambari API port (default: 8080)
+- `-r <protocol>` : Protocol to use (default: http)
+- `-h` : Display help information
 
-Replace the original JAR files with the `reload4j-1.2.19.jar`. Ensure the replacement JAR is located at `/root/`.
+#### Features
+- **Interactive menu:** Choose specific services to disable SSL for.
+- **Logging:** Outputs logs to `/tmp/disable_ssl.log`.
+- **Automatic cluster detection:** Fetches the cluster name dynamically.
+- **Graceful handling:** Includes interruption handling to exit safely.
+
+#### Services Supported
+This script can disable SSL for the following Hadoop ecosystem components:
+- HDFS, YARN, MapReduce
+- Infra-Solr
+- Hive
+- Ranger Admin
+- Ranger KMS
+- Kafka
+- HBase
+- Spark2
+- Spark3
+- Oozie
+
+#### Example
+Disable SSL for Hive and Ranger Admin:
+```bash
+./disable_ssl.sh -s my-ambari-server -u admin -p password -P 8080 -r http
+```
+Follow the interactive prompts to disable SSL for specific services.
+
+## License
+This script is provided by **Acceldata Inc** and is intended for internal use and administration of Hadoop clusters.
+
+<img width="627" alt="image" src="https://github.com/user-attachments/assets/7cdcb118-04a7-45b3-b66b-aeb67d7ba4b1" />
+
+
+### 9. Knox LDAP Configuration and Ambari Integration
+
+#### Overview
+This script automates the configuration of Knox with LDAP authentication and integrates it with Ambari for secure access control. It includes validation checks, Ambari cluster detection, and interactive prompts to ensure correct configurations.
+
+#### Usage
+Run the script with root privileges:
 
 ```bash
-./manage_jars.sh replace
+sudo ./knox-service-discovery.sh
 ```
 
-### 3. Restore JAR Files
+#### Features
+- **Knox Process Check:** Ensures Knox is running before proceeding.
+- **Ambari Integration:** Fetches cluster details dynamically from Ambari.
+- **LDAP Configuration:** Defines parameters for LDAP authentication and group mapping.
+- **Interactive Validation:** Displays current settings before applying changes.
+- **Automated Topology Management:** Updates Knox topology and provider configurations.
+- **Logging & Error Handling:** Provides clear status updates and error messages.
 
-Restore the JAR files from the backup directory to their original locations.
+#### Configuration Variables
+The script sets up essential variables for Knox and Ambari integration:
 
+| Parameter                 | Description |
+|---------------------------|-------------|
+| `AMBARI_SERVER`           | Ambari server hostname |
+| `AMBARI_USER`             | Ambari API username |
+| `AMBARI_PASSWORD`         | Ambari API password |
+| `AMBARI_PORT`             | Ambari API port (default: 8080) |
+| `AMBARI_PROTOCOL`         | HTTP/HTTPS protocol |
+| `LDAP_HOST`               | LDAP server hostname |
+| `LDAP_PROTOCOL`           | LDAP or LDAPS |
+| `LDAP_PORT`               | LDAP server port |
+| `LDAP_BIND_USER`          | LDAP bind DN |
+| `LDAP_BASE_DN`            | LDAP base DN for user/group searches |
+| `LDAP_USER_SEARCH_BASE`   | Base DN for user search |
+| `LDAP_GROUP_SEARCH_BASE`  | Base DN for group search |
+
+#### Steps Executed by the Script
+1. **Pre-checks:** Ensures Knox and required commands (`curl`, `perl`) are available.
+2. **Cluster Detection:** Retrieves the cluster name from Ambari.
+3. **Knox Alias Creation:** Stores Ambari password securely for Knox integration.
+4. **Knox Configuration Updates:**
+   - Creates LDAP authentication provider configuration.
+   - Updates topology files (`odp-sso-proxy-ui`, `odp-proxy`).
+   - Generates descriptor files for Knox.
+   - Ensures LDAP filters are correctly formatted.
+5. **Final Validation:** Displays configured values and confirms readiness.
+
+#### Example Execution Output
 ```bash
-./manage_jars.sh restore
+[INFO] Fetching Ambari cluster details...
+[INFO] Cluster found: my-cluster
+[INFO] Knox process is running
+[INFO] Creating Knox alias for Ambari discovery password...
+[INFO] Writing Knox custom provider configuration...
+[INFO] Updating topology files...
+[INFO] Knox configuration updated successfully!
 ```
+<img width="800" alt="image" src="https://github.com/user-attachments/assets/9af15383-3005-4eb4-b006-282bfc22d9db" />
 
-### 4. Dry Run Mode
 
-By default, the script operates in dry-run mode, which simulates actions without executing them. To perform actual actions, disable dry-run mode by using the `-d` option:
-
-```bash
-./manage_jars.sh -d backup
-```
-
-```bash
-./manage_jars.sh -d replace
-```
-
-```bash
-./manage_jars.sh -d restore
-```
-
-## Example
-
-```bash
-# Backup JAR files and replace with reload4j
-./manage_jars.sh backup
-
-# Replace original JAR files with reload4j
-./manage_jars.sh replace
-
-# Restore JAR files from backup
-./manage_jars.sh restore
-```
-
-## Notes
-
-- Ensure you have sufficient permissions for all operations.
-- The script will log actions to `/tmp/jar_backup_script.log`.
-- The backup directory should be writable and have enough space to store backup files.
----
