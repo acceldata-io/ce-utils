@@ -9,8 +9,8 @@ Here is a set of Bash scripts created to streamline various tasks within your OD
 5. [Setup Ranger LDAP](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ranger_ldap.sh)
 6. [Ambari Services Configuration backup and Restore](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/config_backup_restore.sh)
 7. [Impala SSL](https://github.com/acceldata-io/ce-utils/blob/main/ODP/README.md#7-impala-configuration-for-ssl)
-8. [Disable SSL for Hadoop Services]()
-9. [Knox LDAP Configuration and Ambari Integration]()
+8. [Disable SSL for Hadoop Services](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/disable_ssl.sh)
+9. [Knox LDAP Configuration and Ambari Integration](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/knox-service-discovery.sh)
 
 ## Detailed Information
 
@@ -115,7 +115,7 @@ python $CONFIG_SCRIPT -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMB
 ```
 
 ### 8. Disable SSL for Hadoop Services
-
+- **Script:** [Disable SSL for Hadoop Services](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/disable_ssl.sh)
 #### Overview
 This script is designed to disable SSL configurations for various Hadoop-related services managed via Ambari API. It provides an interactive menu to selectively disable SSL for specific services or all at once.
 
@@ -167,7 +167,7 @@ This script is provided by **Acceldata Inc** and is intended for internal use an
 
 
 ### 9. Knox LDAP Configuration and Ambari Integration
-
+- **Script:** [Knox LDAP Configuration and Ambari Integration](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/knox-service-discovery.sh)
 #### Overview
 This script automates the configuration of Knox with LDAP authentication and integrates it with Ambari for secure access control. It includes validation checks, Ambari cluster detection, and interactive prompts to ensure correct configurations.
 
