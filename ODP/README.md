@@ -9,8 +9,8 @@ Here is a set of Bash scripts created to streamline various tasks within your OD
 5. [Setup Ranger LDAP](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ranger_ldap.sh)
 6. [Ambari Services Configuration backup and Restore](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/config_backup_restore.sh)
 7. [Impala SSL](https://github.com/acceldata-io/ce-utils/blob/main/ODP/README.md#7-impala-configuration-for-ssl)
-8. [Disable SSL for Hadoop Services](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/disable_ssl.sh)
-9. [Knox LDAP Configuration and Ambari Integration](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/knox-service-discovery.sh)
+8. [Disable SSL for Hadoop Services](https://github.com/acceldata-io/ce-utils/tree/main/ODP#8-disable-ssl-for-hadoop-services)
+9. [Knox LDAP Configuration and Ambari Integration](https://github.com/acceldata-io/ce-utils/tree/main/ODP#9-knox-ldap-configuration-and-ambari-integration)
 
 ## Detailed Information
 
