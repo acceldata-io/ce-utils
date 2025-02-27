@@ -366,7 +366,7 @@ install_pulse() {
                     echo "${CYAN}Extracting Pulse tarball${NC}"
                     tar -xf "$pulpath" -C "/tmp/pulse-$ver"
                     echo "${GREEN}Extraction complete${NC}"
-                    cp "/tmp/pulse-$ver/accelo.linux" "${AcceloHome}/accelo"
+                    cp "/tmp/pulse-$ver/cli_binaries/accelo.linux" "${AcceloHome}/accelo"
                     echo "${CYAN}Extracting images for Pulse${NC}"
 
                     for FILE in "/tmp/pulse-$ver/ad-"*.tgz; do
