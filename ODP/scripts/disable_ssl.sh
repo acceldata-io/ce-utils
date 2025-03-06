@@ -133,8 +133,6 @@ disable_hdfs_ssl() {
     set_config "set" "core-site" "hadoop.ssl.keystores.factory.class" "org.apache.hadoop.security.ssl.FileBasedKeyStoresFactory"
     set_config "set" "core-site" "hadoop.ssl.server.conf" "ssl-server.xml"
     set_config "set" "core-site" "hadoop.ssl.client.conf" "ssl-client.xml"
-    set_config "set" "core-site" "hadoop.rpc.protection" "authentication"
-    set_config "set" "hdfs-site" "dfs.encrypt.data.transfer" "false"
     set_config "set" "hdfs-site" "dfs.http.policy" "HTTP_ONLY"
     set_config "set" "hdfs-site" "dfs.https.enable" "false"
     set_config "set" "mapred-site" "mapreduce.shuffle.ssl.enabled" "false"
