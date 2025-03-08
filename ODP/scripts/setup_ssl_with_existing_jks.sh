@@ -51,7 +51,6 @@ if [[ "${PROTOCOL,,}" == "https" ]]; then
         export REQUESTS_CA_BUNDLE="${AMBARI_CERT_PATH}"
     else
         echo -e "${RED}[ERROR] Could not obtain Ambari SSL certificate.${NC}"
-        exit 1
     fi
     export PYTHONHTTPSVERIFY=0  # Optional fallback
 fi
