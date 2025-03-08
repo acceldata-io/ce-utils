@@ -10,13 +10,11 @@
 #   ./disable_ssl.sh [-s <ambari_server>] [-u <user>] [-p <password>] [-P <port>] [-r <protocol>]
 #
 ##########################################################################
-
 # Color definitions
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 RED='\033[0;31m'
 NC='\033[0m'  # No Color
-
 # Log file location
 LOGFILE="/tmp/disable_ssl.log"
 touch "$LOGFILE"
@@ -27,6 +25,20 @@ USER_DEFAULT="admin"
 PASSWORD_DEFAULT="admin"
 PORT_DEFAULT=8080
 PROTOCOL_DEFAULT="http"
+
+#---------------------------------------------------------
+# Ambari SSL Certificate Handling (if HTTPS enabled)
+#---------------------------------------------------------
+if [[ "${PROTOCOL_DEFAULT,,}" == "https" ]]; then
+    AMBARI_CERT_PATH="/tmp/ambari.crt"
+    if openssl s_client -showcerts -connect "${AMBARISERVER_DEFAULT}:${PORT_DEFAULT}" </dev/null 2>/dev/null \
+        | openssl x509 -outform PEM > "${AMBARI_CERT_PATH}" && [[ -s "${AMBARI_CERT_PATH}" ]]; then
+        export REQUESTS_CA_BUNDLE="${AMBARI_CERT_PATH}"
+    else
+        echo -e "${RED}[ERROR] Could not obtain Ambari SSL certificate.${NC}"
+    fi
+    export PYTHONHTTPSVERIFY=0  # Optional fallback
+fi
 
 # Simplified log function: prints colored messages without timestamps or level labels.
 log() {
