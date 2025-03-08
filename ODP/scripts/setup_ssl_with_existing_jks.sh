@@ -184,6 +184,9 @@ enable_hive_ssl() {
     set_config "hive-site" "hive.server2.use.SSL" "true"
     set_config "hive-site" "hive.server2.keystore.path" "$keystore"
     set_config "hive-site" "hive.server2.keystore.password" "$keystorepassword"
+    set_config "hive-site" "hive.server2.webui.use.ssl" "true"
+    set_config "hive-site" "hive.server2.webui.keystore.path" "$keystore"
+    set_config "hive-site" "hive.server2.webui.keystore.password" "$keystorepassword"
     echo -e "${GREEN}Successfully enabled SSL for Hive.${NC}"
 }
 
