@@ -8,7 +8,7 @@
 # Usage:
 #   ./setup_ssl_with_existing_jks.sh
 ##########################################################################
-
+# Version Update: 8 March 2025 v1
 #---------------------------------------------------------
 # Color Definitions for Console Output
 #---------------------------------------------------------
@@ -16,7 +16,6 @@ GREEN='\e[32m'
 YELLOW='\e[33m'
 RED='\e[31m'
 NC='\e[0m'  # No Color
-
 #---------------------------------------------------------
 # Default Values (Edit these if required)
 #---------------------------------------------------------
@@ -24,7 +23,7 @@ AMBARISERVER=$(hostname -f)
 USER="admin"
 PASSWORD="admin"
 PORT=8080
-PROTOCOL="http"
+PROTOCOL="http"  # Change to "https" if Ambari Server is configured with SSL
 
 # Keystore and Truststore details (JKS format)
 keystorepassword="keystore_Password"       # Replace with actual keystore password
@@ -34,22 +33,28 @@ truststore="/opt/security/pki/ca-certs.jks"
 
 # For Infra-Solr we need PKCS12 format keystore and truststore.
 # Example conversion:
-#   keytool -importkeystore -srckeystore [MY_KEYSTORE.jks] \
-#     -destkeystore [MY_FILE.p12] -srcstoretype JKS \
-#     -deststoretype PKCS12 -deststorepass [PASSWORD_PKCS12]
+# keytool -importkeystore -srckeystore [MY_KEYSTORE.jks] -destkeystore [MY_FILE.p12] -srcstoretype JKS -deststoretype PKCS12 -deststorepass [PASSWORD_PKCS12]
 export keystore_p12="/opt/security/pki/server.p12"
 export truststore_p12="/opt/security/pki/ca-certs.p12"
 
 # Ensure that the keystore alias for the 
-# ranger.service.https.attrib.keystore.keyalias property is correctly configured.
-# By default, it is set to the Ranger and KMS node's hostname.
+# ranger.service.https.attrib.keystore.keyalias property is correctly configured. By default, it is set to the Ranger and KMS node's hostname.
 # To verify, log in to the Ranger node and run:
 #   keytool -list -keystore $keystore
 #---------------------------------------------------------
-# Disable Python HTTPS verification
+# Ambari SSL Certificate Handling (if HTTPS enabled)
 #---------------------------------------------------------
-export PYTHONHTTPSVERIFY=0
-#---------------------------------------------------------
+if [[ "${PROTOCOL,,}" == "https" ]]; then
+    AMBARI_CERT_PATH="/tmp/ambari.crt"
+    if openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" </dev/null 2>/dev/null \
+        | openssl x509 -outform PEM > "${AMBARI_CERT_PATH}" && [[ -s "${AMBARI_CERT_PATH}" ]]; then
+        export REQUESTS_CA_BUNDLE="${AMBARI_CERT_PATH}"
+    else
+        echo -e "${RED}[ERROR] Could not obtain Ambari SSL certificate.${NC}"
+        exit 1
+    fi
+    export PYTHONHTTPSVERIFY=0  # Optional fallback
+fi
 # Helper Function: Retrieve Host for a Given Component
 #---------------------------------------------------------
 get_host_for_component() {
@@ -72,13 +77,23 @@ rangeradmin=$(get_host_for_component "RANGER_ADMIN")
 OOZIE_HOSTNAME=$(get_host_for_component "OOZIE_SERVER")
 rangerkms=$(get_host_for_component "RANGER_KMS_SERVER")
 
-#---------------------------------------------------------
-# Display Current Configuration for Verification
-#---------------------------------------------------------
+echo -e "${GREEN}====================================================${NC}"
+echo -e "${GREEN}      Acceldata ODP SSL Configuration Script        ${NC}"
+echo -e "${GREEN}====================================================${NC}"
+# Validate essential variables and files before starting
+required_files=("$keystore" "$truststore" )
+for file in "${required_files[@]}"; do
+    if [[ ! -f "$file" ]]; then
+        echo -e "${RED}Error:${NC} Required file '$file' not found. Please check before proceeding."
+        exit 1
+    fi
+done
+
+echo -e "${YELLOW}✅ All required keystore and truststore files are present.${NC}"
 echo -e "${YELLOW}🔑 Please ensure that you have set all variables correctly.${NC}\n"
 echo -e "⚙️  ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
 echo -e "👤 ${GREEN}USER:${NC} $USER"
-echo -e "🔒 ${GREEN}PASSWORD:${NC} ********"
+echo -e "🔒 ${GREEN}PASSWORD:${NC} ******** (hidden for security)"
 echo -e "🌐 ${GREEN}PORT:${NC} $PORT"
 echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
 echo -e "🔐 ${GREEN}keystore:${NC} $keystore"
@@ -86,28 +101,33 @@ echo -e "🔐 ${GREEN}truststore:${NC} $truststore"
 echo -e "🔐 ${GREEN}keystorepassword:${NC} ********"
 echo -e "🔐 ${GREEN}truststorepassword:${NC} ********"
 echo -e "ℹ️  ${YELLOW}Ensure the PKCS12 keystore and truststore for Infra-Solr are created:${NC}"
-echo -e "🔐 ${GREEN}keystore_p12:${NC} $keystore_p12"
-echo -e "🔐 ${GREEN}truststore_p12:${NC} $truststore_p12\n"
-echo -e "${YELLOW}To create the PKCS12 keystore from the JKS keystore, run the following command on the Infra-Solr node:${NC}"
-echo -e "${GREEN}keytool -importkeystore -srckeystore \"$keystore\" -destkeystore \"$keystore_p12\" -srcstoretype JKS -deststoretype PKCS12 -deststorepass \"$keystorepassword\" -srcstorepass \"$keystorepassword\"${NC}\n"
-echo -e "${YELLOW}To create the PKCS12 truststore from the JKS truststore, run the following command on the Infra-Solr node:${NC}"
-echo -e "${GREEN}keytool -importkeystore -srckeystore \"$truststore\" -destkeystore \"$truststore_p12\" -srcstoretype JKS -deststoretype PKCS12 -deststorepass \"$truststorepassword\" -srcstorepass \"$truststorepassword\"${NC}\n"
-echo -e "ℹ️  ${YELLOW}Ensure that the keystore alias on the Ranger and Ranger KMS nodes is Update below in the script, By default host FQDN is set."
-echo -e "ℹ️  ${YELLOW}Verify the keystore alias on Ranger and Ranger KMS nodes: By default, the host's FQDN is used by the script. If needed, update the property '${GREEN}ranger.service.https.attrib.keystore.keyalias${NC}'"
-echo -e "🔍  ${GREEN}keytool -list -keystore $keystore${NC}\n"
-
+echo -e "🔑 ${GREEN}PKCS12 Keystores:${NC} $keystore_p12 | $truststore_p12"
+echo -e "${YELLOW}Convert JKS to PKCS12 on Infra-Solr node:${NC}"
+echo -e "${GREEN}keytool -importkeystore -srckeystore \"$keystore\" -destkeystore \"$keystore_p12\" -deststoretype PKCS12${NC}"
+echo -e "${GREEN}keytool -importkeystore -srckeystore \"$truststore\" -destkeystore \"$truststore_p12\" -deststoretype PKCS12${NC}"
+echo -e "${YELLOW}ℹ️ Verify the keystore alias for Ranger and KMS nodes matches the configured alias (ranger.service.https.attrib.keystore.keyalias - default: host FQDN).${NC}"
+echo -e "${GREEN}keytool -list -keystore \"$keystore\"${NC}"
+echo -e "${GREEN}────────────────────────────────────────────────────────${NC}"
 #---------------------------------------------------------
 # Function: set_config
 # Invokes the Ambari configuration script to set a given property.
 #---------------------------------------------------------
 set_config() {
-    local config_file=$1
-    local key=$2
-    local value=$3
+    local config_file=$1 key=$2 value=$3
 
     python /var/lib/ambari-server/resources/scripts/configs.py \
-      -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER \
-      -c $config_file -k $key -v "$value"
+        -u "$USER" \
+        -p "$PASSWORD" \
+        -s "$PROTOCOL" \
+        -a set \
+        -t "$PORT" \
+        -l "$AMBARISERVER" \
+        -n "$CLUSTER" \
+        -c "$config_file" \
+        -k "$key" \
+        -v "$value" \
+    && echo -e "${GREEN}[OK]${NC} Updated ${config_file}:${key}" \
+    || echo -e "${RED}Failed updating ${key} in ${config_file}.${NC}" | tee -a /tmp/setup_ssl.log
 }
 
 #---------------------------------------------------------
@@ -323,24 +343,25 @@ enable_oozie_ssl() {
     set_config "oozie-site" "oozie.base.url" "https://$OOZIE_HOSTNAME:11443/oozie"
     echo -e "${GREEN}Successfully enabled SSL for Oozie.${NC}"
 }
-
 #---------------------------------------------------------
 # Menu for Selecting SSL Configuration Services
 #---------------------------------------------------------
 display_service_options() {
-    echo -e "${YELLOW}Select services to enable SSL:${NC}"
-    echo -e "${GREEN}1) HDFS, YARN, and MapReduce${NC}"
-    echo -e "${GREEN}2) Infra-Solr${NC}"
-    echo -e "${GREEN}3) Hive${NC}"
-    echo -e "${GREEN}4) Ranger${NC}"
-    echo -e "${GREEN}5) Spark2${NC}"
-    echo -e "${GREEN}6) Kafka${NC}"
-    echo -e "${GREEN}7) HBase${NC}"
-    echo -e "${GREEN}8) Spark3${NC}"
-    echo -e "${GREEN}9) Oozie${NC}"
-    echo -e "${GREEN}10) Ranger KMS${NC}"
-    echo -e "${GREEN}A) All${NC}"
-    echo -e "${RED}Q) Quit${NC}"
+    echo -e "\n🚀 ${YELLOW}SSL Configuration – Choose a Service:${NC}"
+    echo -e "${GREEN}--------------------------------------------${NC}"
+    echo -e "${GREEN} 1)${NC} 🗃️  HDFS, YARN & MapReduce"
+    echo -e "${GREEN} 2)${NC} 🔍 Infra-Solr"
+    echo -e "${GREEN} 3)${NC} 🐝 Hive"
+    echo -e "${GREEN} 4)${NC} 🛡️  Ranger"
+    echo -e "${GREEN} 5)${NC} ✨ Spark2"
+    echo -e "${GREEN} 6)${NC} 📡 Kafka"
+    echo -e "${GREEN} 7)${NC} 📚 HBase"
+    echo -e "${GREEN} 8)${NC} ⚡ Spark3"
+    echo -e "${GREEN} 9)${NC} 🌀 Oozie"
+    echo -e "${GREEN}10)${NC} 🔑 Ranger KMS"
+    echo -e "${GREEN} A)${NC} 🌐 All Services"
+    echo -e "${RED} Q)${NC} ❌ Quit"
+    echo -e "${GREEN}----------------------------------------${NC}"
 }
 
 #---------------------------------------------------------
@@ -348,40 +369,19 @@ display_service_options() {
 #---------------------------------------------------------
 while true; do
     display_service_options
-    read -p "Enter your choice: " choice
-
-    case $choice in
-        1)
-            enable_hdfs_ssl
-            ;;
-        2)
-            enable_infra_solr_ssl
-            ;;
-        3)
-            enable_hive_ssl
-            ;;
-        4)
-            enable_ranger_ssl
-            ;;
-        5)
-            enable_spark2_ssl
-            ;;
-        6)
-            enable_kafka_ssl
-            ;;
-        7)
-            enable_hbase_ssl
-            ;;
-        8)
-            enable_spark3_ssl
-            ;;
-        9)
-            enable_oozie_ssl
-            ;;
-        10)
-            enable_ranger_kms_ssl
-            ;;
-        [Aa])
+    read -rp "Enter your selection:⇒ " choice
+    case "$choice" in
+        1) enable_hdfs_ssl ;;
+        2) enable_infra_solr_ssl ;;
+        3) enable_hive_ssl ;;
+        4) enable_ranger_ssl ;;
+        5) enable_spark2_ssl ;;
+        6) enable_kafka_ssl ;;
+        7) enable_hbase_ssl ;;
+        8) enable_spark3_ssl ;;
+        9) enable_oozie_ssl ;;
+        10) enable_ranger_kms_ssl ;;
+        [Aa]) 
             enable_hdfs_ssl
             enable_infra_solr_ssl
             enable_hive_ssl
@@ -393,12 +393,12 @@ while true; do
             enable_oozie_ssl
             enable_ranger_kms_ssl
             ;;
-        [Qq])
+        [Qq]) 
             echo -e "${GREEN}Exiting...${NC}"
             break
             ;;
         *)
-            echo -e "${YELLOW}Invalid choice. Please try again.${NC}"
+            echo -e "${RED}Invalid selection.${NC} Please choose a valid option."
             ;;
     esac
 done
