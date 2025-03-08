@@ -157,8 +157,11 @@ disable_kafka_ssl() {
 disable_hive_ssl() {
     log "Disabling SSL for Hive..." "${GREEN}"
     set_config "set" "hive-site" "hive.server2.use.SSL" "false"
+    set_config "set" "hive-site" "hive.server2.webui.use.ssl" "false"    
     set_config "delete" "hive-site" "hive.server2.keystore.path"
     set_config "delete" "hive-site" "hive.server2.keystore.password"
+    set_config "delete" "hive-site" "hive.server2.webui.keystore.path"
+    set_config "delete" "hive-site" "hive.server2.webui.keystore.password"
 }
 
 disable_infra_solr_ssl() {
