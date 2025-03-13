@@ -9,6 +9,7 @@
 #   ./setup_ssl_with_existing_jks.sh
 ##########################################################################
 # Version Update: 8 March 2025 v1
+# Version Update: 14 March 2025 v2
 #---------------------------------------------------------
 # Color Definitions for Console Output
 #---------------------------------------------------------
@@ -264,6 +265,11 @@ enable_ranger_ssl() {
     set_config "ranger-nifi-security" "ranger.plugin.nifi.policy.rest.url" "https://$rangeradmin:6182"
     set_config "ranger-nifi-registry-security" "ranger.plugin.nifi-registry.policy.rest.url" "https://$rangeradmin:6182"    
     set_config "ranger-kudu-security" "ranger.plugin.kudu.policy.rest.url" "https://$rangeradmin:6182"    
+    set_config "ranger-ozone-security" "ranger.plugin.kudu.policy.rest.url" "https://$rangeradmin:6182"    
+    set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.keystore" "$keystore"
+    set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
+    set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
+    set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"
     echo -e "${GREEN}Successfully enabled SSL for Ranger.${NC}"
 }
 
@@ -345,6 +351,59 @@ enable_oozie_ssl() {
     set_config "oozie-site" "oozie.base.url" "https://$OOZIE_HOSTNAME:11443/oozie"
     echo -e "${GREEN}Successfully enabled SSL for Oozie.${NC}"
 }
+
+enable_ozone_ssl () {
+    echo -e "${YELLOW}Starting to enable SSL for Ozone...${NC}"    
+    set_config "ozone-env" "ozone_scm_ssl_enabled" "true"
+    set_config "ozone-env" "ozone_manager_ssl_enabled" "true"
+    set_config "ozone-env" "ozone_s3g_ssl_enabled" "true"
+    set_config "ozone-env" "ozone_datanode_ssl_enabled" "true"
+    set_config "ozone-env" "ozone_recon_ssl_enabled" "true"
+    set_config "ozone-env" "ozone_scm_ssl_enabled" "true"
+    set_config "ozone-site" "ozone.http.policy" "HTTPS_ONLY"
+    set_config "ozone-site" "ozone.https.client.keystore.resource" "ssl-client.xml"
+    set_config "ozone-site" "ozone.https.server.keystore.resource" "ssl-server.xml"   
+    set_config "ssl-server-recon" "ssl.client.truststore.location" "$truststore"
+    set_config "ssl-server-recon" "ssl.server.truststore.password" "$truststorepassword"
+    set_config "ssl-client-datanode" "ssl.client.truststore.location" "$truststore"
+    set_config "ssl-client-datanode" "ssl.server.truststore.password" "$truststorepassword"
+    set_config "ssl-client-om" "ssl.client.truststore.location" "$truststore"
+    set_config "ssl-client-om" "ssl.server.truststore.password" "$truststorepassword"
+    set_config "ssl-client-recon" "ssl.client.truststore.location" "$truststore"
+    set_config "ssl-client-recon" "ssl.server.truststore.password" "$truststorepassword"
+    set_config "ssl-client-s3g" "ssl.client.truststore.location" "$truststore"
+    set_config "ssl-client-s3g" "ssl.server.truststore.password" "$truststorepassword"
+    set_config "ssl-client-scm" "ssl.client.truststore.location" "$truststore"
+    set_config "ssl-client-scm" "ssl.server.truststore.password" "$truststorepassword"
+    set_config "ssl-server-datanode" "ssl.client.truststore.location" "$truststore"
+    set_config "ssl-server-datanode" "ssl.server.truststore.password" "$truststorepassword"
+    set_config "ssl-server-datanode" "ssl.server.keystore.location" "$keystore"
+    set_config "ssl-server-datanode" "ssl.server.keystore.password" "$keystorepassword"
+    set_config "ssl-server-om" "ssl.client.truststore.location" "$truststore"
+    set_config "ssl-server-om" "ssl.server.truststore.password" "$truststorepassword"
+    set_config "ssl-server-om" "ssl.server.keystore.location" "$keystore"
+    set_config "ssl-server-om" "ssl.server.keystore.password" "$keystorepassword"
+    set_config "ssl-server-recon" "ssl.client.truststore.location" "$truststore"
+    set_config "ssl-server-recon" "ssl.server.truststore.password" "$truststorepassword"
+    set_config "ssl-server-recon" "ssl.server.keystore.location" "$keystore"
+    set_config "ssl-server-recon" "ssl.server.keystore.password" "$keystorepassword"
+    set_config "ssl-server-s3g" "ssl.client.truststore.location" "$truststore"
+    set_config "ssl-server-s3g" "ssl.server.truststore.password" "$truststorepassword"
+    set_config "ssl-server-s3g" "ssl.server.keystore.location" "$keystore"
+    set_config "ssl-server-s3g" "ssl.server.keystore.password" "$keystorepassword"
+    set_config "ssl-server-scm" "ssl.client.truststore.location" "$truststore"
+    set_config "ssl-server-scm" "ssl.server.truststore.password" "$truststorepassword"
+    set_config "ssl-server-scm" "ssl.server.keystore.location" "$keystore"
+    set_config "ssl-server-scm" "ssl.server.keystore.password" "$keystorepassword"    
+    set_config "ozone-ssl-client" "ssl.client.truststore.location" "$truststore"
+    set_config "ozone-ssl-client" "ssl.client.truststore.password" "$truststorepassword"    
+    set_config "ssl-server-datanode" "ssl.server.keystore.keypassword" "$keystorepassword"    
+    set_config "ssl-server-om" "ssl.server.keystore.keypassword" "$keystorepassword"
+    set_config "ssl-server-recon" "ssl.server.keystore.keypassword" "$keystorepassword"
+    set_config "ssl-server-s3g" "ssl.server.keystore.keypassword" "$keystorepassword"
+    set_config "ssl-server-scm" "ssl.server.keystore.keypassword" "$keystorepassword"    
+    echo -e "${GREEN}Successfully enabled SSL for Ozone.${NC}"
+}
 #---------------------------------------------------------
 # Menu for Selecting SSL Configuration Services
 #---------------------------------------------------------
@@ -361,6 +420,7 @@ display_service_options() {
     echo -e "${GREEN} 8)${NC} ⚡ Spark3"
     echo -e "${GREEN} 9)${NC} 🌀 Oozie"
     echo -e "${GREEN}10)${NC} 🔑 Ranger KMS"
+    echo -e "${GREEN}11)${NC} ☁️ Ozone"
     echo -e "${GREEN} A)${NC} 🌐 All Services"
     echo -e "${RED} Q)${NC} ❌ Quit"
     echo -e "${GREEN}----------------------------------------${NC}"
@@ -383,6 +443,7 @@ while true; do
         8) enable_spark3_ssl ;;
         9) enable_oozie_ssl ;;
         10) enable_ranger_kms_ssl ;;
+        11) enable_ozone_ssl ;;
         [Aa]) 
             enable_hdfs_ssl
             enable_infra_solr_ssl
@@ -394,6 +455,7 @@ while true; do
             enable_spark3_ssl
             enable_oozie_ssl
             enable_ranger_kms_ssl
+            enable_ozone_ssl
             ;;
         [Qq]) 
             echo -e "${GREEN}Exiting...${NC}"
