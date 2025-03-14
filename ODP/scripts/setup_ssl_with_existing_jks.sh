@@ -265,7 +265,7 @@ enable_ranger_ssl() {
     set_config "ranger-nifi-security" "ranger.plugin.nifi.policy.rest.url" "https://$rangeradmin:6182"
     set_config "ranger-nifi-registry-security" "ranger.plugin.nifi-registry.policy.rest.url" "https://$rangeradmin:6182"    
     set_config "ranger-kudu-security" "ranger.plugin.kudu.policy.rest.url" "https://$rangeradmin:6182"    
-    set_config "ranger-ozone-security" "ranger.plugin.kudu.policy.rest.url" "https://$rangeradmin:6182"    
+    set_config "ranger-ozone-security" "ranger.plugin.ozone.policy.rest.url" "https://$rangeradmin:6182"    
     set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.keystore" "$keystore"
     set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
     set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
