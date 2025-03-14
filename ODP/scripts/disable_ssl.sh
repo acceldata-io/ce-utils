@@ -246,6 +246,25 @@ disable_oozie_ssl() {
     set_config "set" "oozie-site" "oozie.base.url" "http://${OOZIE_HOSTNAME}:11000/oozie"
 }
 
+disable_ozone_ssl() {
+    set_config "ozone-env" "ozone_scm_ssl_enabled" "false"
+    set_config "ozone-env" "ozone_manager_ssl_enabled" "false"
+    set_config "ozone-env" "ozone_s3g_ssl_enabled" "false"
+    set_config "ozone-env" "ozone_datanode_ssl_enabled" "false"
+    set_config "ozone-env" "ozone_recon_ssl_enabled" "false"
+    set_config "ozone-env" "ozone_scm_ssl_enabled" "false"
+    set_config "ozone-site" "ozone.http.policy" "HTTP_ONLY"
+
+}
+
+disable_nifi_ssl() {
+    set_config "nifi-ambari-ssl-config" "nifi.node.ssl.isenabled" "false"
+}
+
+disable_schema_registry() {
+    set_config "registry-ssl-config" "registry.ssl.isenabled" "false"
+}
+
 # Interactive menu with colored output
 display_service_options() {
     echo -e "\n${GREEN}Choose the services for which to disable SSL:${NC}"
@@ -259,6 +278,9 @@ display_service_options() {
     echo -e "${CYAN}8) Spark3${NC}"
     echo -e "${CYAN}9) Oozie${NC}"
     echo -e "${CYAN}10) Ranger KMS${NC}"
+    echo -e "${CYAN}11)${NC} ☁️ Ozone"
+    echo -e "${CYAN}12)${NC} ⚙️ NiFi" 
+    echo -e "${CYAN}13)${NC} 🔄 Schema Registry"    
     echo -e "${GREEN}A) All Services${NC}"
     echo -e "${RED}Q) Quit${NC}"
     echo -ne "${GREEN}Enter your choice: ${NC}"
@@ -279,6 +301,9 @@ while true; do
         8)  disable_spark3_ssl ;;
         9)  disable_oozie_ssl ;;
         10) disable_ranger_kms_ssl ;;
+        11) disable_ozone_ssl ;;
+        12) disable_nifi_ssl ;;
+        13) disable_schema_registry ;;        
         [Aa])
             disable_hdfs_ssl
             disable_infra_solr_ssl
@@ -290,6 +315,9 @@ while true; do
             disable_spark3_ssl
             disable_oozie_ssl
             disable_ranger_kms_ssl
+            disable_ozone_ssl
+            disable_nifi_ssl
+            disable_schema_registry            
             ;;
         [Qq])
             log "Exiting script as requested by user." "${RED}"
