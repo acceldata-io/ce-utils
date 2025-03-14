@@ -8,8 +8,8 @@
 # Usage:
 #   ./setup_ssl_with_existing_jks.sh
 ##########################################################################
-# Version Update: 8 March 2025 v1
-# Version Update: 14 March 2025 v2
+# Version Update: 8 March 2025 v1 , 13 March 2025 v2 , 14 March 2025 v3 
+##########################################################################
 #---------------------------------------------------------
 # Color Definitions for Console Output
 #---------------------------------------------------------
@@ -404,6 +404,19 @@ enable_ozone_ssl () {
     set_config "ssl-server-scm" "ssl.server.keystore.keypassword" "$keystorepassword"    
     echo -e "${GREEN}Successfully enabled SSL for Ozone.${NC}"
 }
+
+enable_nifi_ssl () {
+    echo -e "${YELLOW}Starting to enable SSL for NiFi ...${NC}"    
+    set_config "nifi-ambari-ssl-config" "nifi.node.ssl.isenabled" "true"
+    set_config "nifi-ambari-ssl-config" "nifi.security.keyPasswd" "$keystorepassword"
+    set_config "nifi-ambari-ssl-config" "nifi.security.keystore" "$keystore"    
+    set_config "nifi-ambari-ssl-config" "nifi.security.keystorePasswd" "$keystorepassword"
+    set_config "nifi-ambari-ssl-config" "nifi.security.keystoreType" "jks"      
+    set_config "nifi-ambari-ssl-config" "nifi.security.truststore" "$truststore"
+    set_config "nifi-ambari-ssl-config" "nifi.security.truststoreType" "jks"    
+    set_config "nifi-ambari-ssl-config" "nifi.security.truststorePasswd" "$truststorepassword"
+    echo -e "${GREEN}Successfully enabled SSL for NiFi.${NC}"
+}
 #---------------------------------------------------------
 # Menu for Selecting SSL Configuration Services
 #---------------------------------------------------------
@@ -421,6 +434,7 @@ display_service_options() {
     echo -e "${GREEN} 9)${NC} 🌀 Oozie"
     echo -e "${GREEN}10)${NC} 🔑 Ranger KMS"
     echo -e "${GREEN}11)${NC} ☁️ Ozone"
+    echo -e "${GREEN}12)${NC} ⚙️ NiFi"    
     echo -e "${GREEN} A)${NC} 🌐 All Services"
     echo -e "${RED} Q)${NC} ❌ Quit"
     echo -e "${GREEN}----------------------------------------${NC}"
@@ -444,6 +458,7 @@ while true; do
         9) enable_oozie_ssl ;;
         10) enable_ranger_kms_ssl ;;
         11) enable_ozone_ssl ;;
+        12) enable_nifi_ssl ;;
         [Aa]) 
             enable_hdfs_ssl
             enable_infra_solr_ssl
@@ -456,6 +471,7 @@ while true; do
             enable_oozie_ssl
             enable_ranger_kms_ssl
             enable_ozone_ssl
+            enable_nifi_ssl
             ;;
         [Qq]) 
             echo -e "${GREEN}Exiting...${NC}"
