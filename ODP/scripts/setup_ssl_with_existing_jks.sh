@@ -265,11 +265,16 @@ enable_ranger_ssl() {
     set_config "ranger-nifi-security" "ranger.plugin.nifi.policy.rest.url" "https://$rangeradmin:6182"
     set_config "ranger-nifi-registry-security" "ranger.plugin.nifi-registry.policy.rest.url" "https://$rangeradmin:6182"    
     set_config "ranger-kudu-security" "ranger.plugin.kudu.policy.rest.url" "https://$rangeradmin:6182"    
-    set_config "ranger-ozone-security" "ranger.plugin.ozone.policy.rest.url" "https://$rangeradmin:6182"    
+    set_config "ranger-ozone-security" "ranger.plugin.kudu.policy.rest.url" "https://$rangeradmin:6182"    
     set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.keystore" "$keystore"
     set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
     set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
     set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"
+    set_config "ranger-schema-registry-security" "ranger.plugin.schema-registry.policy.rest.url" "https://$rangeradmin:6182"    
+    set_config "ranger-schema-registry-policymgr-ssl" "xasecure.policymgr.clientssl.keystore" "$keystore"
+    set_config "ranger-schema-registry-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
+    set_config "ranger-schema-registry-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
+    set_config "ranger-schema-registry-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"    
     echo -e "${GREEN}Successfully enabled SSL for Ranger.${NC}"
 }
 
@@ -417,6 +422,18 @@ enable_nifi_ssl () {
     set_config "nifi-ambari-ssl-config" "nifi.security.truststorePasswd" "$truststorepassword"
     echo -e "${GREEN}Successfully enabled SSL for NiFi.${NC}"
 }
+
+enable_schema_registry () {
+    echo -e "${YELLOW}Starting to enable SSL for Schema Registry ...${NC}"        
+    set_config "registry-ssl-config" "registry.ssl.isenabled" "$true"
+    set_config "registry-ssl-config" "registry.keyStoreType" "jks"
+    set_config "registry-ssl-config" "registry.trustStoreType" "jks"
+    set_config "registry-ssl-config" "registry.keyStorePath" "$keystore"
+    set_config "registry-ssl-config" "registry.trustStorePath" "$truststore"
+    set_config "registry-ssl-config" "registry.keyStorePassword" "$keystorepassword"    
+    set_config "registry-ssl-config" "registry.trustStorePassword" "$truststorepassword"  
+    echo -e "${GREEN}Successfully enabled SSL for Schema Registry.${NC}"
+}
 #---------------------------------------------------------
 # Menu for Selecting SSL Configuration Services
 #---------------------------------------------------------
@@ -434,7 +451,9 @@ display_service_options() {
     echo -e "${GREEN} 9)${NC} 🌀 Oozie"
     echo -e "${GREEN}10)${NC} 🔑 Ranger KMS"
     echo -e "${GREEN}11)${NC} ☁️ Ozone"
-    echo -e "${GREEN}12)${NC} ⚙️ NiFi"    
+    echo -e "${GREEN}12)${NC} ⚙️ NiFi" 
+    echo -e "${GREEN}13)${NC} 🔄 Schema Registry"
+    echo -e "${GREEN}--------------------------------------------${NC}" 
     echo -e "${GREEN} A)${NC} 🌐 All Services"
     echo -e "${RED} Q)${NC} ❌ Quit"
     echo -e "${GREEN}----------------------------------------${NC}"
@@ -459,6 +478,7 @@ while true; do
         10) enable_ranger_kms_ssl ;;
         11) enable_ozone_ssl ;;
         12) enable_nifi_ssl ;;
+        13) enable_schema_registry ;;
         [Aa]) 
             enable_hdfs_ssl
             enable_infra_solr_ssl
@@ -472,6 +492,7 @@ while true; do
             enable_ranger_kms_ssl
             enable_ozone_ssl
             enable_nifi_ssl
+            enable_schema_registry
             ;;
         [Qq]) 
             echo -e "${GREEN}Exiting...${NC}"
