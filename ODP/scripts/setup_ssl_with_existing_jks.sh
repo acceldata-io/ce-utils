@@ -425,7 +425,7 @@ enable_nifi_ssl () {
 
 enable_schema_registry () {
     echo -e "${YELLOW}Starting to enable SSL for Schema Registry ...${NC}"        
-    set_config "registry-ssl-config" "registry.ssl.isenabled" "$true"
+    set_config "registry-ssl-config" "registry.ssl.isenabled" "true"
     set_config "registry-ssl-config" "registry.keyStoreType" "jks"
     set_config "registry-ssl-config" "registry.trustStoreType" "jks"
     set_config "registry-ssl-config" "registry.keyStorePath" "$keystore"
