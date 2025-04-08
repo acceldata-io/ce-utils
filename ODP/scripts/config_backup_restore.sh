@@ -15,6 +15,20 @@ echo -e "🔒 ${GREEN}PASSWORD:${NC} ********"  # Replace with actual password a
 echo -e "🌐 ${GREEN}PORT:${NC} $PORT"
 echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
 
+#---------------------------------------------------------
+# Ambari SSL Certificate Handling (if HTTPS enabled)
+#---------------------------------------------------------
+if [[ "${PROTOCOL,,}" == "https" ]]; then
+    AMBARI_CERT_PATH="/tmp/ambari.crt"
+    if openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" </dev/null 2>/dev/null \
+        | openssl x509 -outform PEM > "${AMBARI_CERT_PATH}" && [[ -s "${AMBARI_CERT_PATH}" ]]; then
+        export REQUESTS_CA_BUNDLE="${AMBARI_CERT_PATH}"
+    else
+        echo -e "${RED}[ERROR] Could not obtain Ambari SSL certificate.${NC}"
+    fi
+    export PYTHONHTTPSVERIFY=0  # Optional fallback
+fi
+
 # Define colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
