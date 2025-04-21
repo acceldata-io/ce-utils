@@ -166,6 +166,15 @@ disable_kafka_ssl() {
     set_config "delete" "kafka-broker" "ssl.truststore.password"
 }
 
+disable_kafka3_ssl() {
+    log "Disabling SSL for Kafka..." "${GREEN}"
+    set_config "delete" "kafka3-broker" "ssl.keystore.location"
+    set_config "delete" "kafka3-broker" "ssl.keystore.password"
+    set_config "delete" "kafka3-broker" "ssl.key.password"
+    set_config "delete" "kafka3-broker" "ssl.truststore.location"
+    set_config "delete" "kafka3-broker" "ssl.truststore.password"
+}
+
 disable_hive_ssl() {
     log "Disabling SSL for Hive..." "${GREEN}"
     set_config "set" "hive-site" "hive.server2.use.SSL" "false"
@@ -281,6 +290,7 @@ display_service_options() {
     echo -e "${CYAN}11) Ozone${NC}"
     echo -e "${CYAN}12) NiFi${NC}" 
     echo -e "${CYAN}13) Schema Registry${NC}"    
+    echo -e "${CYAN}14) Kafka3${NC}"    
     echo -e "${GREEN}A) All Services${NC}"
     echo -e "${RED}Q) Quit${NC}"
     echo -ne "${GREEN}Enter your choice: ${NC}"
@@ -303,7 +313,8 @@ while true; do
         10) disable_ranger_kms_ssl ;;
         11) disable_ozone_ssl ;;
         12) disable_nifi_ssl ;;
-        13) disable_schema_registry ;;        
+        13) disable_schema_registry ;;
+        14) disable_kafka3_ssl;;
         [Aa])
             disable_hdfs_ssl
             disable_infra_solr_ssl
@@ -317,7 +328,8 @@ while true; do
             disable_ranger_kms_ssl
             disable_ozone_ssl
             disable_nifi_ssl
-            disable_schema_registry            
+            disable_schema_registry
+            disable_kafka3_ssl
             ;;
         [Qq])
             log "Exiting script as requested by user." "${RED}"
