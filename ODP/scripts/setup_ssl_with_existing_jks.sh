@@ -8,7 +8,7 @@
 # Usage:
 #   ./setup_ssl_with_existing_jks.sh
 ##########################################################################
-# Version Update: 8 March 2025 v1 , 13 March 2025 v2 , 14 March 2025 v3 
+# Version Update: 8 Mar25 v1 , 13 Mar2025 v2 , 14 Mar2025 v3 , 21 Aprv4(Added kafka3)
 ##########################################################################
 #---------------------------------------------------------
 # Color Definitions for Console Output
@@ -266,6 +266,7 @@ enable_ranger_ssl() {
     set_config "ranger-nifi-registry-security" "ranger.plugin.nifi-registry.policy.rest.url" "https://$rangeradmin:6182"    
     set_config "ranger-kudu-security" "ranger.plugin.kudu.policy.rest.url" "https://$rangeradmin:6182"    
     set_config "ranger-ozone-security" "ranger.plugin.kudu.policy.rest.url" "https://$rangeradmin:6182"    
+    set_config "ranger-kafka3-security" "ranger.plugin.kudu.policy.rest.url" "https://$rangeradmin:6182"  
     set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.keystore" "$keystore"
     set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
     set_config "ranger-ozone-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
@@ -274,7 +275,11 @@ enable_ranger_ssl() {
     set_config "ranger-schema-registry-policymgr-ssl" "xasecure.policymgr.clientssl.keystore" "$keystore"
     set_config "ranger-schema-registry-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
     set_config "ranger-schema-registry-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
-    set_config "ranger-schema-registry-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"    
+    set_config "ranger-schema-registry-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"
+    set_config "ranger-kafka3-policymgr-ssl" "xasecure.policymgr.clientssl.keystore" "$keystore"
+    set_config "ranger-kafka3-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
+    set_config "ranger-kafka3-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
+    set_config "ranger-kafka3-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"    
     echo -e "${GREEN}Successfully enabled SSL for Ranger.${NC}"
 }
 
@@ -316,6 +321,16 @@ enable_kafka_ssl() {
     set_config "kafka-broker" "ssl.truststore.location" "$truststore"
     set_config "kafka-broker" "ssl.truststore.password" "$truststorepassword"
     echo -e "${GREEN}Successfully enabled SSL for Kafka.${NC}"
+}
+
+enable_kafka3_ssl() {
+    echo -e "${YELLOW}Starting to enable SSL for Kafka...${NC}"
+    set_config "kafka3-broker" "ssl.keystore.location" "$keystore"
+    set_config "kafka3-broker" "ssl.keystore.password" "$keystorepassword"
+    set_config "kafka3-broker" "ssl.key.password" "$keystorepassword"
+    set_config "kafka3-broker" "ssl.truststore.location" "$truststore"
+    set_config "kafka3-broker" "ssl.truststore.password" "$truststorepassword"
+    echo -e "${GREEN}Successfully enabled SSL for Kafka3.${NC}"
 }
 
 enable_hbase_ssl() {
@@ -453,6 +468,7 @@ display_service_options() {
     echo -e "${GREEN}11)${NC} ☁️ Ozone"
     echo -e "${GREEN}12)${NC} ⚙️ NiFi" 
     echo -e "${GREEN}13)${NC} 🔄 Schema Registry"
+    echo -e "${GREEN}14)${NC} 📡📡 Kafka3"  
     echo -e "${GREEN}--------------------------------------------${NC}" 
     echo -e "${GREEN} A)${NC} 🌐 All Services"
     echo -e "${RED} Q)${NC} ❌ Quit"
@@ -479,6 +495,7 @@ while true; do
         11) enable_ozone_ssl ;;
         12) enable_nifi_ssl ;;
         13) enable_schema_registry ;;
+        14) enable_kafka3_ssl ;;
         [Aa]) 
             enable_hdfs_ssl
             enable_infra_solr_ssl
@@ -493,6 +510,7 @@ while true; do
             enable_ozone_ssl
             enable_nifi_ssl
             enable_schema_registry
+            enable_kafka3_ssl
             ;;
         [Qq]) 
             echo -e "${GREEN}Exiting...${NC}"
