@@ -1,5 +1,9 @@
-#!/bin/bash
-# Acceldata Inc.
+#!/usr/bin/env bash
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │ © 2025 Acceldata Inc. All Rights Reserved.                                │
+# │                                                                           │
+# │ Backup & restore Ambari Mpack service configurations                      │
+# └───────────────────────────────────────────────────────────────────────────┘
 
 # Set Ambari server details
 export AMBARISERVER=$(hostname -f)
@@ -11,7 +15,7 @@ export PROTOCOL=http
 echo -e "🔑 Please ensure that you have set all variables correctly."
 echo -e "⚙️  ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
 echo -e "👤 ${GREEN}USER:${NC} $USER"
-echo -e "🔒 ${GREEN}PASSWORD:${NC} ********"  # Replace with actual password above
+echo -e "🔒 ${GREEN}PASSWORD:${NC} ********" # Replace with actual password above
 echo -e "🌐 ${GREEN}PORT:${NC} $PORT"
 echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
 
@@ -20,13 +24,13 @@ echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
 #---------------------------------------------------------
 if [[ "${PROTOCOL,,}" == "https" ]]; then
     AMBARI_CERT_PATH="/tmp/ambari.crt"
-    if openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" </dev/null 2>/dev/null \
-        | openssl x509 -outform PEM > "${AMBARI_CERT_PATH}" && [[ -s "${AMBARI_CERT_PATH}" ]]; then
+    if openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" </dev/null 2>/dev/null |
+        openssl x509 -outform PEM >"${AMBARI_CERT_PATH}" && [[ -s "${AMBARI_CERT_PATH}" ]]; then
         export REQUESTS_CA_BUNDLE="${AMBARI_CERT_PATH}"
     else
         echo -e "${RED}[ERROR] Could not obtain Ambari SSL certificate.${NC}"
     fi
-    export PYTHONHTTPSVERIFY=0  # Optional fallback
+    export PYTHONHTTPSVERIFY=0 # Optional fallback
 fi
 
 # Define colors for output
@@ -68,20 +72,37 @@ print_script_info() {
 confirm_action() {
     local action="$1"
     read -p "Are you sure you want to $action? (yes/no): " choice
-    case "$choice" in 
-        [yY][eE][sS])
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
+    case "$choice" in
+    [yY][eE][sS])
+        return 0
+        ;;
+    *)
+        return 1
+        ;;
     esac
 }
 
 # Define configurations for each service
-HUE_CONFIGS=(
-    "hue-env"
-    "hue.ini"
+HUE_CONFIG=(
+    hue-auth-site
+    hue-desktop-site
+    hue-hadoop-site
+    hue-hbase-site
+    hue-hive-site
+    hue-impala-site
+    hue-log4j-env
+    hue-notebook-site
+    hue-oozie-site
+    hue-pig-site
+    hue-rdbms-site
+    hue-solr-site
+    hue-spark-site
+    hue-ugsync-site
+    hue-zookeeper-site
+    hue.ini
+    pseudo-distributed.ini
+    services
+    hue-env
 )
 
 IMPALA_CONFIGS=(
@@ -122,7 +143,6 @@ RANGER_KMS_CONFIGS=(
     "ranger-kms-audit"
 )
 
-
 SPARK3_CONFIGS=(
     "livy3-client-conf"
     "livy3-env"
@@ -153,6 +173,97 @@ NIFI_CONFIGS=(
     "ranger-nifi-plugin-properties"
     "nifi-ambari-ssl-config"
     "ranger-nifi-audit"
+)
+
+SCHEMA_REGISTRY_CONFIG=(
+    ranger-schema-registry-audit
+    ranger-schema-registry-plugin-properties
+    ranger-schema-registry-policymgr-ssl
+    ranger-schema-registry-security
+    registry-common
+    registry-env
+    registry-log4j
+    registry-logsearch-conf
+    registry-ssl-config
+    registry-sso-config
+)
+
+HTTPFS_CONFIG=(
+    httpfs-site
+    httpfs-log4j
+    httpfs-env
+    httpfs
+)
+
+KUDU_CONFIG=(
+    kudu-master-env
+    kudu-master-stable-advanced
+    kudu-tablet-env
+    kudu-tablet-stable-advanced
+    kudu-unstable
+    ranger-kudu-plugin-properties
+    ranger-kudu-policymgr-ssl
+    ranger-kudu-security
+    kudu-env
+    ranger-kudu-audit
+)
+
+JUPYTER_CONFIG=(
+    jupyterhub_config-py
+    sparkmagic-conf
+    jupyterhub-conf
+)
+
+FLINK_CONFIG=(
+    flink-env
+    flink-log4j-console.properties
+    flink-log4j-historyserver
+    flink-logback-rest
+    flink-conf
+    flink-log4j
+)
+
+DRUID_CONFIG=(
+    druid-historical
+    druid-logrotate
+    druid-overlord
+    druid-router
+    druid-log4j
+    druid-middlemanager
+    druid-env
+    druid-broker
+    druid-common
+    druid-coordinator
+)
+
+AIRFLOW_CONFIG=(
+    airflow-admin-site
+    airflow-api-site
+    airflow-atlas-site
+    airflow-celery-site
+    airflow-cli-site
+    airflow-core-site
+    airflow-dask-site
+    airflow-database-site
+    airflow-elasticsearch-site
+    airflow-email-site
+    airflow-env
+    airflow-githubenterprise-site
+    airflow-hive-site
+    airflow-kubernetes-site
+    airflow-kubernetes_executor-site
+    airflow-kubernetessecrets-site
+    airflow-ldap-site
+    airflow-lineage-site
+    airflow-logging-site
+    airflow-mesos-site
+    airflow-metrics-site
+    airflow-openlineage-site
+    airflow-operators-site
+    airflow-scheduler-site
+    airflow-smtp-site
+    airflow-kerberos-site
+    airflow-webserver-site
 )
 
 # Function to backup configuration
@@ -292,6 +403,92 @@ restore_nifi_configs() {
     done
 }
 
+# Function to backup Schema Registry configurations
+backup_schema_registry_configs() {
+    for config in "${SCHEMA_REGISTRY_CONFIG[@]}"; do
+        backup_config "$config"
+    done
+}
+# Function to restore Schema Registry configurations
+restore_schema_registry_configs() {
+    for config in "${SCHEMA_REGISTRY_CONFIG[@]}"; do
+        restore_config "$config"
+    done
+}
+# Function to backup HTTPFS configurations
+backup_httpfs_configs() {
+    for config in "${HTTPFS_CONFIG[@]}"; do
+        backup_config "$config"
+    done
+}
+# Function to restore HTTPFS configurations
+restore_httpfs_configs() {
+    for config in "${HTTPFS_CONFIG[@]}"; do
+        restore_config "$config"
+    done
+}
+# Function to backup Kudu configurations
+backup_kudu_configs() {
+    for config in "${KUDU_CONFIG[@]}"; do
+        backup_config "$config"
+    done
+}
+# Function to restore Kudu configurations
+restore_kudu_configs() {
+    for config in "${KUDU_CONFIG[@]}"; do
+        restore_config "$config"
+    done
+}
+# Function to backup Jupyter configurations
+backup_jupyter_configs() {
+    for config in "${JUPYTER_CONFIG[@]}"; do
+        backup_config "$config"
+    done
+}
+# Function to restore Jupyter configurations
+restore_jupyter_configs() {
+    for config in "${JUPYTER_CONFIG[@]}"; do
+        restore_config "$config"
+    done
+}
+# Function to backup Flink configurations
+backup_flink_configs() {
+    for config in "${FLINK_CONFIG[@]}"; do
+        backup_config "$config"
+    done
+}
+# Function to restore Flink configurations
+restore_flink_configs() {
+    for config in "${FLINK_CONFIG[@]}"; do
+        restore_config "$config"
+    done
+}
+# Function to backup Druid configurations
+backup_druid_configs() {
+    for config in "${DRUID_CONFIG[@]}"; do
+        backup_config "$config"
+    done
+}
+# Function to restore Druid configurations
+restore_druid_configs() {
+    for config in "${DRUID_CONFIG[@]}"; do
+        restore_config "$config"
+    done
+}
+# Function to backup Airflow configurations
+backup_airflow_configs() {
+    for config in "${AIRFLOW_CONFIG[@]}"; do
+        backup_config "$config"
+    done
+}
+# Function to restore Airflow configurations
+restore_airflow_configs() {
+    for config in "${AIRFLOW_CONFIG[@]}"; do
+        restore_config "$config"
+    done
+}
+# Function to backup all configurations
+
 # Main function
 main() {
     print_script_info
@@ -306,15 +503,15 @@ main() {
     read -p "Enter your choice: " choice
 
     case "$choice" in
-        "1")
-            backup_service_configs
-            ;;
-        "2")
-            restore_service_configs
-            ;;
-        *)
-            print_error "Invalid option. Please enter either '1' or '2'."
-            ;;
+    "1")
+        backup_service_configs
+        ;;
+    "2")
+        restore_service_configs
+        ;;
+    *)
+        print_error "Invalid option. Please enter either '1' or '2'."
+        ;;
     esac
 }
 
@@ -326,39 +523,67 @@ backup_service_configs() {
     echo -e "3. Kafka"
     echo -e "4. Ranger"
     echo -e "5. Ranger KMS"
-    echo -e "6. Spark3"    
+    echo -e "6. Spark3"
     echo -e "7. NiFi"
-    echo -e "8. All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi)"    
+    echo -e "8. Schema Registry"
+    echo -e "9. HTTPFS"
+    echo -e "10. Kudu"
+    echo -e "11. Jupyter"
+    echo -e "12. Flink"
+    echo -e "13. Druid"
+    echo -e "14. Airflow"
+    echo -e "15. All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi , Schema Registry , HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow)"
     read -p "Enter your choice: " choice
 
     case "$choice" in
-        "1")
-            backup_hue_configs
-            ;;
-        "2")
-            backup_impala_configs
-            ;;
-        "3")
-            backup_kafka_configs
-            ;;
-        "4")
-            backup_ranger_configs
-            ;;
-        "5")
-            backup_ranger_kms_configs
-            ;;
-        "6")
-            backup_spark3_configs
-            ;;                
-        "7")
-            backup_nifi_configs
-            ;;
-        "8")
-            backup_all_configs
-            ;;
-        *)            
-            print_error "Invalid option. Please select a valid service."
-            ;;
+    "1")
+        backup_hue_configs
+        ;;
+    "2")
+        backup_impala_configs
+        ;;
+    "3")
+        backup_kafka_configs
+        ;;
+    "4")
+        backup_ranger_configs
+        ;;
+    "5")
+        backup_ranger_kms_configs
+        ;;
+    "6")
+        backup_spark3_configs
+        ;;
+    "7")
+        backup_nifi_configs
+        ;;
+    "8")
+        backup_schema_registry_configs
+        ;;
+    "9")
+        backup_httpfs_configs
+        ;;
+    "10")
+        backup_kudu_configs
+        ;;
+    "11")
+        backup_jupyter_configs
+        ;;
+    "12")
+        backup_flink_configs
+        ;;
+    "13")
+        backup_druid_configs
+        ;;
+    "14")
+        backup_airflow_configs
+        ;;
+    "15")
+        backup_all_configs
+        ;;
+    *)
+        print_error "Invalid option. Please select a valid service."
+        ;;
     esac
 }
 
@@ -371,6 +596,15 @@ backup_all_configs() {
     backup_ranger_kms_configs
     backup_spark3_configs
     backup_nifi_configs
+    backup_schema_registry_configs
+    backup_httpfs_configs
+    backup_kudu_configs
+    backup_jupyter_configs
+    backup_flink_configs
+    backup_druid_configs
+    backup_airflow_configs
+    print_success "Backup of all configurations completed successfully."
+
 }
 
 # Function to restore individual service configurations
@@ -382,38 +616,66 @@ restore_service_configs() {
     echo -e "4. Ranger"
     echo -e "5. Ranger KMS"
     echo -e "6. Spark3"
-    echo -e "7. NiFi"     
-    echo -e "8. All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi)"        
+    echo -e "7. NiFi"
+    echo -e "8. Schema Registry"
+    echo -e "9. HTTPFS"
+    echo -e "10. Kudu"
+    echo -e "11. Jupyter"
+    echo -e "12. Flink"
+    echo -e "13. Druid"
+    echo -e "14. Airflow"
+    echo -e "15. All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi , Schema Registry , HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow)"
     read -p "Enter your choice: " choice
 
     case "$choice" in
-        "1")
-            restore_hue_configs
-            ;;
-        "2")
-            restore_impala_configs
-            ;;
-        "3")
-            restore_kafka_configs
-            ;;
-        "4")
-            restore_ranger_configs
-            ;;
-        "5")
-            restore_ranger_kms_configs
-            ;;
-        "6")
-            restore_spark3_configs
-            ;;            
-        "7")
-            restore_nifi_configs
-            ;;
-        "8")
-            restore_all_configs
-            ;;        
-        *)
-            print_error "Invalid option. Please select a valid service."
-            ;;
+    "1")
+        restore_hue_configs
+        ;;
+    "2")
+        restore_impala_configs
+        ;;
+    "3")
+        restore_kafka_configs
+        ;;
+    "4")
+        restore_ranger_configs
+        ;;
+    "5")
+        restore_ranger_kms_configs
+        ;;
+    "6")
+        restore_spark3_configs
+        ;;
+    "7")
+        restore_nifi_configs
+        ;;
+    "8")
+        restore_schema_registry_configs
+        ;;
+    "9")
+        restore_httpfs_configs
+        ;;
+    "10")
+        restore_kudu_configs
+        ;;
+    "11")
+        restore_jupyter_configs
+        ;;
+    "12")
+        restore_flink_configs
+        ;;
+    "13")
+        restore_druid_configs
+        ;;
+    "14")
+        restore_airflow_configs
+        ;;
+    "15")
+        restore_all_configs
+        ;;
+    *)
+        print_error "Invalid option. Please select a valid service."
+        ;;
     esac
 }
 # Function to restore configurations for all services
@@ -425,6 +687,14 @@ restore_all_configs() {
     restore_ranger_kms_configs
     restore_spark3_configs
     restore_nifi_configs
+    restore_schema_registry_configs
+    restore_httpfs_configs
+    restore_kudu_configs
+    restore_jupyter_configs
+    restore_flink_configs
+    restore_druid_configs
+    restore_airflow_configs
+    print_success "Restore of all configurations completed successfully."
 }
 
 # Execute main function
