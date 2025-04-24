@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ┌───────────────────────────────────────────────────────────────────────────┐
-# │ © 2025 Acceldata Inc. All Rights Reserved.                               │
+# │ © 2025 Acceldata Inc. All Rights Reserved.                                │
 # │                                                                           │
-# │ Backup & restore Ambari Mpack service configurations                           │
+# │ Backup & restore Ambari Mpack service configurations                      │
 # └───────────────────────────────────────────────────────────────────────────┘
 
 # Set Ambari server details
@@ -12,12 +12,23 @@ export PASSWORD=admin
 export PORT=8080
 export PROTOCOL=http
 
-echo -e "🔑 Please ensure that you have set all variables correctly."
-echo -e "⚙️  ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
-echo -e "👤 ${GREEN}USER:${NC} $USER"
-echo -e "🔒 ${GREEN}PASSWORD:${NC} ********" # Replace with actual password above
-echo -e "🌐 ${GREEN}PORT:${NC} $PORT"
-echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
+echo -e "${BOLD}${YELLOW}┌────────────────────────────────────────────────────────────┐${NC}"
+echo -e "${BOLD}${YELLOW}│${NC} ${BOLD}${CYAN}Ambari Configuration Backup & Restore Tool${NC} ${BOLD}${YELLOW}│${NC}"
+echo -e "${BOLD}${YELLOW}└────────────────────────────────────────────────────────────┘${NC}"
+echo -e "${GREEN}🔑  Settings to Verify:${NC}"
+printf "   %-15s : %s\n" "AMBARISERVER" "$AMBARISERVER"
+printf "   %-15s : %s\n" "USER" "$USER"
+printf "   %-15s : ********\n" "PASSWORD"
+printf "   %-15s : %s\n" "PORT" "$PORT"
+printf "   %-15s : %s\n" "PROTOCOL" "$PROTOCOL"
+printf "   %-15s : %s\n" "CONFIG_BACKUP_DIR" "$(pwd)/upgrade_backup"
+echo ""
+# echo -e "🔑 Please ensure that you have set all variables correctly."
+# echo -e "⚙️  ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
+# echo -e "👤 ${GREEN}USER:${NC} $USER"
+# echo -e "🔒 ${GREEN}PASSWORD:${NC} ********" # Replace with actual password above
+# echo -e "🌐 ${GREEN}PORT:${NC} $PORT"
+# echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
 
 #---------------------------------------------------------
 # Ambari SSL Certificate Handling (if HTTPS enabled)
@@ -29,7 +40,8 @@ if [[ "${PROTOCOL,,}" == "https" ]]; then
         awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{ print $0; if (/END CERTIFICATE/) print "" }' > "${AMBARI_CERT_PATH}"
 
     if [[ -s "${AMBARI_CERT_PATH}" ]]; then
-        echo -e "${GREEN}[INFO] Full CA bundle saved at:${NC} ${AMBARI_CERT_PATH}"
+        echo -e "${GREEN}✔ [INFO] Full CA bundle saved at:${NC} ${AMBARI_CERT_PATH}"
+        echo ""
         export REQUESTS_CA_BUNDLE="${AMBARI_CERT_PATH}"
     else
         echo -e "${RED}[ERROR] Could not extract CA bundle from Ambari.${NC}"
@@ -44,6 +56,10 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
 
 # Function to display messages in green color
 print_success() {
@@ -68,10 +84,12 @@ get_cluster_name() {
 
 # Function to display script information and usage instructions
 print_script_info() {
-    echo -e "${GREEN}Ambari Configuration Backup and Restore Script${NC}"
-    echo -e "This script enables you to backup and restore configurations for various services in Ambari-managed clusters."
-    echo -e "Please ensure that you have set all necessary variables correctly before proceeding."
-    echo -e "Usage: ./config_backup_restore.sh"
+    echo -e "${BOLD}${CYAN}┌────────────────────────────────────────────────┐${NC}"
+    echo -e "${BOLD}${CYAN}│  Ambari Configuration Backup & Restore Tool    │${NC}"
+    echo -e "${BOLD}${CYAN}└────────────────────────────────────────────────┘${NC}"
+    echo -e "${CYAN}This tool lets you backup and restore service configs in Ambari-managed clusters.${NC}"
+    echo -e "${CYAN}Make sure all variables are set correctly before proceeding.${NC}"
+    echo -e "${YELLOW}Usage: ./config_backup_restore.sh${NC}"
 }
 
 # Prompt user to confirm actions
@@ -89,8 +107,8 @@ confirm_action() {
 }
 
 # Define configurations for each service
-HUE_CONFIG=(
-    hue-auth-site
+HUE_CONFIGS=(
+    "hue-auth-site"
     hue-desktop-site
     hue-hadoop-site
     hue-hbase-site
@@ -112,7 +130,10 @@ HUE_CONFIG=(
 )
 
 IMPALA_CONFIGS=(
-    "impala-env"
+"fair-scheduler"
+"impala-log4j-properties"
+"llama-site"
+"impala-env"
 )
 
 KAFKA_CONFIGS=(
@@ -538,14 +559,16 @@ main() {
     print_script_info
     CLUSTER=$(get_cluster_name)
 
-    echo -e "${GREEN}Cluster Name:${NC} $CLUSTER"
-
-    # Prompt user to select individual service backup or restore
-    echo -e "Select an option:"
-    echo -e "1. Backup individual service configurations"
-    echo -e "2. Restore individual service configurations"
-    read -p "Enter your choice: " choice
-
+    echo -e "${BOLD}${CYAN}Cluster Name:${NC} ${GREEN}$CLUSTER${NC}"
+    echo
+    echo -e "${BOLD}${YELLOW}┌─────────────────────────────────────────────────┐${NC}"
+    echo -e "${BOLD}${YELLOW}│${NC} ${BOLD}Select an option:${NC} ${BOLD}${YELLOW}                                │${NC}"
+    echo -e "${BOLD}${YELLOW}├─────────────────────────────────────────────────┤${NC}"
+    echo -e "${GREEN}[1]${NC} 🔄 ${BOLD}Backup individual service configurations${BOLD}${YELLOW}   │${NC}"
+    echo -e "${GREEN}[2]${NC} 🔄 ${BOLD}Restore individual service configurations${BOLD}${YELLOW}  │${NC}"
+    echo -e "${BOLD}${YELLOW}└─────────────────────────────────────────────────┘${NC}"
+    echo -ne "${BOLD}Enter your choice [1-2]:${NC} "
+    read choice
     case "$choice" in
     "1")
         backup_service_configs
@@ -561,78 +584,51 @@ main() {
 
 # Function to backup individual service configurations
 backup_service_configs() {
-    echo -e "Select a service to backup configurations:"
-    echo -e "1. Hue"
-    echo -e "2. Impala"
-    echo -e "3. Kafka"
-    echo -e "4. Ranger"
-    echo -e "5. Ranger KMS"
-    echo -e "6. Spark3"
-    echo -e "7. NiFi"
-    echo -e "8. Schema Registry"
-    echo -e "9. HTTPFS"
-    echo -e "10. Kudu"
-    echo -e "11. Jupyter"
-    echo -e "12. Flink"
-    echo -e "13. Druid"
-    echo -e "14. Airflow"
-    echo -e "15. Ozone"
-    echo -e "16. All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi , Schema Registry , HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow Ozone)"
-    read -p "Enter your choice: " choice
+    while true; do
+        echo -e "${MAGENTA}${BOLD}┌──────────────────────────────────────────────┐${NC}"
+        echo -e "${MAGENTA}${BOLD}│      ${CYAN}Backup Service Configurations${MAGENTA}${BOLD}           │${NC}"
+        echo -e "${MAGENTA}${BOLD}└──────────────────────────────────────────────┘${NC}"
+        echo -e "${GREEN}1) ${BOLD}🎨 Hue${NC}"
+        echo -e "${GREEN}2) ${BOLD}🦌 Impala${NC}"
+        echo -e "${GREEN}3) ${BOLD}☕ Kafka${NC}"
+        echo -e "${GREEN}4) ${BOLD}🛡️ Ranger${NC}"
+        echo -e "${GREEN}5) ${BOLD}🔑 Ranger KMS${NC}"
+        echo -e "${GREEN}6) ${BOLD}⚡ Spark3${NC}"
+        echo -e "${GREEN}7) ${BOLD}🎛️ NiFi${NC}"
+        echo -e "${GREEN}8) ${BOLD}📜 Schema Registry${NC}"
+        echo -e "${GREEN}9) ${BOLD}📂 HTTPFS${NC}"
+        echo -e "${GREEN}10) ${BOLD}🐐 Kudu${NC}"
+        echo -e "${GREEN}11) ${BOLD}📓 Jupyter${NC}"
+        echo -e "${GREEN}12) ${BOLD}🦩 Flink${NC}"
+        echo -e "${GREEN}13) ${BOLD}🧙 Druid${NC}"
+        echo -e "${GREEN}14) ${BOLD}🌬️ Airflow${NC}"
+        echo -e "${GREEN}15) ${BOLD}🌍 Ozone${NC}"
+        echo -e "${GREEN}16) ${BOLD}🔄 All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone)${NC}"
+        echo -e "${RED}Q) ${BOLD}Quit${NC}"
+        echo -ne "${BOLD}${YELLOW}Enter your choice [1-16, Q]:${NC} "
+        read choice
 
-    case "$choice" in
-    "1")
-        backup_hue_configs
-        ;;
-    "2")
-        backup_impala_configs
-        ;;
-    "3")
-        backup_kafka_configs
-        ;;
-    "4")
-        backup_ranger_configs
-        ;;
-    "5")
-        backup_ranger_kms_configs
-        ;;
-    "6")
-        backup_spark3_configs
-        ;;
-    "7")
-        backup_nifi_configs
-        ;;
-    "8")
-        backup_schema_registry_configs
-        ;;
-    "9")
-        backup_httpfs_configs
-        ;;
-    "10")
-        backup_kudu_configs
-        ;;
-    "11")
-        backup_jupyter_configs
-        ;;
-    "12")
-        backup_flink_configs
-        ;;
-    "13")
-        backup_druid_configs
-        ;;
-    "14")
-        backup_airflow_configs
-        ;;
-    "15")
-        backup_ozone_configs
-        ;;
-    "16")
-        backup_all_configs
-        ;;
-    *)
-        print_error "Invalid option. Please select a valid service."
-        ;;
-    esac
+        case "$choice" in
+        1) backup_hue_configs ;;
+        2) backup_impala_configs ;;
+        3) backup_kafka_configs ;;
+        4) backup_ranger_configs ;;
+        5) backup_ranger_kms_configs ;;
+        6) backup_spark3_configs ;;
+        7) backup_nifi_configs ;;
+        8) backup_schema_registry_configs ;;
+        9) backup_httpfs_configs ;;
+        10) backup_kudu_configs ;;
+        11) backup_jupyter_configs ;;
+        12) backup_flink_configs ;;
+        13) backup_druid_configs ;;
+        14) backup_airflow_configs ;;
+        15) backup_ozone_configs ;;
+        16) backup_all_configs ;;
+        [Qq]) break ;;
+        *) print_error "Invalid option. Please select a valid service." ;;
+        esac
+    done
 }
 
 # Function to backup configurations for all services
@@ -659,78 +655,51 @@ backup_all_configs() {
 
 # Function to restore individual service configurations
 restore_service_configs() {
-    echo -e "Select a service to restore configurations:"
-    echo -e "1. Hue"
-    echo -e "2. Impala"
-    echo -e "3. Kafka"
-    echo -e "4. Ranger"
-    echo -e "5. Ranger KMS"
-    echo -e "6. Spark3"
-    echo -e "7. NiFi"
-    echo -e "8. Schema Registry"
-    echo -e "9. HTTPFS"
-    echo -e "10. Kudu"
-    echo -e "11. Jupyter"
-    echo -e "12. Flink"
-    echo -e "13. Druid"
-    echo -e "14. Airflow"
-    echo -e "15. Ozone"
-    echo -e "16. All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi , Schema Registry , HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow Ozone)"
-    read -p "Enter your choice: " choice
+    while true; do
+        echo -e "${MAGENTA}${BOLD}┌──────────────────────────────────────────────┐${NC}"
+        echo -e "${MAGENTA}${BOLD}│      ${CYAN}Restore Service Configurations${MAGENTA}${BOLD}         │${NC}"
+        echo -e "${MAGENTA}${BOLD}└──────────────────────────────────────────────┘${NC}"
+        echo -e "${GREEN}1) ${BOLD}🎨 Hue${NC}"
+        echo -e "${GREEN}2) ${BOLD}🦌 Impala${NC}"
+        echo -e "${GREEN}3) ${BOLD}☕ Kafka${NC}"
+        echo -e "${GREEN}4) ${BOLD}🛡️ Ranger${NC}"
+        echo -e "${GREEN}5) ${BOLD}🔑 Ranger KMS${NC}"
+        echo -e "${GREEN}6) ${BOLD}⚡ Spark3${NC}"
+        echo -e "${GREEN}7) ${BOLD}🎛️ NiFi${NC}"
+        echo -e "${GREEN}8) ${BOLD}📜 Schema Registry${NC}"
+        echo -e "${GREEN}9) ${BOLD}📂 HTTPFS${NC}"
+        echo -e "${GREEN}10) ${BOLD}🐐 Kudu${NC}"
+        echo -e "${GREEN}11) ${BOLD}📓 Jupyter${NC}"
+        echo -e "${GREEN}12) ${BOLD}🦩 Flink${NC}"
+        echo -e "${GREEN}13) ${BOLD}🧙 Druid${NC}"
+        echo -e "${GREEN}14) ${BOLD}🌬️ Airflow${NC}"
+        echo -e "${GREEN}15) ${BOLD}🌍 Ozone${NC}"
+        echo -e "${GREEN}16) ${BOLD}🔄 All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone)${NC}"
+        echo -e "${RED}Q) ${BOLD}Quit${NC}"
+        echo -ne "${BOLD}${YELLOW}Enter your choice [1-16, Q]:${NC} "
+        read choice
 
-    case "$choice" in
-    "1")
-        restore_hue_configs
-        ;;
-    "2")
-        restore_impala_configs
-        ;;
-    "3")
-        restore_kafka_configs
-        ;;
-    "4")
-        restore_ranger_configs
-        ;;
-    "5")
-        restore_ranger_kms_configs
-        ;;
-    "6")
-        restore_spark3_configs
-        ;;
-    "7")
-        restore_nifi_configs
-        ;;
-    "8")
-        restore_schema_registry_configs
-        ;;
-    "9")
-        restore_httpfs_configs
-        ;;
-    "10")
-        restore_kudu_configs
-        ;;
-    "11")
-        restore_jupyter_configs
-        ;;
-    "12")
-        restore_flink_configs
-        ;;
-    "13")
-        restore_druid_configs
-        ;;
-    "14")
-        restore_airflow_configs
-        ;;
-    "15")
-        restore_ozone_configs
-        ;;
-    "16")
-        restore_all_configs
-        ;;
-    *)
-        print_error "Invalid option. Please select a valid service."
-        ;;
-    esac
+        case "$choice" in
+        1) restore_hue_configs ;;
+        2) restore_impala_configs ;;
+        3) restore_kafka_configs ;;
+        4) restore_ranger_configs ;;
+        5) restore_ranger_kms_configs ;;
+        6) restore_spark3_configs ;;
+        7) restore_nifi_configs ;;
+        8) restore_schema_registry_configs ;;
+        9) restore_httpfs_configs ;;
+        10) restore_kudu_configs ;;
+        11) restore_jupyter_configs ;;
+        12) restore_flink_configs ;;
+        13) restore_druid_configs ;;
+        14) restore_airflow_configs ;;
+        15) restore_ozone_configs ;;
+        16) restore_all_configs ;;
+        [Qq]) break ;;
+        *) print_error "Invalid option. Please select a valid service." ;;
+        esac
+    done
 }
 # Function to restore configurations for all services
 restore_all_configs() {
@@ -754,3 +723,17 @@ restore_all_configs() {
 
 # Execute main function
 main
+
+#---------------------------------------------------------
+# Post-Execution: Move Generated JSON Files (if any)
+#---------------------------------------------------------
+if ls doSet_version* 1> /dev/null 2>&1; then
+    if [[ "$(pwd)" != "/tmp" ]]; then
+        mv doSet_version* /tmp
+        echo -e "${GREEN}JSON files moved to /tmp.${NC}"
+    else
+        echo -e "${YELLOW}Skipping move: script is already running in /tmp.${NC}"
+    fi
+else
+    echo -e "${YELLOW}No JSON files found to move.${NC}"
+fi
