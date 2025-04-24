@@ -23,15 +23,21 @@ echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
 # Ambari SSL Certificate Handling (if HTTPS enabled)
 #---------------------------------------------------------
 if [[ "${PROTOCOL,,}" == "https" ]]; then
-    AMBARI_CERT_PATH="/tmp/ambari.crt"
-    if openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" </dev/null 2>/dev/null |
-        openssl x509 -outform PEM >"${AMBARI_CERT_PATH}" && [[ -s "${AMBARI_CERT_PATH}" ]]; then
+    AMBARI_CERT_PATH="/tmp/ambari-ca-bundle.crt"
+
+    echo | openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" 2>/dev/null |
+        awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{ print $0; if (/END CERTIFICATE/) print "" }' > "${AMBARI_CERT_PATH}"
+
+    if [[ -s "${AMBARI_CERT_PATH}" ]]; then
+        echo -e "${GREEN}[INFO] Full CA bundle saved at:${NC} ${AMBARI_CERT_PATH}"
         export REQUESTS_CA_BUNDLE="${AMBARI_CERT_PATH}"
     else
-        echo -e "${RED}[ERROR] Could not obtain Ambari SSL certificate.${NC}"
+        echo -e "${RED}[ERROR] Could not extract CA bundle from Ambari.${NC}"
     fi
-    export PYTHONHTTPSVERIFY=0 # Optional fallback
+
+    export PYTHONHTTPSVERIFY=0 # Optional: disables HTTPS cert validation in Python (use cautiously)
 fi
+
 
 # Define colors for output
 GREEN='\033[0;32m'
