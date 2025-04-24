@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ┌───────────────────────────────────────────────────────────────────────────┐
-# │ © 2025 Acceldata Inc. All Rights Reserved.                                │
+# │ © 2025 Acceldata Inc. All Rights Reserved.                               │
 # │                                                                           │
-# │ Backup & restore Ambari Mpack service configurations                      │
+# │ Backup & restore Ambari Mpack service configurations                           │
 # └───────────────────────────────────────────────────────────────────────────┘
 
 # Set Ambari server details
@@ -266,6 +266,33 @@ AIRFLOW_CONFIG=(
     airflow-webserver-site
 )
 
+OZONE_CONFIG=(
+ozone-log4j-datanode
+ozone-log4j-om
+ozone-log4j-properties
+ozone-log4j-recon
+ozone-log4j-s3g
+ozone-log4j-scm
+ozone-ssl-client
+ranger-ozone-plugin-properties
+ranger-ozone-policymgr-ssl
+ranger-ozone-security
+ssl-client-datanode
+ssl-client-om
+ssl-client-recon
+ssl-client-s3g
+ssl-client-scm
+ssl-server-datanode
+ssl-server-om
+ssl-server-recon
+ssl-server-s3g
+ssl-server-scm
+ozone-core-site
+ranger-ozone-audit
+ozone-env
+ozone-site
+)
+
 # Function to backup configuration
 backup_config() {
     local config="$1"
@@ -487,7 +514,18 @@ restore_airflow_configs() {
         restore_config "$config"
     done
 }
-# Function to backup all configurations
+# Function to backup Ozone configurations
+backup_ozone_configs() {
+    for config in "${OZONE_CONFIG[@]}"; do
+        backup_config "$config"
+    done
+}
+# Function to restore Ozone configurations
+restore_ozone_configs() {
+    for config in "${OZONE_CONFIG[@]}"; do
+        restore_config "$config"
+    done
+}
 
 # Main function
 main() {
@@ -532,7 +570,8 @@ backup_service_configs() {
     echo -e "12. Flink"
     echo -e "13. Druid"
     echo -e "14. Airflow"
-    echo -e "15. All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi , Schema Registry , HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow)"
+    echo -e "15. Ozone"
+    echo -e "16. All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi , Schema Registry , HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow Ozone)"
     read -p "Enter your choice: " choice
 
     case "$choice" in
@@ -579,6 +618,9 @@ backup_service_configs() {
         backup_airflow_configs
         ;;
     "15")
+        backup_ozone_configs
+        ;;
+    "16")
         backup_all_configs
         ;;
     *)
@@ -603,6 +645,8 @@ backup_all_configs() {
     backup_flink_configs
     backup_druid_configs
     backup_airflow_configs
+    backup_ozone_configs
+    # Add any other services you want to backup here
     print_success "Backup of all configurations completed successfully."
 
 }
@@ -624,7 +668,8 @@ restore_service_configs() {
     echo -e "12. Flink"
     echo -e "13. Druid"
     echo -e "14. Airflow"
-    echo -e "15. All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi , Schema Registry , HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow)"
+    echo -e "15. Ozone"
+    echo -e "16. All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi , Schema Registry , HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow Ozone)"
     read -p "Enter your choice: " choice
 
     case "$choice" in
@@ -671,6 +716,9 @@ restore_service_configs() {
         restore_airflow_configs
         ;;
     "15")
+        restore_ozone_configs
+        ;;
+    "16")
         restore_all_configs
         ;;
     *)
@@ -694,6 +742,7 @@ restore_all_configs() {
     restore_flink_configs
     restore_druid_configs
     restore_airflow_configs
+    restore_ozone_configs
     print_success "Restore of all configurations completed successfully."
 }
 
