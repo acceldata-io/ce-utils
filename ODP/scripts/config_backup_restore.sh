@@ -12,6 +12,17 @@ export PASSWORD=admin
 export PORT=8080
 export PROTOCOL=http
 
+# Define colors for output
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+
 echo -e "${BOLD}${YELLOW}┌────────────────────────────────────────────────────────────┐${NC}"
 echo -e "${BOLD}${YELLOW}│${NC} ${BOLD}${CYAN}Ambari Configuration Backup & Restore Tool${NC} ${BOLD}${YELLOW}│${NC}"
 echo -e "${BOLD}${YELLOW}└────────────────────────────────────────────────────────────┘${NC}"
@@ -23,43 +34,58 @@ printf "   %-15s : %s\n" "PORT" "$PORT"
 printf "   %-15s : %s\n" "PROTOCOL" "$PROTOCOL"
 printf "   %-15s : %s\n" "CONFIG_BACKUP_DIR" "$(pwd)/upgrade_backup"
 echo ""
-# echo -e "🔑 Please ensure that you have set all variables correctly."
-# echo -e "⚙️  ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
-# echo -e "👤 ${GREEN}USER:${NC} $USER"
-# echo -e "🔒 ${GREEN}PASSWORD:${NC} ********" # Replace with actual password above
-# echo -e "🌐 ${GREEN}PORT:${NC} $PORT"
-# echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
 
-#---------------------------------------------------------
-# Ambari SSL Certificate Handling (if HTTPS enabled)
-#---------------------------------------------------------
-if [[ "${PROTOCOL,,}" == "https" ]]; then
-    AMBARI_CERT_PATH="/tmp/ambari-ca-bundle.crt"
-
-    echo | openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" 2>/dev/null |
-        awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{ print $0; if (/END CERTIFICATE/) print "" }' > "${AMBARI_CERT_PATH}"
-
-    if [[ -s "${AMBARI_CERT_PATH}" ]]; then
-        echo -e "${GREEN}✔ [INFO] Full CA bundle saved at:${NC} ${AMBARI_CERT_PATH}"
-        echo ""
-        export REQUESTS_CA_BUNDLE="${AMBARI_CERT_PATH}"
-    else
-        echo -e "${RED}[ERROR] Could not extract CA bundle from Ambari.${NC}"
+    # Note: If the Ambari server’s SSL configuration only includes its own certificate without the intermediate or root CA,
+    # you must regenerate the combined server certificate bundle. 
+    # Append any intermediate and root CA certificates to your existing server.pem file so that it contains:
+    #   - Server certificate
+    #   - Intermediate CA (if applicable)
+    #   - Root CA
+    # Then run:
+    #   ambari-server setup-security
+    # Choose the option to disable HTTPS, supply the updated server.pem, and re-enable HTTPS 
+    # with the full certificate chain in place.
+# Function to handle SSL verification failures by extracting and trusting CA
+handle_ssl_failure() {
+    local err_msg="$1"
+    local cert_path="/tmp/ambari-ca-bundle.crt"
+    echo ""
+    echo -e "${RED}[ERROR] SSL certificate verification failed.${NC}"
+    echo -e "${RED}Exception: ${err_msg}${NC}"
+    echo ""
+    echo -e "${CYAN}Detailed Explanation:${NC}"
+    echo -e "The SSL handshake failed because the Ambari server's certificate is not in your local trust store."
+    echo -e "This prevents secure HTTPS communication. This script can extract and install the server's CA certificate into your system trust store."
+    echo ""
+    echo -e "${CYAN}Additional Note:${NC}"
+    echo -e "If the Ambari server’s SSL configuration only includes its own certificate without intermediate or root CA,"
+    echo -e "you will need to reconstruct your server.pem file to include the full chain:"
+    echo -e "  1. Append any Intermediate CA (if present) and the Root CA to your existing server.pem."
+    echo -e "  2. Run: ambari-server setup-security"
+    echo -e "     • Choose to disable HTTPS."
+    echo -e "     • Supply the updated server.pem."
+    echo -e "     • Re-enable HTTPS so that Ambari serves the complete certificate chain."
+    echo ""
+    read -p "Do you want to extract and install the Ambari CA certificate now? (yes/no): " choice
+    if [[ "${choice,,}" != "yes" ]]; then
+        echo -e "${YELLOW}Aborting certificate installation. Please add the CA manually if needed.${NC}"
+        exit 1
     fi
-
-    export PYTHONHTTPSVERIFY=0 # Optional: disables HTTPS cert validation in Python (use cautiously)
-fi
-
-
-# Define colors for output
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
+    echo "Attempting to extract the Ambari server's CA bundle..."
+    echo | openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" 2>/dev/null \
+        | awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{ print }' > "${cert_path}"
+    if [[ -s "${cert_path}" ]]; then
+        echo -e "${GREEN}✔ CA bundle saved to ${cert_path}.${NC}"
+        echo "Installing to system trust store..."
+        sudo cp "${cert_path}" /etc/pki/ca-trust/source/anchors/
+        sudo update-ca-trust extract
+        echo ""
+        echo -e "${YELLOW}Please rerun this script now that the CA is trusted.${NC}"
+    else
+        echo -e "${RED}[ERROR] Could not extract CA bundle. Please verify the Ambari server certificate manually.${NC}"
+    fi
+    exit 1
+}
 
 # Function to display messages in green color
 print_success() {
@@ -330,14 +356,18 @@ backup_config() {
     if [ "$PROTOCOL" == "https" ]; then
         ssl_flag="-s https"
     fi
-    python /var/lib/ambari-server/resources/scripts/configs.py \
+    # Run backup, capture SSL errors
+    local err
+    err=$(python /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$USER" -p "$PASSWORD" $ssl_flag -a get -t "$PORT" -l "$AMBARISERVER" -n "$CLUSTER" \
-        -c "$config" -f "$backup_dir/$config.json" >/dev/null 2>&1
-    if [ $? -eq 0 ]; then
-        print_success "Backup of $config completed successfully."
-    else
-        print_error "Failed to backup $config. Please check logs for details."
-    fi
+        -c "$config" -f "$backup_dir/$config.json" 2>&1 1>/dev/null) || {
+        if [[ "$PROTOCOL" == "https" ]] && echo "$err" | grep -q "CERTIFICATE_VERIFY_FAILED"; then
+            handle_ssl_failure "$err"
+        fi
+        print_error "Failed to backup $config: $err"
+        return 1
+    }
+    print_success "Backup of $config completed successfully."
 }
 
 # Function to restore configuration
@@ -349,14 +379,18 @@ restore_config() {
     if [ "$PROTOCOL" == "https" ]; then
         ssl_flag="-s https"
     fi
-    python /var/lib/ambari-server/resources/scripts/configs.py \
+    # Run restore, capture SSL errors
+    local err
+    err=$(python /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$USER" -p "$PASSWORD" $ssl_flag -a set -t "$PORT" -l "$AMBARISERVER" -n "$CLUSTER" \
-        -c "$config" -f "$backup_dir/$config.json" >/dev/null 2>&1
-    if [ $? -eq 0 ]; then
-        print_success "Restore of $config completed successfully."
-    else
-        print_error "Failed to restore $config. Please check logs for details."
-    fi
+        -c "$config" -f "$backup_dir/$config.json" 2>&1 1>/dev/null) || {
+        if [[ "$PROTOCOL" == "https" ]] && echo "$err" | grep -q "CERTIFICATE_VERIFY_FAILED"; then
+            handle_ssl_failure "$err"
+        fi
+        print_error "Failed to restore $config: $err"
+        return 1
+    }
+    print_success "Restore of $config completed successfully."
 }
 
 # Function to backup Hue configurations
@@ -729,7 +763,7 @@ main
 #---------------------------------------------------------
 if ls doSet_version* 1> /dev/null 2>&1; then
     if [[ "$(pwd)" != "/tmp" ]]; then
-        mv doSet_version* /tmp
+        mv -f doSet_version* /tmp
         echo -e "${GREEN}JSON files moved to /tmp.${NC}"
     else
         echo -e "${YELLOW}Skipping move: script is already running in /tmp.${NC}"
