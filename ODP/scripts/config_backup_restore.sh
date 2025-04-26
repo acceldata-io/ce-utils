@@ -13,8 +13,8 @@ export PORT=8080
 export PROTOCOL=http
 
 # Determine Python binary and version
-PYTHON_BIN=$(if command -v python2 >/dev/null 2>&1; then
-    echo python2
+PYTHON_BIN=$(if command -v python >/dev/null 2>&1; then
+    echo python
 elif command -v python2 >/dev/null 2>&1; then
     echo python2
 else
