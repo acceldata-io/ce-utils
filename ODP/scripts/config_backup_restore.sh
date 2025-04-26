@@ -12,8 +12,17 @@ export PASSWORD=admin
 export PORT=8080
 export PROTOCOL=http
 
-# Define colors for output
+# Determine Python binary and version
+PYTHON_BIN=$(if command -v python2 >/dev/null 2>&1; then
+    echo python2
+elif command -v python2 >/dev/null 2>&1; then
+    echo python2
+else
+    echo python3
+fi)
+PYTHON_VERSION=$($PYTHON_BIN --version 2>&1)
 
+# Define colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -358,9 +367,14 @@ backup_config() {
     fi
     # Run backup, capture SSL errors
     local err
-    err=$(python /var/lib/ambari-server/resources/scripts/configs.py \
+    err=$($PYTHON_BIN /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$USER" -p "$PASSWORD" $ssl_flag -a get -t "$PORT" -l "$AMBARISERVER" -n "$CLUSTER" \
         -c "$config" -f "$backup_dir/$config.json" 2>&1 1>/dev/null) || {
+        # Check for Python 3 print syntax error
+        if echo "$err" | grep -q "Missing parentheses in call to 'print'"; then
+            print_error "Detected Python version: $PYTHON_VERSION. Please modify the PYTHON_BIN variable at the top of this script to 'python2' so configs.py runs under Python 2."
+            return 1
+        fi
         if [[ "$PROTOCOL" == "https" ]] && echo "$err" | grep -q "CERTIFICATE_VERIFY_FAILED"; then
             handle_ssl_failure "$err"
         fi
@@ -381,9 +395,14 @@ restore_config() {
     fi
     # Run restore, capture SSL errors
     local err
-    err=$(python /var/lib/ambari-server/resources/scripts/configs.py \
+    err=$($PYTHON_BIN /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$USER" -p "$PASSWORD" $ssl_flag -a set -t "$PORT" -l "$AMBARISERVER" -n "$CLUSTER" \
         -c "$config" -f "$backup_dir/$config.json" 2>&1 1>/dev/null) || {
+        # Check for Python 3 print syntax error
+        if echo "$err" | grep -q "Missing parentheses in call to 'print'"; then
+            print_error "Detected Python version: $PYTHON_VERSION. Please modify the PYTHON_BIN variable at the top of this script to 'python2' so configs.py runs under Python 2."
+            return 1
+        fi
         if [[ "$PROTOCOL" == "https" ]] && echo "$err" | grep -q "CERTIFICATE_VERIFY_FAILED"; then
             handle_ssl_failure "$err"
         fi
