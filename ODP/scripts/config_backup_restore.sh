@@ -16,6 +16,7 @@ export PROTOCOL=http
 PYTHON_BIN=python
 PYTHON_VERSION=$($PYTHON_BIN --version 2>&1)
 
+
 # Define colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -38,56 +39,81 @@ printf "   %-15s : %s\n" "PROTOCOL" "$PROTOCOL"
 printf "   %-15s : %s\n" "CONFIG_BACKUP_DIR" "$(pwd)/upgrade_backup"
 echo ""
 
-    # Note: If the Ambari server’s SSL configuration only includes its own certificate without the intermediate or root CA,
-    # you must regenerate the combined server certificate bundle. 
-    # Append any intermediate and root CA certificates to your existing server.pem file so that it contains:
-    #   - Server certificate
-    #   - Intermediate CA (if applicable)
-    #   - Root CA
-    # Then run:
-    #   ambari-server setup-security
-    # Choose the option to disable HTTPS, supply the updated server.pem, and re-enable HTTPS 
-    # with the full certificate chain in place.
+    # Note: On SSL failures, this script will automatically detect whether the Ambari server presents only its server certificate
+    # or a full chain (including intermediate and root CAs). If only the server certificate is present, you will be prompted with
+    # instructions to reconstruct and install the complete certificate chain. If a full chain is detected, you will be advised
+    # to ensure that the CA certificates are trusted locally.
 # Function to handle SSL verification failures by extracting and trusting CA
 handle_ssl_failure() {
     local err_msg="$1"
     local cert_path="/tmp/ambari-ca-bundle.crt"
+
+    # Extract certificates for validation
+    echo | openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" 2>/dev/null \
+        | awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{ print }' > "${cert_path}"
+    if [[ -s "${cert_path}" ]]; then
+        cert_count=$(grep -c "BEGIN CERTIFICATE" "${cert_path}")
+    else
+        cert_count=0
+    fi
+
     echo ""
     echo -e "${RED}[ERROR] SSL certificate verification failed.${NC}"
     echo -e "${RED}Exception: ${err_msg}${NC}"
     echo ""
     echo -e "${CYAN}Detailed Explanation:${NC}"
     echo -e "The SSL handshake failed because the Ambari server's certificate is not in your local trust store."
-    echo -e "This prevents secure HTTPS communication. This script can extract and install the server's CA certificate into your system trust store."
+    echo -e "This prevents secure HTTPS communication."
     echo ""
-    echo -e "${CYAN}Additional Note:${NC}"
-    echo -e "If the Ambari server’s SSL configuration only includes its own certificate without intermediate or root CA,"
-    echo -e "you will need to reconstruct your server.pem file to include the full chain:"
-    echo -e "  1. Append any Intermediate CA (if present) and the Root CA to your existing server.pem."
-    echo -e "  2. Run: ambari-server setup-security"
-    echo -e "     • Choose to disable HTTPS."
-    echo -e "     • Supply the updated server.pem."
-    echo -e "     • Re-enable HTTPS so that Ambari serves the complete certificate chain."
-    echo ""
-    read -p "Do you want to extract and install the Ambari CA certificate now? (yes/no): " choice
-    if [[ "${choice,,}" != "yes" ]]; then
-        echo -e "${YELLOW}Aborting certificate installation. Please add the CA manually if needed.${NC}"
+
+    if [[ "$cert_count" -le 1 ]]; then
+        # Scenario 1: Only server certificate present
+        echo -e "${CYAN}Additional Note:${NC}"
+        echo -e "The Ambari server’s SSL configuration only includes its own certificate without intermediate or root CA."
+        echo -e "You will need to reconstruct your server.pem file to include the full chain:"
+        echo -e "  1. Append any Intermediate CA (if present) and the Root CA to your existing server.pem."
+        echo -e "  2. Run: ambari-server setup-security"
+        echo -e "     • Choose to disable HTTPS."
+        echo -e "     • Supply the updated server.pem."
+        echo -e "     • Re-enable HTTPS so that Ambari serves the complete certificate chain."
+        echo ""
+        exit 1
+    else
+        # Scenario 2: Full chain served but not trusted locally
+        echo -e "${CYAN}Additional Note:${NC}"
+        echo -e "The Ambari server is serving a certificate chain (found $cert_count certificates), but it may not be trusted locally."
+        echo ""
+        echo -e "${CYAN}If you answer 'yes', this script will:"
+        echo -e "  • Extract the Ambari CA certificates and save them to ${cert_path}"
+        echo -e "  • Copy the certificate bundle to /etc/pki/ca-trust/source/anchors/"
+        echo -e "  • Run 'update-ca-trust extract' to add them to your system trust store"
+        echo ""
+        echo ""
+        read -p "Do you want to extract and install the Ambari CA certificate now? (yes/no): " choice
+        if [[ "${choice,,}" != "yes" ]]; then
+            echo -e "${YELLOW}Aborting certificate installation. Please add the CA manually if needed.${NC}"
+            exit 1
+        fi
+        echo "Attempting to extract the Ambari server's CA bundle..."
+        echo | openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" 2>/dev/null \
+            | awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{ print }' > "${cert_path}"
+        if [[ -s "${cert_path}" ]]; then
+            echo -e "${GREEN}✔ CA bundle saved to ${cert_path}.${NC}"
+            echo "Installing to system trust store..."
+            # Verify update-ca-trust is available
+            if ! command -v update-ca-trust >/dev/null 2>&1; then
+                print_error "'update-ca-trust' command not found. Please install the 'ca-certificates' package and rerun this script."
+                exit 1
+            fi
+            sudo cp "${cert_path}" /etc/pki/ca-trust/source/anchors/
+            sudo update-ca-trust extract
+            echo ""
+            echo -e "${YELLOW}Please rerun this script now that the CA is trusted.${NC}"
+        else
+            echo -e "${RED}[ERROR] Could not extract CA bundle. Please verify the Ambari server certificate manually.${NC}"
+        fi
         exit 1
     fi
-    echo "Attempting to extract the Ambari server's CA bundle..."
-    echo | openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" 2>/dev/null \
-        | awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{ print }' > "${cert_path}"
-    if [[ -s "${cert_path}" ]]; then
-        echo -e "${GREEN}✔ CA bundle saved to ${cert_path}.${NC}"
-        echo "Installing to system trust store..."
-        sudo cp "${cert_path}" /etc/pki/ca-trust/source/anchors/
-        sudo update-ca-trust extract
-        echo ""
-        echo -e "${YELLOW}Please rerun this script now that the CA is trusted.${NC}"
-    else
-        echo -e "${RED}[ERROR] Could not extract CA bundle. Please verify the Ambari server certificate manually.${NC}"
-    fi
-    exit 1
 }
 
 # Function to display messages in green color
