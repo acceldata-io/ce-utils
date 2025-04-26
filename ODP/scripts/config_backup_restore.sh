@@ -17,6 +17,7 @@ PYTHON_BIN=python
 PYTHON_VERSION=$($PYTHON_BIN --version 2>&1)
 
 
+
 # Define colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -164,31 +165,31 @@ confirm_action() {
 # Define configurations for each service
 HUE_CONFIGS=(
     "hue-auth-site"
-    hue-desktop-site
-    hue-hadoop-site
-    hue-hbase-site
-    hue-hive-site
-    hue-impala-site
-    hue-log4j-env
-    hue-notebook-site
-    hue-oozie-site
-    hue-pig-site
-    hue-rdbms-site
-    hue-solr-site
-    hue-spark-site
-    hue-ugsync-site
-    hue-zookeeper-site
-    hue.ini
-    pseudo-distributed.ini
-    services
-    hue-env
+    "hue-desktop-site"
+    "hue-hadoop-site"
+    "hue-hbase-site"
+    "hue-hive-site"
+    "hue-impala-site"
+    "hue-log4j-env"
+    "hue-notebook-site"
+    "hue-oozie-site"
+    "hue-pig-site"
+    "hue-rdbms-site"
+    "hue-solr-site"
+    "hue-spark-site"
+    "hue-ugsync-site"
+    "hue-zookeeper-site"
+    "hue.ini"
+    "pseudo-distributed.ini"
+    "services"
+    "hue-env"
 )
 
 IMPALA_CONFIGS=(
-"fair-scheduler"
-"impala-log4j-properties"
-"llama-site"
-"impala-env"
+    "fair-scheduler"
+    "impala-log4j-properties"
+    "llama-site"
+    "impala-env"
 )
 
 KAFKA_CONFIGS=(
@@ -258,121 +259,121 @@ NIFI_CONFIGS=(
 )
 
 SCHEMA_REGISTRY_CONFIG=(
-    ranger-schema-registry-audit
-    ranger-schema-registry-plugin-properties
-    ranger-schema-registry-policymgr-ssl
-    ranger-schema-registry-security
-    registry-common
-    registry-env
-    registry-log4j
-    registry-logsearch-conf
-    registry-ssl-config
-    registry-sso-config
+    "ranger-schema-registry-audit"
+    "ranger-schema-registry-plugin-properties"
+    "ranger-schema-registry-policymgr-ssl"
+    "ranger-schema-registry-security"
+    "registry-common"
+    "registry-env"
+    "registry-log4j"
+    "registry-logsearch-conf"
+    "registry-ssl-config"
+    "registry-sso-config"
 )
 
 HTTPFS_CONFIG=(
-    httpfs-site
-    httpfs-log4j
-    httpfs-env
-    httpfs
+    "httpfs-site"
+    "httpfs-log4j"
+    "httpfs-env"
+    "httpfs"
 )
 
 KUDU_CONFIG=(
-    kudu-master-env
-    kudu-master-stable-advanced
-    kudu-tablet-env
-    kudu-tablet-stable-advanced
-    kudu-unstable
-    ranger-kudu-plugin-properties
-    ranger-kudu-policymgr-ssl
-    ranger-kudu-security
-    kudu-env
-    ranger-kudu-audit
+    "kudu-master-env"
+    "kudu-master-stable-advanced"
+    "kudu-tablet-env"
+    "kudu-tablet-stable-advanced"
+    "kudu-unstable"
+    "ranger-kudu-plugin-properties"
+    "ranger-kudu-policymgr-ssl"
+    "ranger-kudu-security"
+    "kudu-env"
+    "ranger-kudu-audit"
 )
 
 JUPYTER_CONFIG=(
-    jupyterhub_config-py
-    sparkmagic-conf
-    jupyterhub-conf
+    "jupyterhub_config-py"
+    "sparkmagic-conf"
+    "jupyterhub-conf"
 )
 
 FLINK_CONFIG=(
-    flink-env
-    flink-log4j-console.properties
-    flink-log4j-historyserver
-    flink-logback-rest
-    flink-conf
-    flink-log4j
+    "flink-env"
+    "flink-log4j-console.properties"
+    "flink-log4j-historyserver"
+    "flink-logback-rest"
+    "flink-conf"
+    "flink-log4j"
 )
 
 DRUID_CONFIG=(
-    druid-historical
-    druid-logrotate
-    druid-overlord
-    druid-router
-    druid-log4j
-    druid-middlemanager
-    druid-env
-    druid-broker
-    druid-common
-    druid-coordinator
+    "druid-historical"
+    "druid-logrotate"
+    "druid-overlord"
+    "druid-router"
+    "druid-log4j"
+    "druid-middlemanager"
+    "druid-env"
+    "druid-broker"
+    "druid-common"
+    "druid-coordinator"
 )
 
 AIRFLOW_CONFIG=(
-    airflow-admin-site
-    airflow-api-site
-    airflow-atlas-site
-    airflow-celery-site
-    airflow-cli-site
-    airflow-core-site
-    airflow-dask-site
-    airflow-database-site
-    airflow-elasticsearch-site
-    airflow-email-site
-    airflow-env
-    airflow-githubenterprise-site
-    airflow-hive-site
-    airflow-kubernetes-site
-    airflow-kubernetes_executor-site
-    airflow-kubernetessecrets-site
-    airflow-ldap-site
-    airflow-lineage-site
-    airflow-logging-site
-    airflow-mesos-site
-    airflow-metrics-site
-    airflow-openlineage-site
-    airflow-operators-site
-    airflow-scheduler-site
-    airflow-smtp-site
-    airflow-kerberos-site
-    airflow-webserver-site
+    "airflow-admin-site"
+    "airflow-api-site"
+    "airflow-atlas-site"
+    "airflow-celery-site"
+    "airflow-cli-site"
+    "airflow-core-site"
+    "airflow-dask-site"
+    "airflow-database-site"
+    "airflow-elasticsearch-site"
+    "airflow-email-site"
+    "airflow-env"
+    "airflow-githubenterprise-site"
+    "airflow-hive-site"
+    "airflow-kubernetes-site"
+    "airflow-kubernetes_executor-site"
+    "airflow-kubernetessecrets-site"
+    "airflow-ldap-site"
+    "airflow-lineage-site"
+    "airflow-logging-site"
+    "airflow-mesos-site"
+    "airflow-metrics-site"
+    "airflow-openlineage-site"
+    "airflow-operators-site"
+    "airflow-scheduler-site"
+    "airflow-smtp-site"
+    "airflow-kerberos-site"
+    "airflow-webserver-site"
 )
 
 OZONE_CONFIG=(
-ozone-log4j-datanode
-ozone-log4j-om
-ozone-log4j-properties
-ozone-log4j-recon
-ozone-log4j-s3g
-ozone-log4j-scm
-ozone-ssl-client
-ranger-ozone-plugin-properties
-ranger-ozone-policymgr-ssl
-ranger-ozone-security
-ssl-client-datanode
-ssl-client-om
-ssl-client-recon
-ssl-client-s3g
-ssl-client-scm
-ssl-server-datanode
-ssl-server-om
-ssl-server-recon
-ssl-server-s3g
-ssl-server-scm
-ozone-core-site
-ranger-ozone-audit
-ozone-env
-ozone-site
+    "ozone-log4j-datanode"
+    "ozone-log4j-om"
+    "ozone-log4j-properties"
+    "ozone-log4j-recon"
+    "ozone-log4j-s3g"
+    "ozone-log4j-scm"
+    "ozone-ssl-client"
+    "ranger-ozone-plugin-properties"
+    "ranger-ozone-policymgr-ssl"
+    "ranger-ozone-security"
+    "ssl-client-datanode"
+    "ssl-client-om"
+    "ssl-client-recon"
+    "ssl-client-s3g"
+    "ssl-client-scm"
+    "ssl-server-datanode"
+    "ssl-server-om"
+    "ssl-server-recon"
+    "ssl-server-s3g"
+    "ssl-server-scm"
+    "ozone-core-site"
+    "ranger-ozone-audit"
+    "ozone-env"
+    "ozone-site"
 )
 
 # Function to backup configuration
