@@ -8,11 +8,6 @@
 # Usage:
 #   ./setup_ssl_with_existing_jks.sh
 ##########################################################################
-# Version Update: 8 Mar25 v1 , 13 Mar2025 v2 , 14 Mar2025 v3 , 21 Aprv4(Added kafka3)
-##########################################################################
-#---------------------------------------------------------
-# Color Definitions for Console Output
-#---------------------------------------------------------
 GREEN='\e[32m'
 YELLOW='\e[33m'
 RED='\e[31m'
@@ -31,12 +26,6 @@ keystorepassword="keystore_Password"       # Replace with actual keystore passwo
 truststorepassword="truststore_Password"     # Replace with actual truststore password
 keystore="/opt/security/pki/server.jks"
 truststore="/opt/security/pki/ca-certs.jks"
-
-# For Infra-Solr we need PKCS12 format keystore and truststore.
-# Example conversion:
-# keytool -importkeystore -srckeystore [MY_KEYSTORE.jks] -destkeystore [MY_FILE.p12] -srcstoretype JKS -deststoretype PKCS12 -deststorepass [PASSWORD_PKCS12]
-export keystore_p12="/opt/security/pki/server.p12"
-export truststore_p12="/opt/security/pki/ca-certs.p12"
 
 # Ensure that the keystore alias for the 
 # ranger.service.https.attrib.keystore.keyalias property is correctly configured. By default, it is set to the Ranger and KMS node's hostname.
@@ -170,12 +159,13 @@ enable_hdfs_ssl() {
 enable_infra_solr_ssl() {
     echo -e "${YELLOW}Starting to enable SSL for Infra-Solr...${NC}"
     set_config "infra-solr-env" "infra_solr_ssl_enabled" "true"
-    set_config "infra-solr-env" "infra_solr_keystore_location" "$keystore_p12"
+    set_config "infra-solr-env" "infra_solr_keystore_location" "$keystore"
     set_config "infra-solr-env" "infra_solr_keystore_password" "$keystorepassword"
-    set_config "infra-solr-env" "infra_solr_keystore_type" "PKCS12"
-    set_config "infra-solr-env" "infra_solr_truststore_location" "$truststore_p12"
+    set_config "infra-solr-env" "infra_solr_keystore_type" "jks"
+    set_config "infra-solr-env" "infra_solr_truststore_location" "$truststore"
     set_config "infra-solr-env" "infra_solr_truststore_password" "$truststorepassword"
-    set_config "infra-solr-env" "infra_solr_truststore_type" "PKCS12"
+    set_config "infra-solr-env" "infra_solr_truststore_type" "jks"
+    set_config "infra-solr-env" "infra_solr_extra_java_opts" "-Dsolr.jetty.keystore.type=jks -Dsolr.jetty.truststore.type=jks" 
     echo -e "${GREEN}Successfully enabled SSL for Infra-Solr.${NC}"
 }
 
