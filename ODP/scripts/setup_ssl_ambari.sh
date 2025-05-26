@@ -2,7 +2,6 @@
 # Acceldata Inc.
 
 # User-defined variables
-AMBARISERVER_URL="https://$(hostname -f):8443"
 IMPORT_CERT_PATH="/opt/security/pki/server.pem"
 IMPORT_KEY_PATH="/opt/security/pki/server.key"
 PEM_PASSWORD="Password"
@@ -47,4 +46,5 @@ ambari-server setup-security --security-option=setup-https --api-ssl=true \
     --pem-password="$PEM_PASSWORD" --api-ssl-port=8443
 
 # Display the Ambari URL
+AMBARISERVER_URL="https://$(hostname -f):8443"
 echo "Ambari URL: $AMBARISERVER_URL"
