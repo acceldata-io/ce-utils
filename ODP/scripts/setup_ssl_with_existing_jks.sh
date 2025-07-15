@@ -443,7 +443,7 @@ display_service_options() {
     echo -e "${GREEN} 1)${NC} 🗃️  HDFS, YARN & MapReduce"
     echo -e "${GREEN} 2)${NC} 🔍 Infra-Solr"
     echo -e "${GREEN} 3)${NC} 🐝 Hive"
-    echo -e "${GREEN} 4)${NC} 🛡️  Ranger"
+    echo -e "${GREEN} 4)${NC} 🛡️ Ranger"
     echo -e "${GREEN} 5)${NC} ✨ Spark2"
     echo -e "${GREEN} 6)${NC} 📡 Kafka"
     echo -e "${GREEN} 7)${NC} 📚 HBase"
