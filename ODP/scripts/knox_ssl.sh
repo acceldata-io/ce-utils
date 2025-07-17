@@ -64,7 +64,8 @@ prompt_yes_no() {
 
 # Create a timestamped backup of all files in the keystore directory
 backup_keystore() {
-    local base_backup_dir="$DATA_DIR/backup_$(date +"%Y%m%d")"
+#    local base_backup_dir="$DATA_DIR/backup_$(date +"%Y%m%d")"
+    local base_backup_dir="$KNox_DIR/data/security/backup_$(date +"%Y%m%d_%H%M%S_%3N")"    
     local backup_dir="$base_backup_dir"
     local counter=1
 
