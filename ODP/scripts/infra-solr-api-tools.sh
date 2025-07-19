@@ -3,14 +3,14 @@
 #==============================================================================
 # Enhanced Solr Admin API Tools Script
 # Description: Comprehensive Solr cluster management and administration tool
-# Copyright (c) 2024 Acceldata Inc. All rights reserved.
+# Copyright (c) 2025 Acceldata Inc. All rights reserved.
 #==============================================================================
 
 set -euo pipefail
 
 # Configuration and Constants
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${SCRIPT_DIR}/solr-api-config.conf"
+CONFIG_FILE="/etc/ambari-infra-solr/conf/infra-solr-env.sh"
 LOG_FILE="${SCRIPT_DIR}/solr-admin.log"
 
 # Color codes for output
