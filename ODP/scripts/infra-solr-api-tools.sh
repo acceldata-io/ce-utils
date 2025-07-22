@@ -10,7 +10,8 @@ set -euo pipefail
 
 # Configuration and Constants
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="/etc/ambari-infra-solr/conf/infra-solr-env.sh"
+CONFIG_FILE=""
+#CONFIG_FILE="/etc/ambari-infra-solr/conf/infra-solr-env.sh"
 LOG_FILE="${SCRIPT_DIR}/solr-admin.log"
 
 # Color codes for output
