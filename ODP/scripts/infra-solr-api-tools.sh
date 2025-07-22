@@ -689,7 +689,7 @@ EOF
 
 show_menu() {
     echo -e "\n${GREEN}============================================${NC}"
-    echo -e "${GREEN}         Enhanced Solr Admin Tool           ${NC}"
+    echo -e "${GREEN}         Solr Admin Tool                     ${NC}"
     echo -e "${GREEN}============================================${NC}"
     echo -e "${BLUE}Collection Management:${NC}"
     echo " 1.  List Collections"
