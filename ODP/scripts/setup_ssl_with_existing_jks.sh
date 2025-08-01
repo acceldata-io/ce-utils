@@ -434,6 +434,31 @@ enable_schema_registry () {
     set_config "registry-ssl-config" "registry.trustStorePassword" "$truststorepassword"  
     echo -e "${GREEN}Successfully enabled SSL for Schema Registry.${NC}"
 }
+
+#---------------------------------------------------------
+# Livy3 SSL enablement
+#---------------------------------------------------------
+#---------------------------------------------------------
+# Livy3 SSL enablement
+#---------------------------------------------------------
+enable_livy3_ssl () {
+    echo -e "${YELLOW}Starting to enable SSL for Livy3...${NC}"
+    set_config "livy3-conf" "livy.keystore" "$keystore"
+    set_config "livy3-conf" "livy.keystore.password" "$keystorepassword"
+    set_config "livy3-conf" "livy.key-password" "$keystorepassword"
+    echo -e "${GREEN}Successfully enabled SSL for Livy3.${NC}"
+}
+
+#---------------------------------------------------------
+# Livy2 SSL enablement
+#---------------------------------------------------------
+enable_livy2_ssl () {
+    echo -e "${YELLOW}Starting to enable SSL for Livy2...${NC}"
+    set_config "livy2-conf" "livy.keystore" "$keystore"
+    set_config "livy2-conf" "livy.keystore.password" "$keystorepassword"
+    set_config "livy2-conf" "livy.key-password" "$keystorepassword"
+    echo -e "${GREEN}Successfully enabled SSL for Livy2.${NC}"
+}
 #---------------------------------------------------------
 # Menu for Selecting SSL Configuration Services
 #---------------------------------------------------------
@@ -453,7 +478,9 @@ display_service_options() {
     echo -e "${GREEN}11)${NC} ☁️ Ozone"
     echo -e "${GREEN}12)${NC} ⚙️ NiFi" 
     echo -e "${GREEN}13)${NC} 🔄 Schema Registry"
-    echo -e "${GREEN}14)${NC} 📡📡 Kafka3"  
+    echo -e "${GREEN}14)${NC} 🔬 Livy2"
+    echo -e "${GREEN}15)${NC} 📡📡 Kafka3"  
+    echo -e "${GREEN}16)${NC} 🧪 Livy3"
     echo -e "${GREEN}--------------------------------------------${NC}" 
     echo -e "${GREEN} A)${NC} 🌐 All Services"
     echo -e "${RED} Q)${NC} ❌ Quit"
@@ -480,7 +507,9 @@ while true; do
         11) enable_ozone_ssl ;;
         12) enable_nifi_ssl ;;
         13) enable_schema_registry ;;
-        14) enable_kafka3_ssl ;;
+        14) enable_livy2_ssl ;;
+        15) enable_kafka3_ssl ;;
+        16) enable_livy3_ssl ;;
         [Aa]) 
             enable_hdfs_ssl
             enable_infra_solr_ssl
@@ -495,6 +524,8 @@ while true; do
             enable_ozone_ssl
             enable_nifi_ssl
             enable_schema_registry
+            enable_livy2_ssl
+            enable_livy3_ssl
             enable_kafka3_ssl
             ;;
         [Qq]) 
