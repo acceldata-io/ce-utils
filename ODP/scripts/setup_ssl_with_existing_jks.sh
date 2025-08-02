@@ -89,7 +89,7 @@ echo -e "🔐 ${GREEN}keystore:${NC} $keystore"
 echo -e "🔐 ${GREEN}truststore:${NC} $truststore"
 echo -e "🔐 ${GREEN}keystorepassword:${NC} ********"
 echo -e "🔐 ${GREEN}truststorepassword:${NC} ********"
-echo -e "${YELLOW}ℹ️ Verify the keystore alias for Ranger and KMS nodes matches the configured alias (ranger.service.https.attrib.keystore.keyalias - default: host FQDN).${NC}"
+echo -e "${YELLOW}ℹ️ Verify the keystore alias for Ranger and KMS nodes matches the configured alias \n (ranger.service.https.attrib.keystore.keyalias - default: host FQDN).${NC}"
 echo -e "${GREEN}keytool -list -keystore \"$keystore\"${NC}"
 echo -e "${GREEN}────────────────────────────────────────────────────────${NC}"
 #---------------------------------------------------------
