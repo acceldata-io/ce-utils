@@ -153,7 +153,7 @@ perform_curl_request() {
     local endpoint="$1"
     local data="$2"
     local additional_headers="$3"
-    
+
     local response
     response=$(curl -s "${BASE_URL}/graphql" \
       -H "Accept: application/json, text/plain, */*" \
@@ -387,7 +387,11 @@ usage() {
 ###############################################################################
 # Main Execution
 ###############################################################################
-case "$1" in
+if [ $# -eq 0 ]; then
+    usage
+    exit 1
+fi
+case "${1:-}" in
     export_all_dashplot_dashboards)
         export_all_dashplot_dashboards
         ;;
