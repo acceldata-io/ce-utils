@@ -1,6 +1,9 @@
 #!/bin/bash
-#Acceldata Inc.
-# Define color codes
+# Acceldata Inc. | Pulse Platform Validation Script
+
+#---------------------------------
+# Color and Formatting Definitions
+#---------------------------------
 GREEN="\e[32m"
 RED="\e[31m"
 YELLOW="\e[33m"
@@ -10,204 +13,208 @@ BOLD="\e[1m"
 UNDERLINE="\e[4m"
 RESET="\e[0m"
 
-# Get current time and hostname
-CURRENT_TIME=$(date +"%Y-%m-%d %H:%M:%S %Z")
-HOSTNAME=$(hostname)
-
-# Function to print a divider
+#---------------------------------
+# Utility Functions
+#---------------------------------
 print_divider() {
-    printf "%0.s-" {1..60}
+    echo -e "${CYAN}------------------------------------------------------------${RESET}"
+}
+
+print_step() {
+    local n="$1"
+    local desc="$2"
+    print_divider
+    echo -e "${BLUE}${BOLD}STEP $n:${RESET} ${BOLD}${desc}${RESET}"
+    print_divider
     echo
 }
 
-# Display current time and hostname
+colored_echo() {
+    # Usage: colored_echo COLOR "Message"
+    local color="$1"
+    shift
+    echo -e "${!color}${BOLD}$*${RESET}"
+}
+
+colored_table_row() {
+    # Usage: colored_table_row COLOR "col1" "col2" ...
+    local color="$1"
+    shift
+    printf "${!color}${BOLD}%-20s %-16s %-20s${RESET}\n" "$@"
+}
+
+#---------------------------------
+# Initialization
+#---------------------------------
+CURRENT_TIME=$(date +"%Y-%m-%d %H:%M:%S %Z")
+HOSTNAME=$(hostname)
+CURRENT_DATE=$(date +"%Y-%m-%d")
+CURRENT_EPOCH=$(date +%s)
+
+#---------------------------------
+# Script Banner
+#---------------------------------
 echo -e "${CYAN}${BOLD}Running on Host:${RESET} ${YELLOW}${HOSTNAME}${RESET}"
 echo -e "${CYAN}${BOLD}Current Time:${RESET} ${YELLOW}${CURRENT_TIME}${RESET}\n"
 
-# STEP 1: Check Installation of Pulse Agents
-echo -e "${BLUE}${BOLD}---------------------------------------------"
-echo -e "STEP 1: Verifying Installation of Pulse Agents"
-echo -e "---------------------------------------------${RESET}\n"
+#---------------------------------
+# STEP 1: Verify Installation
+#---------------------------------
+print_step 1 "Verifying Installation of Pulse Agents"
 
 dirs=(/opt/pulse/node /opt/pulse/logs /opt/pulse/jmx /opt/pulse/log /opt/pulse/hydra)
+printf "${UNDERLINE}%-20s %-10s${RESET}\n" "Component" "Status"
+print_divider
 for dir in "${dirs[@]}"; do
     if [ -d "$dir" ]; then
-        echo -e "${GREEN}${BOLD}$(printf "%-20s %-10s" "$(basename "$dir")" "Installed")${RESET}"
+        colored_table_row GREEN "$(basename "$dir")" "Installed" ""
     else
-        echo -e "${RED}${BOLD}$(printf "%-20s %-10s" "$(basename "$dir")" "Not Installed")${RESET}"
+        colored_table_row RED "$(basename "$dir")" "Not Installed" ""
     fi
 done
+echo
 
-# STEP 2: Check Status of Pulse Services
-echo -e "\n${BLUE}${BOLD}-----------------------------------------"
-echo -e "STEP 2: Checking the Status of Pulse Agents"
-echo -e "-----------------------------------------${RESET}\n"
+#---------------------------------
+# STEP 2: Check Pulse Services
+#---------------------------------
+print_step 2 "Checking the Status of Pulse Agents"
 
+printf "${UNDERLINE}%-16s %-18s %-30s${RESET}\n" "Service" "Status" "Active Since"
 print_divider
-printf "${UNDERLINE}%-16s %-10s %s${RESET}\n" "Service" "Status" "Active Since"
-print_divider
-
 services=("pulsenode" "pulselogs" "pulsejmx" "hydra")
 for service in "${services[@]}"; do
     if systemctl list-units --full -all | grep -q "$service.service"; then
         if systemctl is-active --quiet "$service"; then
             status="Running"
             active_since=$(systemctl show "$service" --property=ActiveEnterTimestamp | cut -d'=' -f2)
-            echo -e "${GREEN}${BOLD}$(printf "%-16s %-10s %s" "$service" "$status" "$active_since")${RESET}"
+            colored_table_row GREEN "$service" "$status" "$active_since"
         else
-            status="Stopped"
-            echo -e "${RED}${BOLD}$(printf "%-16s %-10s %s" "$service" "$status" "-")${RESET}"
+            # Fallback: check if process is running
+            if pgrep -f "/opt/pulse/bin/$service" > /dev/null; then
+                colored_table_row YELLOW "$service" "Running (standalone)" "-"
+            else
+                colored_table_row RED "$service" "Stopped" "-"
+            fi
         fi
     else
-        # Check if the service is running as a standalone process
         if pgrep -f "/opt/pulse/bin/$service" > /dev/null; then
-            status="Running (standalone)"
-            echo -e "${GREEN}${BOLD}$(printf "%-16s %-10s %s" "$service" "$status" "-")${RESET}"
+            colored_table_row GREEN "$service" "Running (standalone)" "-"
         else
-            status="Not Found"
-            echo -e "${YELLOW}${BOLD}$(printf "%-16s %-10s %s" "$service" "$status" "-")${RESET}"
+            colored_table_row YELLOW "$service" "Not Found" "-"
         fi
     fi
 done
+echo
 
+#---------------------------------
 # STEP 3: Validate Hydra Service
-echo -e "\n${BLUE}${BOLD}--------------------------------"
-echo -e "STEP 3: Validating Hydra Service"
-echo -e "--------------------------------${RESET}\n"
+#---------------------------------
+print_step 3 "Validating Hydra Service"
 
-# Get current date and time
-CURRENT_DATE=$(date +"%Y-%m-%d")
-CURRENT_TIME=$(date +"%H:%M:%S %Z")
-CURRENT_EPOCH=$(date +%s)
-
-# Log file path
 HYDRA_LOG="/opt/pulse/hydra/log/hydra.log"
-CONFIG_FILE="/opt/pulse/hydra/config/hydra.yml"
+HYDRA_CONFIG="/opt/pulse/hydra/config/hydra.yml"
 
-# Check if the Hydra log file exists and is up-to-date
-echo -e "${BOLD}Checking Hydra Log File...${RESET}"
-
+colored_echo BOLD "Checking Hydra Log File..."
 if [ -f "$HYDRA_LOG" ]; then
     LOG_SIZE=$(stat -c %s "$HYDRA_LOG")
     LOG_MOD_TIME=$(stat -c %y "$HYDRA_LOG")
     TIME_DIFF=$((CURRENT_EPOCH - $(stat -c %Y "$HYDRA_LOG")))
-
     echo -e "${CYAN}Log file size: ${LOG_SIZE} bytes${RESET}"
     echo -e "${CYAN}Last modified: ${LOG_MOD_TIME}${RESET}"
-
     if [ "$TIME_DIFF" -le 300 ]; then
-        echo -e "${GREEN}Hydra log file is up-to-date (modified within the last 5 minutes).${RESET}"
+        colored_echo GREEN "Hydra log file is up-to-date (modified within last 5 minutes)."
     else
-        echo -e "${YELLOW}Hydra log file is older (last modified more than 5 minutes ago).${RESET}"
+        colored_echo YELLOW "Hydra log file is older (last modified more than 5 minutes ago)."
     fi
 
-    # Check for different log levels in the log file and validate timestamps
-    echo -e "\n${BOLD}Checking for Log Levels in Hydra Log File...${RESET}"
-
+    colored_echo BOLD "\nChecking for Log Levels in Hydra Log File..."
     for LEVEL in "ERROR"; do
         LOG_ENTRIES=$(tail -n3 "$HYDRA_LOG" | grep "$LEVEL")
-
         if [ -n "$LOG_ENTRIES" ]; then
             any_recent_entries=false
-            echo -e "${RED}${LEVEL} entries found in Hydra log file:${RESET}"
+            colored_echo RED "$LEVEL entries found in Hydra log file:"
             echo "$LOG_ENTRIES" | while IFS= read -r line; do
                 ERROR_DATE=$(echo "$line" | awk -F'T' '{print $1}')
                 ERROR_TIME=$(echo "$line" | awk -F'T' '{print $2}' | cut -d'.' -f1)
                 ERROR_TIMESTAMP=$(date -d "$ERROR_DATE $ERROR_TIME" +%s)
                 ERROR_TIME_DIFF=$((CURRENT_EPOCH - ERROR_TIMESTAMP))
-
                 if [ "$ERROR_TIME_DIFF" -le 300 ]; then
-                    echo -e "${RED}$line${RESET} ${YELLOW}(Within the last 5 minutes)${RESET}"
+                    echo -e "${RED}$line${RESET} ${YELLOW}(Within last 5 minutes)${RESET}"
                     any_recent_entries=true
                 elif [ "$ERROR_DATE" == "$CURRENT_DATE" ]; then
                     echo -e "${YELLOW}$line${RESET} (Today but older than 5 minutes)"
                     any_recent_entries=true
-                else
-                    continue
                 fi
             done
-
             if [ "$any_recent_entries" = false ]; then
-                echo -e "${GREEN}No recent ${LEVEL} entries found in Hydra log file.${RESET}"
+                colored_echo GREEN "No recent $LEVEL entries found in Hydra log file."
             fi
         else
-            echo -e "${GREEN}No ${LEVEL} entries found in Hydra log file.${RESET}"
+            colored_echo GREEN "No $LEVEL entries found in Hydra log file."
         fi
     done
 else
-    echo -e "${RED}Hydra log file not found at $HYDRA_LOG!${RESET}"
+    colored_echo RED "Hydra log file not found at $HYDRA_LOG!"
 fi
 
-# Check if Hydra service is active or running
-echo -e "\n${BOLD}Checking Hydra Service Status...${RESET}"
-
-if systemctl is-active --quiet hydra; then
-    echo -e "${GREEN}Hydra service is active and running.${RESET}"
-else
-    echo -e "${RED}Hydra service is not running!${RESET}"
-fi
-
-# Validate Hydra configuration file
-echo -e "\n${BOLD}Validating Hydra Config File...${RESET}"
-
-if [ -f "$CONFIG_FILE" ]; then
-    echo -e "${GREEN}Hydra config file found at $CONFIG_FILE.${RESET}"
-
-    # Checking base_url configuration
-    BASE_URL=$(grep -oP 'base_url:\s*\K.+' "$CONFIG_FILE")
-    if [[ "$BASE_URL" =~ http://.*:[0-9]+ ]]; then
-        echo -e "${GREEN}Base URL is valid: $BASE_URL${RESET}"
+colored_echo BOLD "\nChecking Hydra Service Status..."
+if systemctl list-units --full -all | grep -q "hydra.service"; then
+    if systemctl is-active --quiet hydra; then
+        colored_echo GREEN "Hydra service is active and running via systemd."
     else
-        echo -e "${RED}Base URL is invalid or missing in the config file.${RESET}"
+        colored_echo RED "Hydra service is not running via systemd!"
     fi
 else
-    echo -e "${RED}Hydra config file not found at $CONFIG_FILE!${RESET}"
+    if ps aux | grep "/opt/pulse/bin/hydra" | grep -v grep > /dev/null; then
+        colored_echo GREEN "Hydra process is running (non-systemd, likely Ambari-managed)."
+        ps aux | grep "/opt/pulse/bin/hydra" | grep -v grep
+    else
+        colored_echo RED "Hydra process not found!"
+    fi
 fi
 
-# STEP 4: Validate PulseNode Configuration and Logs
-echo -e "\n${BLUE}${BOLD}--------------------------------"
-echo -e "STEP 4: Validating PulseNode"
-echo -e "--------------------------------${RESET}\n"
-
-# Config and log file paths
-CONFIG_FILE="/opt/pulse/node/config/node.conf"
-LOG_DIR="/opt/pulse/node/log"
-
-# Validate the configuration file
-echo -e "${BOLD}Validating PulseNode Configuration File...${RESET}"
-
-if [ -f "$CONFIG_FILE" ]; then
-    echo -e "${GREEN}Configuration file found at $CONFIG_FILE.${RESET}"
-
-    # Check the file listing
-    echo -e "\n${BOLD}Configuration File Listing:${RESET}"
-    ls -tlr "$CONFIG_FILE"
-
-    # InfluxDB URLs in Configuration File
-    echo -e "\n${BOLD}InfluxDB URLs in Configuration File:${RESET}"
-    grep -A2 'outputs.influxdb' "$CONFIG_FILE" | grep 'urls' | uniq 
-
+colored_echo BOLD "\nValidating Hydra Config File..."
+if [ -f "$HYDRA_CONFIG" ]; then
+    colored_echo GREEN "Hydra config file found at $HYDRA_CONFIG."
+    BASE_URL=$(grep -oP 'base_url:\s*\K.+' "$HYDRA_CONFIG")
+    if [[ "$BASE_URL" =~ http://.*:[0-9]+ ]]; then
+        colored_echo GREEN "Base URL is valid: $BASE_URL"
+    else
+        colored_echo RED "Base URL is invalid or missing in the config file."
+    fi
 else
-    echo -e "${RED}Configuration file not found at $CONFIG_FILE!${RESET}"
+    colored_echo RED "Hydra config file not found at $HYDRA_CONFIG!"
+fi
+echo
+
+#---------------------------------
+# STEP 4: Validate PulseNode
+#---------------------------------
+print_step 4 "Validating PulseNode"
+
+PULSENODE_CONFIG="/opt/pulse/node/config/node.conf"
+PULSENODE_LOG_DIR="/opt/pulse/node/log"
+
+colored_echo BOLD "Validating PulseNode Configuration File..."
+if [ -f "$PULSENODE_CONFIG" ]; then
+    colored_echo GREEN "Configuration file found at $PULSENODE_CONFIG."
+    colored_echo BOLD "\nConfiguration File Listing:"
+    ls -tlr "$PULSENODE_CONFIG"
+    colored_echo BOLD "\nInfluxDB URLs in Configuration File:"
+    grep -A2 'outputs.influxdb' "$PULSENODE_CONFIG" | grep 'urls' | uniq 
+else
+    colored_echo RED "Configuration file not found at $PULSENODE_CONFIG!"
 fi
 
-# Validate the logs
-echo -e "\n${BOLD}Checking PulseNode Log Files...${RESET}"
-
-if [ -d "$LOG_DIR" ]; then
-    echo -e "${GREEN}Log directory found at $LOG_DIR.${RESET}"
-
-    # List all log files with today's date
-    echo -e "\n${BOLD}Log Files for Today (${CURRENT_DATE}):${RESET}"
-
-    # Find log files modified today
-    LOG_FILES=$(find "$LOG_DIR" -maxdepth 1 -type f -newermt "$CURRENT_DATE" ! -newermt "$CURRENT_DATE +1 day")
-
+colored_echo BOLD "\nChecking PulseNode Log Files..."
+if [ -d "$PULSENODE_LOG_DIR" ]; then
+    colored_echo GREEN "Log directory found at $PULSENODE_LOG_DIR."
+    colored_echo BOLD "\nLog Files for Today ($CURRENT_DATE):"
+    LOG_FILES=$(find "$PULSENODE_LOG_DIR" -maxdepth 1 -type f ! -name '*.gz' -newermt "$CURRENT_DATE" ! -newermt "$CURRENT_DATE +1 day")
     if [ -n "$LOG_FILES" ]; then
         for file in $LOG_FILES; do
-            if [ -s "$file" ]; then  # Check if the file is not empty
+            if [ -s "$file" ]; then
                 echo -e "\n${CYAN}Tail of $(basename "$file") (${file}):${RESET}"
-                # Color code lines with errors only
                 tail -n 2 "$file" | while IFS= read -r line; do
                     if [[ "$line" == *"ERROR"* ]]; then
                         echo -e "${RED}${line}${RESET}"
@@ -216,122 +223,114 @@ if [ -d "$LOG_DIR" ]; then
                     fi
                 done
             else
-                echo -e "${YELLOW}Skipping empty log file: $(basename "$file")${RESET}"
+                colored_echo YELLOW "Skipping empty log file: $(basename "$file")"
             fi
         done
     else
-        echo -e "${RED}No log files found for today.${RESET}"
+        colored_echo RED "No log files found for today."
     fi
 else
-    echo -e "${RED}Log directory not found at $LOG_DIR!${RESET}"
+    colored_echo RED "Log directory not found at $PULSENODE_LOG_DIR!"
 fi
+echo
 
-# Validate the pulselogs directory and files
-echo -e "\n${BLUE}${BOLD}--------------------------------"
-echo -e "STEP 5: Validating PulseLogs"
-echo -e "--------------------------------${RESET}\n"
+#---------------------------------
+# STEP 5: Validate PulseLogs
+#---------------------------------
+print_step 5 "Validating PulseLogs"
 
-PULSELOGS_DIR="/opt/pulse/logs"
 PULSELOGS_CONFIG_DIR="/opt/pulse/logs/config"
 PULSELOGS_LOG_DIR="/opt/pulse/logs/log"
 
-# Validate the configuration files in PulseLogs
-echo -e "${BOLD}Validating PulseLogs Configuration Files...${RESET}"
-
+colored_echo BOLD "Validating PulseLogs Configuration Files..."
 if [ -d "$PULSELOGS_CONFIG_DIR" ]; then
-    echo -e "${GREEN}Configuration directory found at $PULSELOGS_CONFIG_DIR.${RESET}"
-
-    # List configuration files
-    echo -e "\n${BOLD}Configuration Files:${RESET}"
+    colored_echo GREEN "Configuration directory found at $PULSELOGS_CONFIG_DIR."
+    colored_echo BOLD "\nConfiguration Files:"
     ls -ltr "$PULSELOGS_CONFIG_DIR"
-
-    # Display InfluxDB URLs from configuration files
-    echo -e "\n${BOLD}hosts details from config file:${RESET}"
+    colored_echo BOLD "\nhosts details from config file:"
     grep 'hosts' "$PULSELOGS_CONFIG_DIR"/logs.yml
 else
-    echo -e "${RED}Configuration directory not found at $PULSELOGS_CONFIG_DIR!${RESET}"
+    colored_echo RED "Configuration directory not found at $PULSELOGS_CONFIG_DIR!"
 fi
 
-# Validate the logs
-echo -e "\n${BOLD}Checking PulseLogs Log Files...${RESET}"
-
+colored_echo BOLD "\nChecking PulseLogs Log Files..."
 if [ -d "$PULSELOGS_LOG_DIR" ]; then
-    echo -e "${GREEN}Log directory found at $PULSELOGS_LOG_DIR.${RESET}"
-
-    # List all log files with today's date
-    echo -e "\n${BOLD}Log Files for Today (${CURRENT_DATE}):${RESET}"
-
-    # Find log files modified today
+    colored_echo GREEN "Log directory found at $PULSELOGS_LOG_DIR."
+    colored_echo BOLD "\nLog Files for Today ($CURRENT_DATE):"
     LOG_FILES=$(find "$PULSELOGS_LOG_DIR" -maxdepth 1 -type f -newermt "$CURRENT_DATE" ! -newermt "$CURRENT_DATE +1 day")
-
     if [ -n "$LOG_FILES" ]; then
         for file in $LOG_FILES; do
             echo -e "\n${CYAN}Tail of $(basename "$file") (${file}):${RESET}"
-            tail -n 1 "$file" | sed "s/^/${RED}/"
+            tail -n 1 "$file" | while IFS= read -r line; do
+                if [[ "$line" == *"ERROR"* ]]; then
+                    echo -e "${RED}${line}${RESET}"
+                else
+                    echo -e "${line}"
+                fi
+            done
         done
     else
-        echo -e "${RED}No log files found for today.${RESET}"
+        colored_echo RED "No log files found for today."
     fi
 else
-    echo -e "${RED}Log directory not found at $PULSELOGS_LOG_DIR!${RESET}"
+    colored_echo RED "Log directory not found at $PULSELOGS_LOG_DIR!"
 fi
-# Validate the PulseJMX directory and files
-echo -e "\n${BLUE}${BOLD}--------------------------------"
-echo -e "STEP 6: Validating PulseJMX"
-echo -e "--------------------------------${RESET}\n"
+echo
 
-PULSEJMX_DIR="/opt/pulse/jmx"
+#---------------------------------
+# STEP 6: Validate PulseJMX
+#---------------------------------
+print_step 6 "Validating PulseJMX"
+
 PULSEJMX_CONFIG_DIR="/opt/pulse/jmx/config"
 PULSEJMX_LOG_DIR="/opt/pulse/jmx/log"
-CURRENT_DATE=$(date +"%Y-%m-%d")
-CURRENT_TIME=$(date +"%Y-%m-%d %H:%M:%S")
 
-# Validate the configuration files in PulseJMX
-echo -e "${BOLD}Validating PulseJMX Configuration Files...${RESET}"
-
+colored_echo BOLD "Validating PulseJMX Configuration Files..."
 if [ -d "$PULSEJMX_CONFIG_DIR" ]; then
-    echo -e "${GREEN}Configuration directory found at $PULSEJMX_CONFIG_DIR.${RESET}"
-
+    colored_echo GREEN "Configuration directory found at $PULSEJMX_CONFIG_DIR."
     if [ -f "$PULSEJMX_CONFIG_DIR/logback.xml" ]; then
-        echo -e "\n${BOLD}Configuration File Listing:${RESET}"
-        ls -tlr "$PULSEJMX_CONFIG_DIR/logback.xml" 
+        colored_echo BOLD "\nConfiguration File Listing:"
+        ls -tlr "$PULSEJMX_CONFIG_DIR/logback.xml"
     else
-        echo -e "${RED}Configuration file logback.xml not found in $PULSEJMX_CONFIG_DIR!${RESET}"
+        colored_echo RED "Configuration file logback.xml not found in $PULSEJMX_CONFIG_DIR!"
     fi
-
     if [ -d "$PULSEJMX_CONFIG_DIR/enabled" ]; then
-        echo -e "\n${BOLD}JMX Enabled Files:${RESET}"
-        ls -tlr "$PULSEJMX_CONFIG_DIR/enabled" 
+        colored_echo BOLD "\nJMX Enabled Files:"
+        ls -tlr "$PULSEJMX_CONFIG_DIR/enabled"
     else
-        echo -e "${RED}Enabled configuration directory not found in $PULSEJMX_CONFIG_DIR!${RESET}"
+        colored_echo RED "Enabled configuration directory not found in $PULSEJMX_CONFIG_DIR!"
     fi
 else
-    echo -e "${RED}Configuration directory not found at $PULSEJMX_CONFIG_DIR!${RESET}"
+    colored_echo RED "Configuration directory not found at $PULSEJMX_CONFIG_DIR!"
 fi
 
-# Validate the log files in PulseJMX
-echo -e "\n${BOLD}Checking PulseJMX Log Files...${RESET}"
-
+colored_echo BOLD "\nChecking PulseJMX Log Files..."
 if [ -d "$PULSEJMX_LOG_DIR" ]; then
-    echo -e "${GREEN}Log directory found at $PULSEJMX_LOG_DIR.${RESET}"
-
-    # List all log files with today's date
-    echo -e "\n${BOLD}Log Files for Today (${CURRENT_DATE}):${RESET}"
-
-    # Find log files modified today
+    colored_echo GREEN "Log directory found at $PULSEJMX_LOG_DIR."
+    colored_echo BOLD "\nLog Files for Today ($CURRENT_DATE):"
     LOG_FILES=$(find "$PULSEJMX_LOG_DIR" -maxdepth 1 -type f -newermt "$CURRENT_DATE" ! -newermt "$CURRENT_DATE +1 day")
-
     if [ -n "$LOG_FILES" ]; then
         for file in $LOG_FILES; do
             echo -e "\n${CYAN}Tail of $(basename "$file") (${file}):${RESET}"
-            tail -n 1 "$file" | sed "s/^/${RED}/"
+            tail -n 1 "$file" | while IFS= read -r line; do
+                if [[ "$line" == *"ERROR"* ]]; then
+                    echo -e "${RED}${line}${RESET}"
+                else
+                    echo -e "${line}"
+                fi
+            done
         done
     else
-        echo -e "${RED}No log files found for today.${RESET}"
+        colored_echo RED "No log files found for today."
     fi
 else
-    echo -e "${RED}Log directory not found at $PULSEJMX_LOG_DIR!${RESET}"
+    colored_echo RED "Log directory not found at $PULSEJMX_LOG_DIR!"
 fi
+echo
 
-# End of the script
-echo -e "\n${BLUE}${BOLD}Validation Completed at $CURRENT_TIME on $(hostname).${RESET}"
+#---------------------------------
+# Script Complete
+#---------------------------------
+print_divider
+colored_echo BLUE "✔ Validation Completed at $CURRENT_TIME on $HOSTNAME."
+print_divider
