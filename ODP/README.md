@@ -36,8 +36,8 @@ To make use of this script for enabling SSL in your ODP environment, perform the
   - **keystore_p12:** Ensure the PKCS12 format keystore file is present on the Infra-Solr node.
   - **truststore_p12:** Verify that the PKCS12 format truststore file is present on the Infra-Solr node.
 
-#<img width="802" alt="image" src="https://github.com/acceldata-io/ce-utils/assets/28974904/c9d220de-fb52-4cab-8635-05c5c3267d77">
-<img width="1511" alt="image" src="https://github.com/user-attachments/assets/0ca72992-4b51-4937-8eca-24743aa555b2" />
+<img width="683" height="758" alt="image" src="https://github.com/user-attachments/assets/0ddfc18f-7879-4c6c-9b99-02426d3ce40d" />
+
 
 ### 2. Setup Ambari SSL
 - **Script:** [setup_ssl_ambari.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/setup_ssl_ambari.sh)
