@@ -192,7 +192,7 @@ setup() {
 # Default Storage Configuration
 ###############################################################################
 # Allow override of storage directory via environment variable
-STORAGE_DIR="${STORAGE_DIR:-/opt/pulse_exports}"
+STORAGE_DIR="${STORAGE_DIR:-~/pulse_exports}"
 DASHBOARD_LIST="${STORAGE_DIR}/dashboards_list.txt"
 LOG_FILE="${STORAGE_DIR}/pulse_migration.log"
 
