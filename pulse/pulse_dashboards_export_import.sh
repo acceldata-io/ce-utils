@@ -167,7 +167,7 @@ perform_curl_request() {
     local additional_headers="$3"
 
     local response
-    response=$(curl -s "${BASE_URL}/graphql" \
+    response=$(curl -s --insecure "${BASE_URL}/graphql" \
       -H "Accept: application/json, text/plain, */*" \
       -H "Content-Type: application/json" \
       -H "Cookie: application=pulse; _csrf=${csrf_token}; jwt=${jwt_token_fixed}; XSRF-TOKEN=${xsrf_token}" \
@@ -175,8 +175,7 @@ perform_curl_request() {
       -H "X-XSRF-TOKEN: ${xsrf_token}" \
       -H "role: e30=" \
       $additional_headers \
-      --data-raw "$data" \
-      --insecure)
+      --data-raw "$data")
 
     if [ $? -ne 0 ]; then
         echo -e "${RED}${BOLD}API request failed.${RESET}"
