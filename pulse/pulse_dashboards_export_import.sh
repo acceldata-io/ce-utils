@@ -15,6 +15,7 @@ set -euo pipefail
 #   ./pulse_dashplot_export_import.sh export_custom_dashplot_dashboards
 ###############################################################################
 
+
  # Determine protocol based on SSL settings
 ssl_config_file="${AcceloHome}/config/docker/ad-core.yml"
 protocol="http"
@@ -119,7 +120,8 @@ send_curl_request() {
 fetch_csrf_tokens() {
     echo -e "${DARK_GREY}${BOLD}Fetching CSRF tokens from ${BASE_URL}/csrfEndpoint...${RESET}"
     local csrf_response
-    csrf_response=$(curl -s -i "${BASE_URL}/csrfEndpoint")
+    csrf_response=$(curl -s -i --insecure "${BASE_URL}/csrfEndpoint")
+    echo "$csrf_response" > /tmp/csrf_dump.txt
     csrf_token=$(echo "$csrf_response" | grep -oP '_csrf=\K[^;]*')
     xsrf_token=$(echo "$csrf_response" | grep -oP 'XSRF-TOKEN=\K[^;]*')
 
@@ -137,7 +139,7 @@ fetch_csrf_tokens() {
 fetch_jwt_token() {
     echo -e "${DARK_GREY}${BOLD}Fetching JWT token from ${BASE_URL}/login...${RESET}"
     local login_response
-    login_response=$(curl -s -i "${BASE_URL}/login" \
+    login_response=$(curl -s -i --insecure "${BASE_URL}/login" \
       -H "Content-Type: application/json" \
       --data-raw "{\"email\":\"${PULSE_USERNAME}\",\"password\":\"${PULSE_PASSWORD_BASE64}\"}")
     local jwt_token
@@ -201,12 +203,12 @@ setup() {
 ###############################################################################
 # Default Storage Configuration
 ###############################################################################
-# Allow override of storage directory via environment variable
 DASHBOARD_LIST=""
 LOG_FILE=""
 # Allow override of storage directory via environment variable
 STORAGE_DIR="${STORAGE_DIR:-$(pwd)/pulse_exports}"
 [[ -w "$(pwd)" ]] || STORAGE_DIR="${HOME}/pulse_exports"
+DASHBOARD_LIST="${STORAGE_DIR}/dashboards_list.txt"
 LOG_FILE="${STORAGE_DIR}/pulse_migration.log"
 
 # Ensure the storage directory exists
