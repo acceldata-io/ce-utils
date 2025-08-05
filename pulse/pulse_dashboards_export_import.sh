@@ -15,8 +15,18 @@ set -euo pipefail
 #   ./pulse_dashplot_export_import.sh export_custom_dashplot_dashboards
 ###############################################################################
 
-# Default values
-DEFAULT_BASE_URL="http://$(hostname -f):4000"
+ # Determine protocol based on SSL settings
+ssl_config_file="${AcceloHome}/config/docker/ad-core.yml"
+protocol="http"
+if [[ -f "$ssl_config_file" ]]; then
+    if egrep -q 'SSL_ENFORCED[:=][[:space:]]*true' "$ssl_config_file" || \
+       egrep -q 'SSL_ENABLED[:=][[:space:]]*true' "$ssl_config_file"; then
+        protocol="https"
+    fi
+else
+    echo -e "${YELLOW}Warning: SSL config file not found at ${ssl_config_file}. Defaulting to HTTP.${RESET}"
+fi
+DEFAULT_BASE_URL="${protocol}://$(hostname -f):4000"
 DEFAULT_MONITOR_GROUP=""
 
 ###############################################################################
