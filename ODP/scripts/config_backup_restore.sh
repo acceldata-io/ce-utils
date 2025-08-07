@@ -844,8 +844,6 @@ backup_all_configs() {
 
 # Function to restore individual service configurations
 restore_service_configs() {
-# Function to restore individual service configurations
-restore_service_configs() {
     while true; do
         echo -e "${MAGENTA}${BOLD}┌──────────────────────────────────────────────┐${NC}"
         echo -e "${MAGENTA}${BOLD}│      ${CYAN}Restore Service Configurations${MAGENTA}${BOLD}         │${NC}"
