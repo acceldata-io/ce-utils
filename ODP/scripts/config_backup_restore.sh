@@ -258,6 +258,23 @@ NIFI_CONFIGS=(
     "ranger-nifi-audit"
 )
 
+# NiFi Registry configuration array
+NIFI_REGISTRY_CONFIG=(
+    "ranger-nifi-registry-audit"
+    "nifi-registry-ambari-config"
+    "nifi-registry-bootstrap-env"
+    "nifi-registry-providers-env"
+    "nifi-registry-properties"
+    "nifi-registry-identity-providers-env"
+    "nifi-registry-authorizers-env"
+    "ranger-nifi-registry-policymgr-ssl"
+    "ranger-nifi-registry-plugin-properties"
+    "nifi-registry-ambari-ssl-config"
+    "nifi-registry-logback-env"
+    "ranger-nifi-registry-security"
+    "nifi-registry-env"
+)
+
 SCHEMA_REGISTRY_CONFIG=(
     "ranger-schema-registry-audit"
     "ranger-schema-registry-plugin-properties"
@@ -582,10 +599,22 @@ restore_nifi_configs() {
     done
 }
 
+# Function to backup NiFi Registry configurations
+backup_nifi_registry_configs() {
+    for config in "${NIFI_REGISTRY_CONFIG[@]}"; do
+        backup_config "$config"
+    done
+}
 # Function to backup Schema Registry configurations
 backup_schema_registry_configs() {
     for config in "${SCHEMA_REGISTRY_CONFIG[@]}"; do
         backup_config "$config"
+    done
+}
+# Function to restore NiFi Registry configurations
+restore_nifi_registry_configs() {
+    for config in "${NIFI_REGISTRY_CONFIG[@]}"; do
+        restore_config "$config"
     done
 }
 # Function to restore Schema Registry configurations
@@ -747,19 +776,20 @@ backup_service_configs() {
         echo -e "${GREEN}5) ${BOLD}🔑 Ranger KMS${NC}"
         echo -e "${GREEN}6) ${BOLD}⚡ Spark3${NC}"
         echo -e "${GREEN}7) ${BOLD}🎛️ NiFi${NC}"
-        echo -e "${GREEN}8) ${BOLD}📜 Schema Registry${NC}"
-        echo -e "${GREEN}9) ${BOLD}📂 HTTPFS${NC}"
-        echo -e "${GREEN}10) ${BOLD}🐐 Kudu${NC}"
-        echo -e "${GREEN}11) ${BOLD}📓 Jupyter${NC}"
-        echo -e "${GREEN}12) ${BOLD}🦩 Flink${NC}"
-        echo -e "${GREEN}13) ${BOLD}🧙 Druid${NC}"
-        echo -e "${GREEN}14) ${BOLD}🌬️ Airflow${NC}"
-        echo -e "${GREEN}15) ${BOLD}🌍 Ozone${NC}"
-        echo -e "${GREEN}16) ${BOLD}☕ Kafka3${NC}"
-        echo -e "${GREEN}17) ${BOLD}🍷 Pinot${NC}"
-        echo -e "${GREEN}18) ${BOLD}🔄 All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone, Pinot, Kafka3)${NC}"
+        echo -e "${GREEN}8) ${BOLD}🏷️ NiFi Registry${NC}"
+        echo -e "${GREEN}9) ${BOLD}📜 Schema Registry${NC}"
+        echo -e "${GREEN}10) ${BOLD}📂 HTTPFS${NC}"
+        echo -e "${GREEN}11) ${BOLD}🐐 Kudu${NC}"
+        echo -e "${GREEN}12) ${BOLD}📓 Jupyter${NC}"
+        echo -e "${GREEN}13) ${BOLD}🦩 Flink${NC}"
+        echo -e "${GREEN}14) ${BOLD}🧙 Druid${NC}"
+        echo -e "${GREEN}15) ${BOLD}🌬️ Airflow${NC}"
+        echo -e "${GREEN}16) ${BOLD}🌍 Ozone${NC}"
+        echo -e "${GREEN}17) ${BOLD}☕ Kafka3${NC}"
+        echo -e "${GREEN}18) ${BOLD}🍷 Pinot${NC}"
+        echo -e "${GREEN}19) ${BOLD}🔄 All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, NiFi Registry, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone, Pinot, Kafka3)${NC}"
         echo -e "${RED}Q) ${BOLD}Quit${NC}"
-        echo -ne "${BOLD}${YELLOW}Enter your choice [1-16, Q]:${NC} "
+        echo -ne "${BOLD}${YELLOW}Enter your choice [1-19, Q]:${NC} "
         read choice
 
         case "$choice" in
@@ -770,17 +800,18 @@ backup_service_configs() {
         5) backup_ranger_kms_configs ;;
         6) backup_spark3_configs ;;
         7) backup_nifi_configs ;;
-        8) backup_schema_registry_configs ;;
-        9) backup_httpfs_configs ;;
-        10) backup_kudu_configs ;;
-        11) backup_jupyter_configs ;;
-        12) backup_flink_configs ;;
-        13) backup_druid_configs ;;
-        14) backup_airflow_configs ;;
-        15) backup_ozone_configs ;;
-        16) backup_kafka3_configs ;;
-        17) backup_pinot_configs ;;
-        18) backup_all_configs ;;
+        8) backup_nifi_registry_configs ;;
+        9) backup_schema_registry_configs ;;
+        10) backup_httpfs_configs ;;
+        11) backup_kudu_configs ;;
+        12) backup_jupyter_configs ;;
+        13) backup_flink_configs ;;
+        14) backup_druid_configs ;;
+        15) backup_airflow_configs ;;
+        16) backup_ozone_configs ;;
+        17) backup_kafka3_configs ;;
+        18) backup_pinot_configs ;;
+        19) backup_all_configs ;;
         [Qq]) break ;;
         *) print_error "Invalid option. Please select a valid service." ;;
         esac
@@ -796,6 +827,7 @@ backup_all_configs() {
     backup_ranger_kms_configs
     backup_spark3_configs
     backup_nifi_configs
+    backup_nifi_registry_configs
     backup_schema_registry_configs
     backup_httpfs_configs
     backup_kudu_configs
@@ -812,6 +844,8 @@ backup_all_configs() {
 
 # Function to restore individual service configurations
 restore_service_configs() {
+# Function to restore individual service configurations
+restore_service_configs() {
     while true; do
         echo -e "${MAGENTA}${BOLD}┌──────────────────────────────────────────────┐${NC}"
         echo -e "${MAGENTA}${BOLD}│      ${CYAN}Restore Service Configurations${MAGENTA}${BOLD}         │${NC}"
@@ -823,19 +857,20 @@ restore_service_configs() {
         echo -e "${GREEN}5) ${BOLD}🔑 Ranger KMS${NC}"
         echo -e "${GREEN}6) ${BOLD}⚡ Spark3${NC}"
         echo -e "${GREEN}7) ${BOLD}🎛️ NiFi${NC}"
-        echo -e "${GREEN}8) ${BOLD}📜 Schema Registry${NC}"
-        echo -e "${GREEN}9) ${BOLD}📂 HTTPFS${NC}"
-        echo -e "${GREEN}10) ${BOLD}🐐 Kudu${NC}"
-        echo -e "${GREEN}11) ${BOLD}📓 Jupyter${NC}"
-        echo -e "${GREEN}12) ${BOLD}🦩 Flink${NC}"
-        echo -e "${GREEN}13) ${BOLD}🧙 Druid${NC}"
-        echo -e "${GREEN}14) ${BOLD}🌬️ Airflow${NC}"
-        echo -e "${GREEN}15) ${BOLD}🌍 Ozone${NC}"
-        echo -e "${GREEN}16) ${BOLD}☕ Kafka3${NC}"
-        echo -e "${GREEN}17) ${BOLD}🍷 Pinot${NC}"
-        echo -e "${GREEN}18) ${BOLD}🔄 All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone, Pinot, Kafka3)${NC}"
+        echo -e "${GREEN}8) ${BOLD}🏷️ NiFi Registry${NC}"
+        echo -e "${GREEN}9) ${BOLD}📜 Schema Registry${NC}"
+        echo -e "${GREEN}10) ${BOLD}📂 HTTPFS${NC}"
+        echo -e "${GREEN}11) ${BOLD}🐐 Kudu${NC}"
+        echo -e "${GREEN}12) ${BOLD}📓 Jupyter${NC}"
+        echo -e "${GREEN}13) ${BOLD}🦩 Flink${NC}"
+        echo -e "${GREEN}14) ${BOLD}🧙 Druid${NC}"
+        echo -e "${GREEN}15) ${BOLD}🌬️ Airflow${NC}"
+        echo -e "${GREEN}16) ${BOLD}🌍 Ozone${NC}"
+        echo -e "${GREEN}17) ${BOLD}☕ Kafka3${NC}"
+        echo -e "${GREEN}18) ${BOLD}🍷 Pinot${NC}"
+        echo -e "${GREEN}19) ${BOLD}🔄 All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, NiFi Registry, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone, Pinot, Kafka3)${NC}"
         echo -e "${RED}Q) ${BOLD}Quit${NC}"
-        echo -ne "${BOLD}${YELLOW}Enter your choice [1-16, Q]:${NC} "
+        echo -ne "${BOLD}${YELLOW}Enter your choice [1-19, Q]:${NC} "
         read choice
 
         case "$choice" in
@@ -846,17 +881,18 @@ restore_service_configs() {
         5) restore_ranger_kms_configs ;;
         6) restore_spark3_configs ;;
         7) restore_nifi_configs ;;
-        8) restore_schema_registry_configs ;;
-        9) restore_httpfs_configs ;;
-        10) restore_kudu_configs ;;
-        11) restore_jupyter_configs ;;
-        12) restore_flink_configs ;;
-        13) restore_druid_configs ;;
-        14) restore_airflow_configs ;;
-        15) restore_ozone_configs ;;
-        16) restore_kafka3_configs ;;
-        17) restore_pinot_configs ;;
-        18) restore_all_configs ;;
+        8) restore_nifi_registry_configs ;;
+        9) restore_schema_registry_configs ;;
+        10) restore_httpfs_configs ;;
+        11) restore_kudu_configs ;;
+        12) restore_jupyter_configs ;;
+        13) restore_flink_configs ;;
+        14) restore_druid_configs ;;
+        15) restore_airflow_configs ;;
+        16) restore_ozone_configs ;;
+        17) restore_kafka3_configs ;;
+        18) restore_pinot_configs ;;
+        19) restore_all_configs ;;
         [Qq]) break ;;
         *) print_error "Invalid option. Please select a valid service." ;;
         esac
@@ -871,6 +907,7 @@ restore_all_configs() {
     restore_ranger_kms_configs
     restore_spark3_configs
     restore_nifi_configs
+    restore_nifi_registry_configs
     restore_schema_registry_configs
     restore_httpfs_configs
     restore_kudu_configs
