@@ -376,6 +376,57 @@ OZONE_CONFIG=(
     "ozone-site"
 )
 
+# Pinot configuration array
+PINOT_CONFIG=(
+    "pinot-tools-log4j2"
+    "pinot-server-conf"
+    "pinot-service-log4j2"
+    "pinot-env"
+    "pinot-broker-conf"
+    "pinot-broker-log4j2"
+    "pinot-controller-conf"
+    "pinot-server-log4j2"
+    "pinot-minion-conf"
+    "pinot-admin-log4j2"
+    "pinot-minion-log4j2"
+    "pinot-controller-log4j2"
+    "pinot-ingestion-job-log4j2"
+    "quickstart-log4j2"
+    "log4j2"
+)
+
+# Kafka3 configuration array
+KAFKA3_CONFIGS=(
+    "kafka3-env"
+    "kafka3-log4j"
+    "ranger-kafka3-policymgr-ssl"
+    "kafka3-mirrormaker2-destination"
+    "ranger-kafka3-audit"
+    "kafka3-mirrormaker2-common"
+    "kafka3-broker"
+    "kafka3-connect-distributed"
+    "kafka3_client_jaas_conf"
+    "ranger-kafka3-plugin-properties"
+    "ranger-kafka3-security"
+    "kafka3_jaas_conf"
+    "kafka3-mirrormaker2-source"
+    "cruise-control3"
+    "cruise-control3-log4j"
+    "cruise-control3-capacityJBOD"
+    "cruise-control3-ui-config"
+    "cruise-control3-env"
+    "cruise-control3-jaas-conf"
+    "cruise-control3-capacity"
+    "cruise-control3-clusterConfigs"
+    "cruise-control3-capacityCores"
+    "kraft-controller-env"
+    "kraft-broker-env"
+    "kraft-config"
+    "kraft-broker"
+    "kraft-broker-controller"
+    "kraft-controller"
+)
+
 # Function to backup configuration
 backup_config() {
     local config="$1"
@@ -628,6 +679,33 @@ restore_ozone_configs() {
     done
 }
 
+# Function to backup Pinot configurations
+backup_pinot_configs() {
+    for config in "${PINOT_CONFIG[@]}"; do
+        backup_config "$config"
+    done
+}
+
+# Function to restore Pinot configurations
+restore_pinot_configs() {
+    for config in "${PINOT_CONFIG[@]}"; do
+        restore_config "$config"
+    done
+}
+
+# Function to backup Kafka3 configurations
+backup_kafka3_configs() {
+    for config in "${KAFKA3_CONFIGS[@]}"; do
+        backup_config "$config"
+    done
+}
+
+# Function to restore Kafka3 configurations
+restore_kafka3_configs() {
+    for config in "${KAFKA3_CONFIGS[@]}"; do
+        restore_config "$config"
+    done
+}
 # Main function
 main() {
     print_script_info
@@ -677,7 +755,9 @@ backup_service_configs() {
         echo -e "${GREEN}13) ${BOLD}🧙 Druid${NC}"
         echo -e "${GREEN}14) ${BOLD}🌬️ Airflow${NC}"
         echo -e "${GREEN}15) ${BOLD}🌍 Ozone${NC}"
-        echo -e "${GREEN}16) ${BOLD}🔄 All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone)${NC}"
+        echo -e "${GREEN}16) ${BOLD}☕ Kafka3${NC}"
+        echo -e "${GREEN}17) ${BOLD}🍷 Pinot${NC}"
+        echo -e "${GREEN}18) ${BOLD}🔄 All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone, Pinot, Kafka3)${NC}"
         echo -e "${RED}Q) ${BOLD}Quit${NC}"
         echo -ne "${BOLD}${YELLOW}Enter your choice [1-16, Q]:${NC} "
         read choice
@@ -698,7 +778,9 @@ backup_service_configs() {
         13) backup_druid_configs ;;
         14) backup_airflow_configs ;;
         15) backup_ozone_configs ;;
-        16) backup_all_configs ;;
+        16) backup_kafka3_configs ;;
+        17) backup_pinot_configs ;;
+        18) backup_all_configs ;;
         [Qq]) break ;;
         *) print_error "Invalid option. Please select a valid service." ;;
         esac
@@ -722,9 +804,10 @@ backup_all_configs() {
     backup_druid_configs
     backup_airflow_configs
     backup_ozone_configs
+    backup_kafka3_configs
+    backup_pinot_configs
     # Add any other services you want to backup here
     print_success "Backup of all configurations completed successfully."
-
 }
 
 # Function to restore individual service configurations
@@ -748,7 +831,9 @@ restore_service_configs() {
         echo -e "${GREEN}13) ${BOLD}🧙 Druid${NC}"
         echo -e "${GREEN}14) ${BOLD}🌬️ Airflow${NC}"
         echo -e "${GREEN}15) ${BOLD}🌍 Ozone${NC}"
-        echo -e "${GREEN}16) ${BOLD}🔄 All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone)${NC}"
+        echo -e "${GREEN}16) ${BOLD}☕ Kafka3${NC}"
+        echo -e "${GREEN}17) ${BOLD}🍷 Pinot${NC}"
+        echo -e "${GREEN}18) ${BOLD}🔄 All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone, Pinot, Kafka3)${NC}"
         echo -e "${RED}Q) ${BOLD}Quit${NC}"
         echo -ne "${BOLD}${YELLOW}Enter your choice [1-16, Q]:${NC} "
         read choice
@@ -769,7 +854,9 @@ restore_service_configs() {
         13) restore_druid_configs ;;
         14) restore_airflow_configs ;;
         15) restore_ozone_configs ;;
-        16) restore_all_configs ;;
+        16) restore_kafka3_configs ;;
+        17) restore_pinot_configs ;;
+        18) restore_all_configs ;;
         [Qq]) break ;;
         *) print_error "Invalid option. Please select a valid service." ;;
         esac
@@ -792,6 +879,8 @@ restore_all_configs() {
     restore_druid_configs
     restore_airflow_configs
     restore_ozone_configs
+    restore_kafka3_configs
+    restore_pinot_configs
     print_success "Restore of all configurations completed successfully."
 }
 
