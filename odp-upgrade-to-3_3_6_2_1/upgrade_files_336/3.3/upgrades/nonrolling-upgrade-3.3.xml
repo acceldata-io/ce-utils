@@ -291,14 +291,6 @@
         </task>
       </execute-stage>
 
-      <execute-stage service="RANGER" component="RANGER_ADMIN" title="Disabling Ranger Audit Solr Bootstrap Configuration">
-        <task xsi:type="configure" id="odp_3_3_maint_ranger_audit_solr_bootstrap"/>
-      </execute-stage>
-
-      <execute-stage service="RANGER_KMS" component="RANGER_KMS_SERVER" title="Updating dbks-site configurations for Ranger KMS Keysecure support">
-        <task xsi:type="configure" id="odp_3_3_ranger_kms_keysecure_configuration"/>
-      </execute-stage>
-
     </group>
 
 
