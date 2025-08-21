@@ -465,7 +465,7 @@ enable_livy2_ssl () {
 display_service_options() {
     echo -e "\n🚀 ${YELLOW}SSL Configuration – Choose a Service:${NC}"
     echo -e "${GREEN}--------------------------------------------${NC}"
-    echo -e "${GREEN} 1)${NC} 🗃️  HDFS, YARN & MapReduce"
+    echo -e "${GREEN} 1)${NC} 🗃️ HDFS, YARN & MapReduce"
     echo -e "${GREEN} 2)${NC} 🔍 Infra-Solr"
     echo -e "${GREEN} 3)${NC} 🐝 Hive"
     echo -e "${GREEN} 4)${NC} 🛡️ Ranger"
@@ -479,7 +479,7 @@ display_service_options() {
     echo -e "${GREEN}12)${NC} ⚙️ NiFi" 
     echo -e "${GREEN}13)${NC} 🔄 Schema Registry"
     echo -e "${GREEN}14)${NC} 🔬 Livy2"
-    echo -e "${GREEN}15)${NC} 📡📡 Kafka3"  
+    echo -e "${GREEN}15)${NC} 📡 Kafka3"  
     echo -e "${GREEN}16)${NC} 🧪 Livy3"
     echo -e "${GREEN}--------------------------------------------${NC}" 
     echo -e "${GREEN} A)${NC} 🌐 All Services"
