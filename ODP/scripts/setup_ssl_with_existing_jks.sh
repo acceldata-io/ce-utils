@@ -423,6 +423,23 @@ enable_nifi_ssl () {
     echo -e "${GREEN}Successfully enabled SSL for NiFi.${NC}"
 }
 
+#---------------------------------------------------------
+# NiFi Registry SSL enablement
+#---------------------------------------------------------
+enable_nifi_registry_ssl () {
+    echo -e "${YELLOW}Starting to enable SSL for NiFi Registry ...${NC}"    
+    set_config "nifi-registry-ambari-ssl-config" "nifi.registry.ssl.isenabled" "true"
+    set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.keystore" "$keystore"
+    set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.keyPasswd" "$keystorepassword"
+    set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.keystorePasswd" "$keystorepassword"
+    set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.needClientAuth" "false"
+    set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.truststore" "$truststore"
+    set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.truststorePasswd" "$truststorepassword"
+    set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.keystoreType" "jks"
+    set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.truststoreType" "jks"
+    echo -e "${GREEN}Successfully enabled SSL for NiFi Registry.${NC}"
+}
+
 enable_schema_registry () {
     echo -e "${YELLOW}Starting to enable SSL for Schema Registry ...${NC}"        
     set_config "registry-ssl-config" "registry.ssl.isenabled" "true"
@@ -481,6 +498,7 @@ display_service_options() {
     echo -e "${GREEN}14)${NC} 🔬 Livy2"
     echo -e "${GREEN}15)${NC} 📡 Kafka3"  
     echo -e "${GREEN}16)${NC} 🧪 Livy3"
+    echo -e "${GREEN}17)${NC} 📝 NiFi Registry"
     echo -e "${GREEN}--------------------------------------------${NC}" 
     echo -e "${GREEN} A)${NC} 🌐 All Services"
     echo -e "${RED} Q)${NC} ❌ Quit"
@@ -510,6 +528,7 @@ while true; do
         14) enable_livy2_ssl ;;
         15) enable_kafka3_ssl ;;
         16) enable_livy3_ssl ;;
+        17) enable_nifi_registry_ssl ;;
         [Aa]) 
             enable_hdfs_ssl
             enable_infra_solr_ssl
@@ -523,6 +542,7 @@ while true; do
             enable_ranger_kms_ssl
             enable_ozone_ssl
             enable_nifi_ssl
+            enable_nifi_registry_ssl
             enable_schema_registry
             enable_livy2_ssl
             enable_livy3_ssl
