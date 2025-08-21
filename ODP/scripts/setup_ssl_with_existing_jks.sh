@@ -66,9 +66,9 @@ rangeradmin=$(get_host_for_component "RANGER_ADMIN")
 OOZIE_HOSTNAME=$(get_host_for_component "OOZIE_SERVER")
 rangerkms=$(get_host_for_component "RANGER_KMS_SERVER")
 
-echo -e "${GREEN}====================================================${NC}"
-echo -e "${GREEN}      Acceldata ODP SSL Configuration Script        ${NC}"
-echo -e "${GREEN}====================================================${NC}"
+echo -e "${GREEN}==========================================================${NC}"
+echo -e "${GREEN}              Acceldata ODP SSL Configuration Script        ${NC}"
+echo -e "${GREEN}===========================================================${NC}"
 # Validate essential variables and files before starting
 required_files=("$keystore" "$truststore" )
 for file in "${required_files[@]}"; do
@@ -80,18 +80,18 @@ done
 
 echo -e "${YELLOW}✅ All required keystore and truststore files are present.${NC}"
 echo -e "${YELLOW}🔑 Please ensure that you have set all variables correctly.${NC}\n"
-echo -e "⚙️  ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
+echo -e "⚙️ ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
 echo -e "👤 ${GREEN}USER:${NC} $USER"
-echo -e "🔒 ${GREEN}PASSWORD:${NC} ******** (hidden for security)"
+#echo -e "🔒 ${GREEN}PASSWORD:${NC} ******** (hidden for security)"
 echo -e "🌐 ${GREEN}PORT:${NC} $PORT"
 echo -e "🌐 ${GREEN}PROTOCOL:${NC} $PROTOCOL"
 echo -e "🔐 ${GREEN}keystore:${NC} $keystore"
 echo -e "🔐 ${GREEN}truststore:${NC} $truststore"
-echo -e "🔐 ${GREEN}keystorepassword:${NC} ********"
-echo -e "🔐 ${GREEN}truststorepassword:${NC} ********"
+#echo -e "🔐 ${GREEN}keystorepassword:${NC} ********"
+#echo -e "🔐 ${GREEN}truststorepassword:${NC} ********"
 echo -e "${YELLOW}ℹ️ Verify the keystore alias for Ranger and KMS nodes matches the configured alias \n (ranger.service.https.attrib.keystore.keyalias - default: host FQDN).${NC}"
 echo -e "${GREEN}keytool -list -keystore \"$keystore\"${NC}"
-echo -e "${GREEN}────────────────────────────────────────────────────────${NC}"
+#echo -e "${GREEN}────────────────────────────────────────────────────────${NC}"
 #---------------------------------------------------------
 # Function: set_config
 # Invokes the Ambari configuration script to set a given property.
@@ -480,29 +480,30 @@ enable_livy2_ssl () {
 # Menu for Selecting SSL Configuration Services
 #---------------------------------------------------------
 display_service_options() {
-    echo -e "\n🚀 ${YELLOW}SSL Configuration – Choose a Service:${NC}"
-    echo -e "${GREEN}--------------------------------------------${NC}"
-    echo -e "${GREEN} 1)${NC} 🗃️ HDFS, YARN & MapReduce"
-    echo -e "${GREEN} 2)${NC} 🔍 Infra-Solr"
-    echo -e "${GREEN} 3)${NC} 🐝 Hive"
-    echo -e "${GREEN} 4)${NC} 🛡️ Ranger"
-    echo -e "${GREEN} 5)${NC} ✨ Spark2"
-    echo -e "${GREEN} 6)${NC} 📡 Kafka"
-    echo -e "${GREEN} 7)${NC} 📚 HBase"
-    echo -e "${GREEN} 8)${NC} ⚡ Spark3"
-    echo -e "${GREEN} 9)${NC} 🌀 Oozie"
-    echo -e "${GREEN}10)${NC} 🔑 Ranger KMS"
-    echo -e "${GREEN}11)${NC} ☁️ Ozone"
-    echo -e "${GREEN}12)${NC} ⚙️ NiFi" 
-    echo -e "${GREEN}13)${NC} 🔄 Schema Registry"
-    echo -e "${GREEN}14)${NC} 🔬 Livy2"
-    echo -e "${GREEN}15)${NC} 📡 Kafka3"  
-    echo -e "${GREEN}16)${NC} 🧪 Livy3"
-    echo -e "${GREEN}17)${NC} 📝 NiFi Registry"
-    echo -e "${GREEN}--------------------------------------------${NC}" 
-    echo -e "${GREEN} A)${NC} 🌐 All Services"
-    echo -e "${RED} Q)${NC} ❌ Quit"
-    echo -e "${GREEN}----------------------------------------${NC}"
+    echo -e "${YELLOW}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "        ${GREEN}🚀  SSL Configuration Menu – Choose a Service{NC}"
+    echo -e "${YELLOW}╚════════════════════════════════════════════════════════════╝${NC}\n"
+    echo -e "${GREEN}  1)${NC} 🗃️   HDFS, YARN & MapReduce"
+    echo -e "${GREEN}  2)${NC} 🔍   Infra-Solr"
+    echo -e "${GREEN}  3)${NC} 🐝   Hive"
+    echo -e "${GREEN}  4)${NC} 🛡️   Ranger"
+    echo -e "${GREEN}  5)${NC} ✨   Spark2"
+    echo -e "${GREEN}  6)${NC} 📡   Kafka"
+    echo -e "${GREEN}  7)${NC} 📚   HBase"
+    echo -e "${GREEN}  8)${NC} ⚡   Spark3"
+    echo -e "${GREEN}  9)${NC} 🌀   Oozie"
+    echo -e "${GREEN} 10)${NC} 🔑   Ranger KMS"
+    echo -e "${GREEN} 11)${NC} ☁️   Ozone"
+    echo -e "${GREEN} 12)${NC} ⚙️   NiFi"
+    echo -e "${GREEN} 13)${NC} 🔄   Schema Registry"
+    echo -e "${GREEN} 14)${NC} 🔬   Livy2"
+    echo -e "${GREEN} 15)${NC} 📡   Kafka3"
+    echo -e "${GREEN} 16)${NC} 🧪   Livy3"
+    echo -e "${GREEN} 17)${NC} 📝   NiFi Registry"
+    echo -e "${YELLOW}────────────────────────────────────────────────────────────${NC}"
+    echo -e "${GREEN}  A)${NC} 🌐   All Services (for the brave)"
+    echo -e "${RED}  Q)${NC} ❌   Quit (no changes)"
+    echo -e "${YELLOW}────────────────────────────────────────────────────────────${NC}"
 }
 
 #---------------------------------------------------------
