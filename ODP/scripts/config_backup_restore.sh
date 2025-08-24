@@ -412,6 +412,26 @@ PINOT_CONFIG=(
     "log4j2"
 )
 
+# MLflow configuration array
+MLFLOW_CONFIG=(
+    "mlflow-conf"
+)
+
+# ClickHouse configuration array
+CLICKHOUSE_CONFIGS=(
+    "clickhouse-application"
+    "clickhouse-client-config"
+    "clickhouse-enable-keeper"
+    "clickhouse-env"
+    "clickhouse-keeper-config"
+    "clickhouse-macros"
+    "clickhouse-network-and-logging"
+    "clickhouse-remote-servers"
+    "clickhouse-server-config"
+    "clickhouse-use-keeper"
+    "clickhouse-users"
+)
+
 # Kafka3 configuration array
 KAFKA3_CONFIGS=(
     "kafka3-env"
@@ -735,6 +755,34 @@ restore_kafka3_configs() {
         restore_config "$config"
     done
 }
+
+# Function to backup ClickHouse configurations
+backup_clickhouse_configs() {
+    for config in "${CLICKHOUSE_CONFIGS[@]}"; do
+        backup_config "$config"
+    done
+}
+
+# Function to restore ClickHouse configurations
+restore_clickhouse_configs() {
+    for config in "${CLICKHOUSE_CONFIGS[@]}"; do
+        restore_config "$config"
+    done
+}
+
+# Function to backup MLflow configurations
+backup_mlflow_configs() {
+    for config in "${MLFLOW_CONFIG[@]}"; do
+        backup_config "$config"
+    done
+}
+
+# Function to restore MLflow configurations
+restore_mlflow_configs() {
+    for config in "${MLFLOW_CONFIG[@]}"; do
+        restore_config "$config"
+    done
+}
 # Main function
 main() {
     print_script_info
@@ -787,11 +835,12 @@ backup_service_configs() {
         echo -e "${GREEN}16) ${BOLD}🌍 Ozone${NC}"
         echo -e "${GREEN}17) ${BOLD}☕ Kafka3${NC}"
         echo -e "${GREEN}18) ${BOLD}🍷 Pinot${NC}"
-        echo -e "${GREEN}19) ${BOLD}🔄 All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, NiFi Registry, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone, Pinot, Kafka3)${NC}"
+        echo -e "${GREEN}19) ${BOLD}🏦 ClickHouse${NC}"
+        echo -e "${GREEN}20) ${BOLD}🤖 MLflow${NC}"
+        echo -e "${GREEN}21) ${BOLD}🔄 All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, NiFi Registry, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone, Pinot, Kafka3, ClickHouse, MLflow)${NC}"
         echo -e "${RED}Q) ${BOLD}Quit${NC}"
-        echo -ne "${BOLD}${YELLOW}Enter your choice [1-19, Q]:${NC} "
+        echo -ne "${BOLD}${YELLOW}Enter your choice [1-22, Q]:${NC} "
         read choice
-
         case "$choice" in
         1) backup_hue_configs ;;
         2) backup_impala_configs ;;
@@ -811,7 +860,9 @@ backup_service_configs() {
         16) backup_ozone_configs ;;
         17) backup_kafka3_configs ;;
         18) backup_pinot_configs ;;
-        19) backup_all_configs ;;
+        19) backup_clickhouse_configs ;;
+        20) backup_mlflow_configs ;;
+        21) backup_all_configs ;;
         [Qq]) break ;;
         *) print_error "Invalid option. Please select a valid service." ;;
         esac
@@ -838,6 +889,8 @@ backup_all_configs() {
     backup_ozone_configs
     backup_kafka3_configs
     backup_pinot_configs
+    backup_clickhouse_configs
+    backup_mlflow_configs
     # Add any other services you want to backup here
     print_success "Backup of all configurations completed successfully."
 }
@@ -866,11 +919,12 @@ restore_service_configs() {
         echo -e "${GREEN}16) ${BOLD}🌍 Ozone${NC}"
         echo -e "${GREEN}17) ${BOLD}☕ Kafka3${NC}"
         echo -e "${GREEN}18) ${BOLD}🍷 Pinot${NC}"
-        echo -e "${GREEN}19) ${BOLD}🔄 All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, NiFi Registry, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone, Pinot, Kafka3)${NC}"
+        echo -e "${GREEN}19) ${BOLD}🏦 ClickHouse${NC}"
+        echo -e "${GREEN}20) ${BOLD}🤖 MLflow${NC}"
+        echo -e "${GREEN}21) ${BOLD}🔄 All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, NiFi Registry, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone, Pinot, Kafka3, ClickHouse, MLflow)${NC}"
         echo -e "${RED}Q) ${BOLD}Quit${NC}"
-        echo -ne "${BOLD}${YELLOW}Enter your choice [1-19, Q]:${NC} "
+        echo -ne "${BOLD}${YELLOW}Enter your choice [1-22, Q]:${NC} "
         read choice
-
         case "$choice" in
         1) restore_hue_configs ;;
         2) restore_impala_configs ;;
@@ -890,7 +944,9 @@ restore_service_configs() {
         16) restore_ozone_configs ;;
         17) restore_kafka3_configs ;;
         18) restore_pinot_configs ;;
-        19) restore_all_configs ;;
+        19) restore_clickhouse_configs ;;
+        20) restore_mlflow_configs ;;
+        21) restore_all_configs ;;
         [Qq]) break ;;
         *) print_error "Invalid option. Please select a valid service." ;;
         esac
@@ -916,6 +972,8 @@ restore_all_configs() {
     restore_ozone_configs
     restore_kafka3_configs
     restore_pinot_configs
+    restore_clickhouse_configs
+    restore_mlflow_configs
     print_success "Restore of all configurations completed successfully."
 }
 
