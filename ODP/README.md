@@ -106,6 +106,7 @@ KEYSTORE_KEY=/opt/odp/security/pki/server.key
 KEYSTORE_PEM=/opt/odp/security/pki/server.pem
 TRUSTSTORE_PEM=/opt/odp/security/pki/ca-certs.pem
 PROTOCOL=http
+CLUSTER=ODP_CLUSTER_NAME
 
 CONFIG_SCRIPT=/var/lib/ambari-server/resources/scripts/configs.py
 
