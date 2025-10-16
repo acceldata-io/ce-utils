@@ -14,7 +14,18 @@ set -euo pipefail
 # Example:
 #   ./pulse_dashplot_export_import.sh export_custom_dashplot_dashboards
 ###############################################################################
-
+# Color definitions
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+RED='\033[0;31m'
+BOLD='\033[1m'
+RESET='\033[0m'
+BLUE='\033[0;34m'
+GREY='\033[1;90m'
+DARK_GREY='\033[1;30m'
+NC='\033[0m'  # No Color
 
  # Determine protocol based on SSL settings
 ssl_config_file="${AcceloHome}/config/docker/ad-core.yml"
@@ -35,19 +46,6 @@ DEFAULT_MONITOR_GROUP=""
 # You can override PULSE_USERNAME and PULSE_PASSWORD_BASE64 by exporting them before running this script
 PULSE_USERNAME="${PULSE_USERNAME:-admin}"
 PULSE_PASSWORD_BASE64="${PULSE_PASSWORD_BASE64:-YWRtaW5fcGFzc3dvcmQ=}"  # use "accelo admin encrypt to get encrypted password"
-
-# Color definitions
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-RED='\033[0;31m'
-BOLD='\033[1m'
-RESET='\033[0m'
-BLUE='\033[0;34m'
-GREY='\033[1;90m'
-DARK_GREY='\033[1;30m'
-NC='\033[0m'  # No Color
 
 # Global variables
 BASE_URL=""
