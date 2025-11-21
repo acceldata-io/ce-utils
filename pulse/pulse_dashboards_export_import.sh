@@ -53,6 +53,7 @@ MONITOR_GROUP=""
 csrf_token=""
 xsrf_token=""
 jwt_token_fixed=""
+PULSE_VERSION=""
 
 # Flag to ensure setup is performed only once
 SETUP_DONE=false
@@ -152,6 +153,51 @@ fetch_jwt_token() {
 }
 
 ###############################################################################
+# Function: fetch_pulse_version
+# Purpose : Retrieve Pulse version from the /get-pulse-version endpoint
+###############################################################################
+fetch_pulse_version() {
+    echo -e "${DARK_GREY}${BOLD}Fetching Pulse version from ${BASE_URL}/get-pulse-version...${RESET}"
+    local version_response
+    version_response=$(curl -s --insecure "${BASE_URL}/get-pulse-version" \
+      -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" \
+      -H "Cookie: application=pulse; jwt=${jwt_token_fixed}")
+
+    # Extract version from JSON response using grep and sed
+    PULSE_VERSION=$(echo "$version_response" | grep -oP '"version"\s*:\s*"\K[^"]*')
+
+    if [[ -z "$PULSE_VERSION" ]]; then
+        echo -e "${YELLOW}${BOLD}Warning: Failed to retrieve Pulse version. Continuing without version information.${RESET}"
+        PULSE_VERSION="unknown"
+    else
+        echo -e "${GREY}${BOLD}Pulse version retrieved successfully: ${CYAN}${PULSE_VERSION}${RESET}"
+    fi
+}
+
+###############################################################################
+# Function: is_version_gte_4
+# Purpose : Check if Pulse version is >= 4.0.0
+# Returns : 0 if version >= 4.0.0, 1 otherwise
+###############################################################################
+is_version_gte_4() {
+    if [[ "$PULSE_VERSION" == "unknown" ]]; then
+        # If version is unknown, default to old behavior (assume < 4.0.0)
+        return 1
+    fi
+
+    # Extract major version number
+    local major_version
+    major_version=$(echo "$PULSE_VERSION" | cut -d'.' -f1)
+
+    # Check if major version is >= 4
+    if [[ "$major_version" =~ ^[0-9]+$ ]] && [[ "$major_version" -ge 4 ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+###############################################################################
 # Function: perform_curl_request
 # Purpose : Execute a common curl request to the GraphQL endpoint
 # Arguments:
@@ -193,6 +239,7 @@ setup() {
         get_pulse_details
         fetch_csrf_tokens
         fetch_jwt_token
+        fetch_pulse_version
         SETUP_DONE=true
     fi
 }
@@ -346,10 +393,20 @@ import_dashplot_dashboards() {
     fi
     # Clean blank lines from dashboard list
     sed -i '/^\s*$/d' "$DASHBOARD_LIST"
+
+    # Determine import URL based on Pulse version
+    local import_url
+    if is_version_gte_4; then
+        import_url="${BASE_URL}/dashplots/import?importedFromOldUI=true"
+        echo -e "${CYAN}${BOLD}Using import URL for Pulse version >= 4.0.0: ${import_url}${RESET}" | tee -a "$LOG_FILE"
+    else
+        import_url="${BASE_URL}/dashplots/import?overwrite=true"
+        echo -e "${CYAN}${BOLD}Using import URL for Pulse version < 4.0.0: ${import_url}${RESET}" | tee -a "$LOG_FILE"
+    fi
+
     # Import each exported dashboard
     while IFS= read -r dashboard; do
         local zip_file="${STORAGE_DIR}/${dashboard}.zip"
-        local import_url="${BASE_URL}/dashplots/import?overwrite=true"
         if [[ ! -f "$zip_file" ]]; then
             echo -e "${RED}Skipped: ${dashboard} (ZIP file not found)${RESET}" | tee -a "$LOG_FILE"
             continue
