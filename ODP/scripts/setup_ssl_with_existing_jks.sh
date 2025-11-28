@@ -11,6 +11,7 @@
 GREEN='\e[32m'
 YELLOW='\e[33m'
 RED='\e[31m'
+CYAN='\e[36m'
 NC='\e[0m'  # No Color
 #---------------------------------------------------------
 # Default Values (Edit these if required)
@@ -27,10 +28,87 @@ truststorepassword="truststore_Password"     # Replace with actual truststore pa
 keystore="/opt/security/pki/server.jks"
 truststore="/opt/security/pki/ca-certs.jks"
 
+# File validation flag (set to "false" to skip file existence checks)
+CHECK_FILES="${CHECK_FILES:-true}"  # Default: true (check files)
+
 # Ensure that the keystore alias for the 
 # ranger.service.https.attrib.keystore.keyalias property is correctly configured. By default, it is set to the Ranger and KMS node's hostname.
 # To verify, log in to the Ranger node and run:
 #   keytool -list -keystore $keystore
+#---------------------------------------------------------
+# Handles SSL certificate verification failures and guides user for resolution
+#---------------------------------------------------------
+handle_ssl_failure() {
+    local err_msg="$1"
+    local cert_path="/tmp/ambari-ca-bundle.crt"
+
+    # Extract certificates for validation
+    echo | openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" 2>/dev/null |
+        awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{ print }' >"${cert_path}"
+    if [[ -s "${cert_path}" ]]; then
+        cert_count=$(grep -c "BEGIN CERTIFICATE" "${cert_path}")
+    else
+        cert_count=0
+    fi
+
+    echo ""
+    echo -e "${RED}[ERROR] SSL certificate verification failed.${NC}"
+    echo -e "${RED}Exception: ${err_msg}${NC}"
+    echo ""
+    echo -e "${CYAN}Detailed Explanation:${NC}"
+    echo -e "The SSL handshake failed because the Ambari server's certificate is not in your local trust store."
+    echo -e "This prevents secure HTTPS communication."
+    echo ""
+
+    if [[ "$cert_count" -le 1 ]]; then
+        # Scenario 1: Only server certificate present
+        echo -e "${CYAN}Additional Note:${NC}"
+        echo -e "The Ambari server's SSL configuration only includes its own certificate without intermediate or root CA."
+        echo -e "You will need to reconstruct your server.pem file to include the full chain:"
+        echo -e "  1. Append any Intermediate CA (if present) and the Root CA to your existing server.pem."
+        echo -e "  2. Run: ambari-server setup-security"
+        echo -e "     • Choose to disable HTTPS."
+        echo -e "     • Supply the updated server.pem."
+        echo -e "     • Re-enable HTTPS so that Ambari serves the complete certificate chain."
+        echo ""
+        exit 1
+    else
+        # Scenario 2: Full chain served but not trusted locally
+        echo -e "${CYAN}Additional Note:${NC}"
+        echo -e "The Ambari server is serving a certificate chain (found $cert_count certificates), but it may not be trusted locally."
+        echo ""
+        echo -e "${CYAN}If you answer 'yes', this script will:"
+        echo -e "  • Extract the Ambari CA certificates and save them to ${cert_path}"
+        echo -e "  • Copy the certificate bundle to /etc/pki/ca-trust/source/anchors/"
+        echo -e "  • Run 'update-ca-trust extract' to add them to your system trust store"
+        echo ""
+        echo ""
+        read -p "Do you want to extract and install the Ambari CA certificate now? (yes/no): " choice
+        if [[ "${choice,,}" != "yes" ]]; then
+            echo -e "${YELLOW}Aborting certificate installation. Please add the CA manually if needed.${NC}"
+            exit 1
+        fi
+        echo "Attempting to extract the Ambari server's CA bundle..."
+        echo | openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" 2>/dev/null |
+            awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{ print }' >"${cert_path}"
+        if [[ -s "${cert_path}" ]]; then
+            echo -e "${GREEN}✔ CA bundle saved to ${cert_path}.${NC}"
+            echo "Installing to system trust store..."
+            if ! command -v update-ca-trust >/dev/null 2>&1; then
+                echo -e "${RED}[ERROR] 'update-ca-trust' command not found. Please install the 'ca-certificates' package and rerun this script.${NC}"
+                exit 1
+            fi
+            cp "${cert_path}" /etc/pki/ca-trust/source/anchors/
+            update-ca-trust extract
+            echo ""
+            echo -e "${YELLOW}Please rerun this script now that the CA is trusted.${NC}"
+        else
+            echo -e "${RED}[ERROR] Could not extract CA bundle. Please verify the Ambari server certificate manually.${NC}"
+        fi
+        exit 1
+    fi
+}
+
 #---------------------------------------------------------
 # Ambari SSL Certificate Handling (if HTTPS enabled)
 #---------------------------------------------------------
@@ -40,7 +118,7 @@ if [[ "${PROTOCOL,,}" == "https" ]]; then
         | openssl x509 -outform PEM > "${AMBARI_CERT_PATH}" && [[ -s "${AMBARI_CERT_PATH}" ]]; then
         export REQUESTS_CA_BUNDLE="${AMBARI_CERT_PATH}"
     else
-        echo -e "${RED}[ERROR] Could not obtain Ambari SSL certificate.${NC}"
+        handle_ssl_failure "Could not obtain Ambari SSL certificate"
     fi
     export PYTHONHTTPSVERIFY=0  # Optional fallback
 fi
@@ -69,16 +147,19 @@ rangerkms=$(get_host_for_component "RANGER_KMS_SERVER")
 echo -e "${GREEN}==========================================================${NC}"
 echo -e "${GREEN}              Acceldata ODP SSL Configuration Script        ${NC}"
 echo -e "${GREEN}===========================================================${NC}"
-# Validate essential variables and files before starting
-required_files=("$keystore" "$truststore" )
-for file in "${required_files[@]}"; do
-    if [[ ! -f "$file" ]]; then
-        echo -e "${RED}Error:${NC} Required file '$file' not found. Please check before proceeding."
-        exit 1
-    fi
-done
-
-echo -e "${YELLOW}✅ All required keystore and truststore files are present.${NC}"
+# Validate essential variables and files before starting (if CHECK_FILES is true)
+if [[ "${CHECK_FILES,,}" == "true" ]]; then
+    required_files=("$keystore" "$truststore" )
+    for file in "${required_files[@]}"; do
+        if [[ ! -f "$file" ]]; then
+            echo -e "${RED}Error:${NC} Required file '$file' not found. Please check before proceeding."
+            exit 1
+        fi
+    done
+    echo -e "${YELLOW}✅ All required keystore and truststore files are present.${NC}"
+else
+    echo -e "${YELLOW}⚠️  File existence check is disabled (CHECK_FILES=false).${NC}"
+fi
 echo -e "${YELLOW}🔑 Please ensure that you have set all variables correctly.${NC}\n"
 echo -e "⚙️ ${GREEN}AMBARISERVER:${NC} $AMBARISERVER"
 echo -e "👤 ${GREEN}USER:${NC} $USER"
@@ -264,7 +345,12 @@ enable_ranger_ssl() {
     set_config "ranger-kafka3-policymgr-ssl" "xasecure.policymgr.clientssl.keystore" "$keystore"
     set_config "ranger-kafka3-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
     set_config "ranger-kafka3-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
-    set_config "ranger-kafka3-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"    
+    set_config "ranger-kafka3-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"
+    set_config "ranger-trino-policymgr-ssl" "xasecure.policymgr.clientssl.keystore" "$keystore"
+    set_config "ranger-trino-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
+    set_config "ranger-trino-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
+    set_config "ranger-trino-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"
+    set_config "ranger-trino-security" "ranger.plugin.trino.policy.rest.url" "https://$rangeradmin:6182" 
     echo -e "${GREEN}Successfully enabled SSL for Ranger.${NC}"
 }
 
@@ -476,6 +562,16 @@ enable_livy2_ssl () {
     set_config "livy2-conf" "livy.key-password" "$keystorepassword"
     echo -e "${GREEN}Successfully enabled SSL for Livy2.${NC}"
 }
+
+enable_trino_ssl () {
+    echo -e "${YELLOW}Starting to enable SSL for Trino...${NC}"
+    set_config "trino-env" "ssl_enabled" "true"
+    set_config "trino-env" "ssl_keystore" "$keystore"
+    set_config "trino-env" "ssl_keystore_password" "$keystorepassword"
+    set_config "trino-env" "java_truststore" "$truststore"
+    set_config "trino-env" "java_truststore_password" "$truststorepassword"
+    echo -e "${GREEN}Successfully enabled SSL for Trino.${NC}"
+}
 #---------------------------------------------------------
 # Menu for Selecting SSL Configuration Services
 #---------------------------------------------------------
@@ -500,6 +596,7 @@ display_service_options() {
     echo -e "${GREEN} 15)${NC} 📡   Kafka3"
     echo -e "${GREEN} 16)${NC} 🧪   Livy3"
     echo -e "${GREEN} 17)${NC} 📝   NiFi Registry"
+    echo -e "${GREEN} 18)${NC} 🚀   Trino"
     echo -e "${YELLOW}────────────────────────────────────────────────────────────${NC}"
     echo -e "${GREEN}  A)${NC} 🌐   All Services (for the brave)"
     echo -e "${RED}  Q)${NC} ❌   Quit (no changes)"
@@ -530,6 +627,7 @@ while true; do
         15) enable_kafka3_ssl ;;
         16) enable_livy3_ssl ;;
         17) enable_nifi_registry_ssl ;;
+        18) enable_trino_ssl ;;
         [Aa]) 
             enable_hdfs_ssl
             enable_infra_solr_ssl
@@ -541,13 +639,14 @@ while true; do
             enable_spark3_ssl
             enable_oozie_ssl
             enable_ranger_kms_ssl
-            enable_ozone_ssl
+            enable_ozone_ss
             enable_nifi_ssl
             enable_nifi_registry_ssl
             enable_schema_registry
             enable_livy2_ssl
             enable_livy3_ssl
             enable_kafka3_ssl
+            enable_trino_ssl
             ;;
         [Qq]) 
             echo -e "${GREEN}Exiting...${NC}"
