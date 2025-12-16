@@ -162,7 +162,7 @@ update_infra_configuration_for_jdk17() {
     set_config "infra-solr-env" "infra_solr_gc_log_opts" "$(cat $MIGRATION_PATH/Infra-solr-gc-log-opts)"
     set_config "infra-solr-env" "infra_solr_gc_tune" "$(cat $MIGRATION_PATH/Infra-solr-gc-tune)"
 
-    if [ "$JAVA_VERSION" -eq "8" ]; then
+    if [ "$JAVA_VERSION" -eq "11" ]; then
       set_config "infra-solr-env" "content" "$(cat $MIGRATION_PATH/Infra-solr-env-template)"
     fi
 
