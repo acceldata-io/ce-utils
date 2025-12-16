@@ -82,12 +82,12 @@ detect_source_jdk() {
 
     case "$source_jdk" in
         8)
-            MIGRATION_PATH="$TEMPLATE_DIR/jdk8-to-jdk17"
+            MIGRATION_PATH="$TEMPLATE_DIR/jdk8-specific"
             echo -e "${GREEN}Migration path set: JDK 8 → JDK 17${NC}"
             JAVA_VERSION="$source_jdk"
             ;;
         11)
-            MIGRATION_PATH="$TEMPLATE_DIR/jdk11-to-jdk17"
+            MIGRATION_PATH="$TEMPLATE_DIR/jdk11-specific"
             echo -e "${GREEN}Migration path set: JDK 11 → JDK 17${NC}"
             JAVA_VERSION="$source_jdk"
             ;;
@@ -158,16 +158,17 @@ update_hdfs_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for HDFS, YARN, and MapReduce...${NC}"
 
     set_config "hdfs-site" "jvm_flags" "${JVM_FLAGS_HDFS}"
-    set_config "hadoop-env" "content" "$(cat $MIGRATION_PATH/HDFS-env-template)"
+    set_config "hadoop-env" "content" "$(cat $TEMPLATE_DIR/HDFS-env-template)"
 
     set_config "yarn-site" "jvm_flags" "${JVM_FLAGS_YARN}"
-    set_config "mapred-env" "content" "$(cat $MIGRATION_PATH/Mpreduce-env-template)"
-    set_config "mapred-site" "yarn.app.mapreduce.am.admin-command-opts" "$(cat $MIGRATION_PATH/Mpreduce-site-template)"
-    set_config "yarn-env" "content" "$(cat $MIGRATION_PATH/Yarn-env-template)"
+    set_config "mapred-env" "content" "$(cat $TEMPLATE_DIR/Mpreduce-env-template)"
+    set_config "mapred-site" "yarn.app.mapreduce.am.admin-command-opts" "$(cat $TEMPLATE_DIR/Mpreduce-site-template)"
+    set_config "yarn-env" "content" "$(cat $TEMPLATE_DIR/Yarn-env-template)"
 
+    # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
       set_config "yarn-hbase-env" "content" "$(cat $MIGRATION_PATH/Yarn-hbase-env-template)"
-      set_config "Node Manager" "yarn.nodemanager.aux-services" "$(cat $MIGRATION_PATH/Yarn-nodemanager-aux-services)"
+      set_config "Node Manager" "yarn.nodemanager.aux-services" "$(cat MIGRATION_PATH/Yarn-nodemanager-aux-services)"
       # Remove configs
       delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.class"
       delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.classpath"
@@ -181,9 +182,10 @@ update_hdfs_configuration_for_jdk17() {
 update_infra_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for Infra-Solr...${NC}"
 
-    set_config "infra-solr-env" "infra_solr_gc_log_opts" "$(cat $MIGRATION_PATH/Infra-solr-gc-log-opts)"
-    set_config "infra-solr-env" "infra_solr_gc_tune" "$(cat $MIGRATION_PATH/Infra-solr-gc-tune)"
+    set_config "infra-solr-env" "infra_solr_gc_log_opts" "$(cat $TEMPLATE_DIR/Infra-solr-gc-log-opts)"
+    set_config "infra-solr-env" "infra_solr_gc_tune" "$(cat $TEMPLATE_DIR/Infra-solr-gc-tune)"
 
+    # Java 11 specific configuration changes
     if [ "$JAVA_VERSION" -eq "11" ]; then
       set_config "infra-solr-env" "content" "$(cat $MIGRATION_PATH/Infra-solr-env-template)"
     fi
@@ -195,17 +197,17 @@ update_hive_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for Tez and Hive...${NC}"
 
     set_config "tez-site" "jvm_flags" "${JVM_FLAGS_TEZ}"
-    set_config "tez-env" "content" "$(cat $MIGRATION_PATH/Tez-env-template)"
-    set_config "tez-site" "tez.am.launch.cluster-default.cmd-opts" "$(cat $MIGRATION_PATH/Tez-site-template)"
-    set_config "tez-site" "tez.task.launch.cluster-default.cmd-opts" "$(cat $MIGRATION_PATH/Tez-site-template)"
+    set_config "tez-env" "content" "$(cat $TEMPLATE_DIR/Tez-env-template)"
+    set_config "tez-site" "tez.am.launch.cluster-default.cmd-opts" "$(cat $TEMPLATE_DIR/Tez-site-template)"
+    set_config "tez-site" "tez.task.launch.cluster-default.cmd-opts" "$(cat $TEMPLATE_DIR/Tez-site-template)"
 
     set_config "hive-site" "jvm_flags" "${JVM_FLAGS_HIVE}"
-    set_config "hive-env" "content" "$(cat $MIGRATION_PATH/Hive-env-template)"
-    set_config "hive-site" "hive.tez.java.opts" "$(cat $MIGRATION_PATH/Hive-tez-java-opts)"
+    set_config "hive-env" "content" "$(cat $TEMPLATE_DIR/Hive-env-template)"
+    set_config "hive-site" "hive.tez.java.opts" "$(cat $TEMPLATE_DIR/Hive-tez-java-opts)"
+    set_config "hive-interactive-env" "llap_java_opts" "$(cat $TEMPLATE_DIR/Hive-llap-java-opts)"
+    set_config "hive-interactive-env" "content" "$(cat $TEMPLATE_DIR/Hive-interactive-env-template)"
 
-    set_config "hive-interactive-env" "llap_java_opts" "$(cat $MIGRATION_PATH/Hive-llap-java-opts)"
-    set_config "hive-interactive-env" "content" "$(cat $MIGRATION_PATH/Hive-interactive-env-template)"
-
+    # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
       # Remove configs
       delete_config "tez-site" "tez.am.launch.cmd-opts"
@@ -218,6 +220,7 @@ update_hive_configuration_for_jdk17() {
 update_hbase_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for HBase...${NC}"
 
+    # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
       set_config "hbase-env" "content" "$(cat $MIGRATION_PATH/HBase-env-template)"
     fi
@@ -229,7 +232,7 @@ update_oozie_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for Oozie...${NC}"
 
     set_config "oozie-site" "jvm_flags" "${JVM_FLAGS_OOZIE}"
-    set_config "oozie-env" "content" "$(cat $MIGRATION_PATH/Oozie-env-template)"
+    set_config "oozie-env" "content" "$(cat $TEMPLATE_DIR/Oozie-env-template)"
 
     echo -e "${GREEN}Successfully updated configurations for Oozie.${NC}"
 }
@@ -238,13 +241,15 @@ update_kms_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for Ranger KMS...${NC}"
 
     set_config "kms-site" "jvm_flags" "${JVM_FLAGS_KMS}"
-    set_config "kms-env" "content" "$(cat $MIGRATION_PATH/Kms-env-template)"
+    set_config "kms-env" "content" "$(cat $TEMPLATE_DIR/Kms-env-template)"
 
     echo -e "${GREEN}Successfully updated configurations for Ranger KMS.${NC}"
 }
 
 update_druid_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for Ranger Druid...${NC}"
+
+    # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
       set_config "druid-env" "content" "$(cat $MIGRATION_PATH/Druid-env-template)"
       set_config "druid-env" "druid.broker.jvm.opts" "$(cat $MIGRATION_PATH/Druid-env-opts)"
@@ -283,12 +288,12 @@ main() {
     detect_source_jdk
 
     # Verify template directory exists
-    if [[ ! -d "$MIGRATION_PATH" ]]; then
-        echo -e "${RED}Error: Template directory not found: $MIGRATION_PATH${NC}"
+    if [[ ! -d "$TEMPLATE_DIR" ]]; then
+        echo -e "${RED}Error: Template directory not found: $TEMPLATE_DIR${NC}"
         exit 1
     fi
 
-    echo -e "${GREEN}Using templates from: $MIGRATION_PATH${NC}\n"
+    echo -e "${GREEN}Using templates from: $TEMPLATE_DIR${NC}\n"
 
     while true; do
         display_service_options

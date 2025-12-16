@@ -1,1 +1,0 @@
--server -Djava.net.preferIPv4Stack=true -Dodp.version=${odp.version}{% if java_version|int > 11 %} {{jvm_flags}}{% endif %}

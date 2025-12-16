@@ -1,1 +1,0 @@
-{"jdk11": "-verbose:gc -XX:+PrintHeapAtGC -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintTenuringDistribution -XX:+PrintGCApplicationStoppedTime -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=15 -XX:GCLogFileSize=200M", "jdk17": "-Xlog:gc*,gc+heap,gc+age,safepoint:file=./gc.log:time,uptime:filecount=15,filesize=200M"}
