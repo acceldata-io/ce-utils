@@ -76,5 +76,5 @@ export JAVA_LIBRARY_PATH="$JAVA_LIBRARY_PATH:{{jdbc_libs_dir}}"
 {% endif %}
 
 {% if java_version > 11 %}
-export JETTY_OPTS="${JETTY_OPTS} --add-opens java.base/java.lang=ALL-UNNAMED -Dorg.eclipse.jetty.util.ssl.SslContextFactory.class=org.eclipse.jetty.util.ssl.SslContextFactory$Server"
+export JETTY_OPTS="${JETTY_OPTS} {{jvm_flags}} -Dorg.eclipse.jetty.util.ssl.SslContextFactory.class=org.eclipse.jetty.util.ssl.SslContextFactory$Server"
 {% endif %}

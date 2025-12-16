@@ -11,8 +11,8 @@ export tez.am.launch.cmd-opts="-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time
 export tez.task.launch.cmd-opts="-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}}"
 {% else %}
 # For Java 11+
-export tez.am.launch.cmd-opts="-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}} --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED"
-export tez.task.launch.cmd-opts="-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}} --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED"
+export tez.am.launch.cmd-opts="-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}} {{jvm_flags}}"
+export tez.task.launch.cmd-opts="-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}} {{jvm_flags}}"
 {% endif %}
 
 # Set HADOOP_HOME to point to a specific hadoop install directory

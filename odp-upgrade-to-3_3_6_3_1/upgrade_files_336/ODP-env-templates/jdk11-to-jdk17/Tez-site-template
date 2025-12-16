@@ -1,1 +1,1 @@
--server -Djava.net.preferIPv4Stack=true -Dodp.version=${odp.version} {% if java_version|int > 11 %}--add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED{% endif %}
+-server -Djava.net.preferIPv4Stack=true -Dodp.version=${odp.version}{% if java_version|int > 11 %} {{jvm_flags}}{% endif %}

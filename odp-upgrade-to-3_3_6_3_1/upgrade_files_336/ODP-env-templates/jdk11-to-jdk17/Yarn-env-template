@@ -60,7 +60,7 @@ export YARN_RESOURCEMANAGER_HEAPSIZE={{resourcemanager_heapsize}}
 export YARN_RESOURCEMANAGER_OPTS="-Djava.security.auth.login.config={{yarn_jaas_file}}"
 {% endif %}
 {% if java_version|int > 11 %}
-export YARN_RESOURCEMANAGER_OPTS="$YARN_RESOURCEMANAGER_OPTS --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.math=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED --add-opens java.base/java.text=ALL-UNNAMED"
+export YARN_RESOURCEMANAGER_OPTS="$YARN_RESOURCEMANAGER_OPTS {{jvm_flags}}"
 {% endif %}
 
 # Node Manager specific parameters
@@ -87,21 +87,21 @@ export YARN_TIMELINESERVER_HEAPSIZE={{apptimelineserver_heapsize}}
 export YARN_TIMELINESERVER_OPTS="-Djava.security.auth.login.config={{ yarn_ats_jaas_file }}"
 {% endif %}
 {% if java_version|int > 11 %}
-export YARN_TIMELINESERVER_OPTS="$YARN_TIMELINESERVER_OPTS --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.math=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED --add-opens java.base/java.text=ALL-UNNAMED"
+export YARN_TIMELINESERVER_OPTS="$YARN_TIMELINESERVER_OPTS {{jvm_flags}}"
 {% endif %}
 
 {% if security_enabled %}
 export YARN_TIMELINEREADER_OPTS="-Djava.security.auth.login.config={{yarn_ats_jaas_file}}"
 {% endif %}
 {% if java_version|int > 11 %}
-export YARN_TIMELINEREADER_OPTS="$YARN_TIMELINEREADER_OPTS --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.math=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED --add-opens java.base/java.text=ALL-UNNAMED"
+export YARN_TIMELINEREADER_OPTS="$YARN_TIMELINEREADER_OPTS {{jvm_flags}}"
 {% endif %}
 
 {% if security_enabled %}
 export YARN_REGISTRYDNS_OPTS="-Djava.security.auth.login.config={{yarn_registry_dns_jaas_file}}"
 {% endif %}
 {% if java_version|int > 11 %}
-export YARN_REGISTRYDNS_OPTS="$YARN_REGISTRYDNS_OPTS --add-opens java.base/java.net=ALL-UNNAMED --add-opens java.base/java.text=ALL-UNNAMED"
+export YARN_REGISTRYDNS_OPTS="$YARN_REGISTRYDNS_OPTS {{jvm_flags}}"
 {% endif %}
 
 # Specify the JVM options to be used when starting the NodeManager.
@@ -112,7 +112,7 @@ export YARN_REGISTRYDNS_OPTS="$YARN_REGISTRYDNS_OPTS --add-opens java.base/java.
 export YARN_NODEMANAGER_OPTS="-Djava.security.auth.login.config={{yarn_nm_jaas_file}} -Dsun.security.krb5.rcache=none"
 {% endif %}
 {% if java_version|int > 11 %}
-export YARN_NODEMANAGER_OPTS="$YARN_NODEMANAGER_OPTS --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.math=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/java.net=ALL-UNNAMED --add-opens java.base/java.text=ALL-UNNAMED"
+export YARN_NODEMANAGER_OPTS="$YARN_NODEMANAGER_OPTS {{jvm_flags}}"
 {% endif %}
 
 # so that filenames w/ spaces are handled correctly in loops below

@@ -34,5 +34,5 @@ export JAVA_OPTS="${JAVA_OPTS} -Dzookeeper.sasl.client.username={{zookeeper_prin
 {% endif %}
 
 if [ "$JAVA_VERSION" -gt 11 ]; then
-  JAVA_OPTS="${JAVA_OPTS} --add-exports java.xml.crypto/com.sun.org.apache.xml.internal.security.utils=ALL-UNNAMED"
+  JAVA_OPTS="${JAVA_OPTS} {{jvm_flags}}"
 fi
