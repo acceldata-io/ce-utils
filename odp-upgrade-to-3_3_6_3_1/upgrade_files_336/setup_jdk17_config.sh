@@ -121,6 +121,24 @@ set_config() {
     || echo -e "${RED}Failed updating ${key} in ${config_file}.${NC}" | tee -a /tmp/jdk17_update.log
 }
 
+delete_config() {
+    local config_file=$1 key=$2
+
+    python /var/lib/ambari-server/resources/scripts/configs.py \
+        -u "$USER" \
+        -p "$PASSWORD" \
+        -s "$PROTOCOL" \
+        -a delete \
+        -t "$PORT" \
+        -l "$AMBARISERVER" \
+        -n "$CLUSTER" \
+        -c "$config_file" \
+        -k "$key" \
+        -b "Old configuration deleted" \
+    && echo -e "${GREEN}[OK]${NC} Deleted ${config_file}:${key}" \
+    || echo -e "${RED}Failed updating ${key} in ${config_file}.${NC}" | tee -a /tmp/jdk17_update.log
+}
+
 #---------------------------------------------------------
 # Service-Specific JVM options
 #---------------------------------------------------------
@@ -149,8 +167,12 @@ update_hdfs_configuration_for_jdk17() {
 
     if [ "$JAVA_VERSION" -eq "8" ]; then
       set_config "yarn-hbase-env" "content" "$(cat $MIGRATION_PATH/Yarn-hbase-env-template)"
-      set_config "node-manager" "yarn.nodemanager.aux-services" "$(cat $MIGRATION_PATH/Yarn-nodemanager-aux-services)"
+      set_config "Node Manager" "yarn.nodemanager.aux-services" "$(cat $MIGRATION_PATH/Yarn-nodemanager-aux-services)"
       # Remove configs
+      delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.class"
+      delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.classpath"
+      delete_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle.classpath"
+      delete_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle.class"
     fi
 
     echo -e "${GREEN}Successfully updated configurations for HDFS, YARN, and MapReduce.${NC}"
@@ -179,10 +201,15 @@ update_hive_configuration_for_jdk17() {
 
     set_config "hive-site" "jvm_flags" "${JVM_FLAGS_HIVE}"
     set_config "hive-env" "content" "$(cat $MIGRATION_PATH/Hive-env-template)"
+    set_config "hive-site" "hive.tez.java.opts" "$(cat $MIGRATION_PATH/Hive-tez-java-opts)"
+
+    set_config "hive-interactive-env" "llap_java_opts" "$(cat $MIGRATION_PATH/Hive-llap-java-opts)"
+    set_config "hive-interactive-env" "content" "$(cat $MIGRATION_PATH/Hive-interactive-env-template)"
 
     if [ "$JAVA_VERSION" -eq "8" ]; then
-      set_config "general" "hive.tez.java.opts" "$(cat $MIGRATION_PATH/Hive-tez-java-opts)"
       # Remove configs
+      delete_config "tez-site" "tez.am.launch.cmd-opts"
+      delete_config "tez-site" "tez.task.launch.cmd-opts"
     fi
 
     echo -e "${GREEN}Successfully updated configurations for Tez and Hive.${NC}"
