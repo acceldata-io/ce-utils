@@ -158,17 +158,17 @@ update_hdfs_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for HDFS, YARN, and MapReduce...${NC}"
 
     set_config "hdfs-site" "jvm_flags" "${JVM_FLAGS_HDFS}"
-    set_config "hadoop-env" "content" "$(cat $TEMPLATE_DIR/HDFS-env-template)"
+    set_config "hadoop-env" "content" "$(cat $TEMPLATE_DIR/hdfs-env-template)"
 
     set_config "yarn-site" "jvm_flags" "${JVM_FLAGS_YARN}"
-    set_config "mapred-env" "content" "$(cat $TEMPLATE_DIR/Mpreduce-env-template)"
-    set_config "mapred-site" "yarn.app.mapreduce.am.admin-command-opts" "$(cat $TEMPLATE_DIR/Mpreduce-site-template)"
-    set_config "yarn-env" "content" "$(cat $TEMPLATE_DIR/Yarn-env-template)"
+    set_config "mapred-env" "content" "$(cat $TEMPLATE_DIR/mapred-env-template)"
+    set_config "mapred-site" "yarn.app.mapreduce.am.admin-command-opts" "$(cat $TEMPLATE_DIR/mapred-site-template)"
+    set_config "yarn-env" "content" "$(cat $TEMPLATE_DIR/yarn-env-template)"
 
     # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
-      set_config "yarn-hbase-env" "content" "$(cat $MIGRATION_PATH/Yarn-hbase-env-template)"
-      set_config "yarn-site" "yarn.nodemanager.aux-services" "$(cat $MIGRATION_PATH/Yarn-nodemanager-aux-services)"
+      set_config "yarn-hbase-env" "content" "$(cat $MIGRATION_PATH/yarn-hbase-env-template)"
+      set_config "yarn-site" "yarn.nodemanager.aux-services" "$(cat $MIGRATION_PATH/yarn-nodemanager-aux-services)"
       # Remove configs
       delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.class"
       delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.classpath"
@@ -182,12 +182,12 @@ update_hdfs_configuration_for_jdk17() {
 update_infra_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for Infra-Solr...${NC}"
 
-    set_config "infra-solr-env" "infra_solr_gc_log_opts" "$(cat $TEMPLATE_DIR/Infra-solr-gc-log-opts)"
-    set_config "infra-solr-env" "infra_solr_gc_tune" "$(cat $TEMPLATE_DIR/Infra-solr-gc-tune)"
+    set_config "infra-solr-env" "infra_solr_gc_log_opts" "$(cat $TEMPLATE_DIR/infra-solr-gc-log-opts)"
+    set_config "infra-solr-env" "infra_solr_gc_tune" "$(cat $TEMPLATE_DIR/infra-solr-gc-tune)"
 
     # Java 11 specific configuration changes
     if [ "$JAVA_VERSION" -eq "11" ]; then
-      set_config "infra-solr-env" "content" "$(cat $MIGRATION_PATH/Infra-solr-env-template)"
+      set_config "infra-solr-env" "content" "$(cat $MIGRATION_PATH/infra-solr-env-template)"
     fi
 
     echo -e "${GREEN}Successfully updated configurations for Infra-Solr.${NC}"
@@ -197,15 +197,15 @@ update_hive_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for Tez and Hive...${NC}"
 
     set_config "tez-site" "jvm_flags" "${JVM_FLAGS_TEZ}"
-    set_config "tez-env" "content" "$(cat $TEMPLATE_DIR/Tez-env-template)"
-    set_config "tez-site" "tez.am.launch.cluster-default.cmd-opts" "$(cat $TEMPLATE_DIR/Tez-site-template)"
-    set_config "tez-site" "tez.task.launch.cluster-default.cmd-opts" "$(cat $TEMPLATE_DIR/Tez-site-template)"
+    set_config "tez-env" "content" "$(cat $TEMPLATE_DIR/tez-env-template)"
+    set_config "tez-site" "tez.am.launch.cluster-default.cmd-opts" "$(cat $TEMPLATE_DIR/tez-site-template)"
+    set_config "tez-site" "tez.task.launch.cluster-default.cmd-opts" "$(cat $TEMPLATE_DIR/tez-site-template)"
 
     set_config "hive-site" "jvm_flags" "${JVM_FLAGS_HIVE}"
-    set_config "hive-env" "content" "$(cat $TEMPLATE_DIR/Hive-env-template)"
-    set_config "hive-site" "hive.tez.java.opts" "$(cat $TEMPLATE_DIR/Hive-tez-java-opts)"
-    set_config "hive-interactive-env" "llap_java_opts" "$(cat $TEMPLATE_DIR/Hive-llap-java-opts)"
-    set_config "hive-interactive-env" "content" "$(cat $TEMPLATE_DIR/Hive-interactive-env-template)"
+    set_config "hive-env" "content" "$(cat $TEMPLATE_DIR/hive-env-template)"
+    set_config "hive-site" "hive.tez.java.opts" "$(cat $TEMPLATE_DIR/hive-tez-java-opts)"
+    set_config "hive-interactive-env" "llap_java_opts" "$(cat $TEMPLATE_DIR/hive-llap-java-opts)"
+    set_config "hive-interactive-env" "content" "$(cat $TEMPLATE_DIR/hive-interactive-env-template)"
 
     # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
@@ -223,7 +223,7 @@ update_hbase_configuration_for_jdk17() {
 
     # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
-      set_config "hbase-env" "content" "$(cat $MIGRATION_PATH/HBase-env-template)"
+      set_config "hbase-env" "content" "$(cat $MIGRATION_PATH/hbase-env-template)"
     fi
 
     echo -e "${GREEN}Successfully updated configurations for HBase.${NC}"
@@ -233,7 +233,7 @@ update_oozie_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for Oozie...${NC}"
 
     set_config "oozie-site" "jvm_flags" "${JVM_FLAGS_OOZIE}"
-    set_config "oozie-env" "content" "$(cat $TEMPLATE_DIR/Oozie-env-template)"
+    set_config "oozie-env" "content" "$(cat $TEMPLATE_DIR/oozie-env-template)"
 
     echo -e "${GREEN}Successfully updated configurations for Oozie.${NC}"
 }
@@ -242,7 +242,7 @@ update_kms_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for Ranger KMS...${NC}"
 
     set_config "kms-site" "jvm_flags" "${JVM_FLAGS_KMS}"
-    set_config "kms-env" "content" "$(cat $TEMPLATE_DIR/Kms-env-template)"
+    set_config "kms-env" "content" "$(cat $TEMPLATE_DIR/kms-env-template)"
 
     echo -e "${GREEN}Successfully updated configurations for Ranger KMS.${NC}"
 }
@@ -253,13 +253,13 @@ update_druid_configuration_for_jdk17() {
 
     # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
-      set_config "druid-env" "content" "$(cat $MIGRATION_PATH/Druid-env-template)"
-      set_config "druid-env" "druid.broker.jvm.opts" "$(cat $MIGRATION_PATH/Druid-env-opts)"
-      set_config "druid-env" "druid.coordinator.jvm.opt" "$(cat $MIGRATION_PATH/Druid-env-opts)"
-      set_config "druid-env" "druid.historical.jvm.opt" "$(cat $MIGRATION_PATH/Druid-env-opts)"
-      set_config "druid-env" "druid.middlemanager.jvm.opts" "$(cat $MIGRATION_PATH/Druid-env-opts)"
-      set_config "druid-env" "druid.overlord.jvm.opts" "$(cat $MIGRATION_PATH/Druid-env-opts)"
-      set_config "druid-env" "druid.router.jvm.opts" "$(cat $MIGRATION_PATH/Druid-env-opts)"
+      set_config "druid-env" "content" "$(cat $MIGRATION_PATH/druid-env-template)"
+      set_config "druid-env" "druid.broker.jvm.opts" "$(cat $MIGRATION_PATH/druid-env-opts)"
+      set_config "druid-env" "druid.coordinator.jvm.opt" "$(cat $MIGRATION_PATH/druid-env-opts)"
+      set_config "druid-env" "druid.historical.jvm.opt" "$(cat $MIGRATION_PATH/druid-env-opts)"
+      set_config "druid-env" "druid.middlemanager.jvm.opts" "$(cat $MIGRATION_PATH/druid-env-opts)"
+      set_config "druid-env" "druid.overlord.jvm.opts" "$(cat $MIGRATION_PATH/druid-env-opts)"
+      set_config "druid-env" "druid.router.jvm.opts" "$(cat $MIGRATION_PATH/druid-env-opts)"
     fi
     echo -e "${GREEN}Successfully updated configurations for Ranger Druid.${NC}"
 }
