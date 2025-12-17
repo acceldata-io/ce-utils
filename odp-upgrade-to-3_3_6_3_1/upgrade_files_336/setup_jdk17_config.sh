@@ -168,7 +168,7 @@ update_hdfs_configuration_for_jdk17() {
     # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
       set_config "yarn-hbase-env" "content" "$(cat $MIGRATION_PATH/Yarn-hbase-env-template)"
-      set_config "Node Manager" "yarn.nodemanager.aux-services" "$(cat MIGRATION_PATH/Yarn-nodemanager-aux-services)"
+      set_config "yarn-site" "yarn.nodemanager.aux-services" "$(cat $MIGRATION_PATH/Yarn-nodemanager-aux-services)"
       # Remove configs
       delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.class"
       delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.classpath"
@@ -217,6 +217,7 @@ update_hive_configuration_for_jdk17() {
     echo -e "${GREEN}Successfully updated configurations for Tez and Hive.${NC}"
 }
 
+# Needed only in JDK 8
 update_hbase_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for HBase...${NC}"
 
@@ -246,6 +247,7 @@ update_kms_configuration_for_jdk17() {
     echo -e "${GREEN}Successfully updated configurations for Ranger KMS.${NC}"
 }
 
+# Needed only in JDK 8
 update_druid_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for Ranger Druid...${NC}"
 
@@ -269,15 +271,78 @@ display_service_options() {
     echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "        ${GREEN}🚀  JDK 17 Configuration Upgrade Menu – Choose a Service${NC}"
     echo -e "${YELLOW}╚════════════════════════════════════════════════════════════════════╝${NC}\n"
-    echo -e "${GREEN}  1)${NC} 🗃️   HDFS, YARN & MapReduce"
-    echo -e "${GREEN}  2)${NC} 🔍   Infra-Solr"
-    echo -e "${GREEN}  3)${NC} 🐝   Hive & Tez"
-    echo -e "${GREEN}  4)${NC} 🌀   Oozie"
-    echo -e "${GREEN}  5)${NC} 🔑   Ranger KMS"
+
+    case "$source_jdk" in
+            8)
+                echo -e "${GREEN}  1)${NC} 🗃️   HDFS, YARN & MapReduce"
+                echo -e "${GREEN}  2)${NC} 🔍   Infra-Solr"
+                echo -e "${GREEN}  3)${NC} 🐝   Hive & Tez"
+                echo -e "${GREEN}  4)${NC} 🐘   HBase"
+                echo -e "${GREEN}  5)${NC} 🌀   Oozie"
+                echo -e "${GREEN}  6)${NC} 🔑   Ranger KMS"
+                echo -e "${GREEN}  7)${NC} 📊   Druid"
+                ;;
+            11)
+                echo -e "${GREEN}  1)${NC} 🗃️   HDFS, YARN & MapReduce"
+                echo -e "${GREEN}  2)${NC} 🔍   Infra-Solr"
+                echo -e "${GREEN}  3)${NC} 🐝   Hive & Tez"
+                echo -e "${GREEN}  4)${NC} 🌀   Oozie"
+                echo -e "${GREEN}  5)${NC} 🔑   Ranger KMS"
+                ;;
+        esac
+
     echo -e "${YELLOW}────────────────────────────────────────────────────────────${NC}"
     echo -e "${GREEN}  A)${NC} 🌐   All Services (for the brave)"
     echo -e "${RED}  Q)${NC} ❌   Quit (no changes)"
     echo -e "${YELLOW}────────────────────────────────────────────────────────────${NC}"
+}
+
+handle_selection() {
+    local choice="$1"
+    case "$source_jdk" in
+        8)
+            case "$choice" in
+                1) update_hdfs_configuration_for_jdk17 ;;
+                2) update_infra_configuration_for_jdk17 ;;
+                3) update_hive_configuration_for_jdk17 ;;
+                4) update_hbase_configuration_for_jdk17 ;;
+                5) update_oozie_configuration_for_jdk17 ;;
+                6) update_kms_configuration_for_jdk17 ;;
+                7) update_druid_configuration_for_jdk17 ;;
+                [Aa])
+                    update_hdfs_configuration_for_jdk17
+                    update_infra_configuration_for_jdk17
+                    update_hive_configuration_for_jdk17
+                    update_hbase_configuration_for_jdk17
+                    update_oozie_configuration_for_jdk17
+                    update_kms_configuration_for_jdk17
+                    update_druid_configuration_for_jdk17
+                    ;;
+                [Qq]) return 1 ;;
+                *) echo -e "${RED}Invalid selection.${NC}" ;;
+            esac
+            ;;
+        11)
+            case "$choice" in
+                1) update_hdfs_configuration_for_jdk17 ;;
+                2) update_infra_configuration_for_jdk17 ;;
+                3) update_hive_configuration_for_jdk17 ;;
+                4) update_oozie_configuration_for_jdk17 ;;
+                5) update_kms_configuration_for_jdk17 ;;
+                [Aa])
+                    update_hdfs_configuration_for_jdk17
+                    update_infra_configuration_for_jdk17
+                    update_hive_configuration_for_jdk17
+                    update_oozie_configuration_for_jdk17
+                    update_kms_configuration_for_jdk17
+                    ;;
+                [Qq]) return 1 ;;
+                *) echo -e "${RED}Invalid selection.${NC}" ;;
+            esac
+            ;;
+    esac
+
+    return 0
 }
 
 #---------------------------------------------------------
@@ -298,27 +363,8 @@ main() {
     while true; do
         display_service_options
         read -rp "Enter your selection: ⇒ " choice
-        case "$choice" in
-            1) update_hdfs_configuration_for_jdk17 ;;
-            2) update_infra_configuration_for_jdk17 ;;
-            3) update_hive_configuration_for_jdk17 ;;
-            4) update_oozie_configuration_for_jdk17 ;;
-            5) update_kms_configuration_for_jdk17 ;;
-            [Aa])
-                update_hdfs_configuration_for_jdk17
-                update_infra_configuration_for_jdk17
-                update_hive_configuration_for_jdk17
-                update_oozie_configuration_for_jdk17
-                update_kms_configuration_for_jdk17
-                ;;
-            [Qq])
-                echo -e "${GREEN}Exiting...${NC}"
-                break
-                ;;
-            *)
-                echo -e "${RED}Invalid selection.${NC} Please choose a valid option."
-                ;;
-        esac
+
+        handle_selection "$choice" || break
     done
 
     #---------------------------------------------------------
