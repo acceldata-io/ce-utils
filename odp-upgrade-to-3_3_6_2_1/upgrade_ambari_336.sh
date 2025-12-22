@@ -41,6 +41,11 @@ sed -i '/<execute-stage service="RANGER" component="RANGER_ADMIN" title="Disabli
 
 sed -i '/<execute-stage service="RANGER_KMS" component="RANGER_KMS_SERVER" title="Updating dbks-site configurations for Ranger KMS Keysecure support">/,/<\/execute-stage>/d' /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/nonrolling-upgrade-3.2.xml
 
+echo "8. removing ranger-Admin and kms server's solr audit bootstrap warnings."
+sed -i '/<execute-stage service="RANGER" component="RANGER_ADMIN" title="Disabling Ranger Audit Solr Bootstrap Configuration">/,/<\/execute-stage>/d' /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/nonrolling-upgrade-3.3.xml
+
+sed -i '/<execute-stage service="RANGER_KMS" component="RANGER_KMS_SERVER" title="Updating dbks-site configurations for Ranger KMS Keysecure support">/,/<\/execute-stage>/d' /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/nonrolling-upgrade-3.3.xml
+
 sed -i '/<execute-stage service="RANGER" component="RANGER_ADMIN" title="Disabling Ranger Audit Solr Bootstrap Configuration">/,/<\/execute-stage>/d' /var/lib/ambari-server/resources/stacks/ODP/3.3/upgrades/nonrolling-upgrade-3.3.xml
 
 sed -i '/<execute-stage service="RANGER_KMS" component="RANGER_KMS_SERVER" title="Updating dbks-site configurations for Ranger KMS Keysecure support">/,/<\/execute-stage>/d' /var/lib/ambari-server/resources/stacks/ODP/3.3/upgrades/nonrolling-upgrade-3.3.xml
