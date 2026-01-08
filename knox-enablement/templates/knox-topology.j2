@@ -1,0 +1,172 @@
+<topology>
+
+            <gateway>
+
+                <provider>
+                    <role>authentication</role>
+                    <name>ShiroProvider</name>
+                    <enabled>true</enabled>
+                    <param>
+                        <name>sessionTimeout</name>
+                        <value>30</value>
+                    </param>
+                    <param>
+                        <name>main.ldapRealm</name>
+                        <value>org.apache.hadoop.gateway.shirorealm.KnoxLdapRealm</value>
+                    </param>
+                    <param>
+                        <name>main.ldapRealm.userDnTemplate</name>
+                        <value>uid={0},ou=people,dc=hadoop,dc=apache,dc=org</value>
+                    </param>
+                    <param>
+                        <name>main.ldapRealm.contextFactory.url</name>
+                        <value>ldap://{{knox_host_name}}:33389</value>
+                    </param>
+                    <param>
+                        <name>main.ldapRealm.contextFactory.authenticationMechanism</name>
+                        <value>simple</value>
+                    </param>
+                    <param>
+                        <name>urls./**</name>
+                        <value>authcBasic</value>
+                    </param>
+                </provider>
+
+                <provider>
+                    <role>identity-assertion</role>
+                    <name>Default</name>
+                    <enabled>true</enabled>
+                </provider>
+
+                <provider>
+                    <role>authorization</role>
+                    <name>XASecurePDPKnox</name>
+                    <enabled>true</enabled>
+                </provider>
+
+            </gateway>
+
+            <service>
+                <role>NAMENODE</role>
+                <url>{{namenode_address}}</url>
+            </service>
+
+            <service>
+                <role>JOBTRACKER</role>
+                <url>rpc://{{rm_host}}:{{jt_rpc_port}}</url>
+            </service>
+
+            <service>
+                <role>WEBHDFS</role>
+                {{webhdfs_service_urls}}
+            </service>
+
+            <service>
+                <role>WEBHCAT</role>
+                <url>http://{{webhcat_server_host}}:{{templeton_port}}/templeton</url>
+            </service>
+
+            <service>
+                <role>OOZIE</role>
+                <url>http://{{oozie_server_host}}:{{oozie_server_port}}/oozie</url>
+            </service>
+
+            <service>
+                <role>OOZIEUI</role>
+                <url>http://{{oozie_server_host}}:{{oozie_server_port}}/oozie/</url>
+            </service>
+
+
+            <service>
+                <role>WEBHBASE</role>
+                <url>http://{{hbase_master_host}}:{{hbase_master_port}}</url>
+            </service>
+
+            <service>
+                <role>HIVE</role>
+                <url>http://{{hive_server_host}}:{{hive_http_port}}/{{hive_http_path}}</url>
+            </service>
+
+            <service>
+                <role>RESOURCEMANAGER</role>
+                <url>http://{{rm_host}}:{{rm_port}}/ws</url>
+            </service>
+
+            <service>
+                <role>DRUID-COORDINATOR-UI</role>
+                {{druid_coordinator_urls}}
+            </service>
+
+            <service>
+                <role>DRUID-COORDINATOR</role>
+                {{druid_coordinator_urls}}
+            </service>
+
+            <service>
+                <role>DRUID-OVERLORD-UI</role>
+                {{druid_overlord_urls}}
+            </service>
+
+            <service>
+                <role>DRUID-OVERLORD</role>
+                {{druid_overlord_urls}}
+            </service>
+
+            <service>
+                <role>DRUID-ROUTER</role>
+                {{druid_router_urls}}
+            </service>
+
+            <service>
+                <role>DRUID-BROKER</role>
+                {{druid_broker_urls}}
+            </service>
+
+            <service>
+                <role>ZEPPELINUI</role>
+                {{zeppelin_ui_urls}}
+            </service>
+
+            <service>
+                <role>ZEPPELINWS</role>
+                {{zeppelin_ws_urls}}
+            </service>
+
+            <service>
+                <role>YARNUI</role>
+                <url>YARNUI_URL</url>
+            </service>
+
+            <service>
+                <role>AMBARIUI</role>
+                <url>AMBARIUI_URL</url>
+            </service>
+
+            <service>
+                <role>AMBARIWS</role>
+                <url>AMBARIWS_URL</url>
+            </service>
+
+            <service>
+                <role>RANGER</role>
+                <url>RANGER_URL</url>
+            </service>
+
+            <service>
+                <role>RANGERUI</role>
+                <url>RANGERUI_URL</url>
+            </service>
+
+           <service>
+                <role>HDFSUI</role>
+               <version>2.7.0</version>
+                <url>HDFSUI_URL</url>
+            </service>
+
+           <service>
+                <role>SOLR</role>
+               <version>6.0.0</version>
+                <url>SOLR_URL</url>
+            </service>
+
+        </topology>
