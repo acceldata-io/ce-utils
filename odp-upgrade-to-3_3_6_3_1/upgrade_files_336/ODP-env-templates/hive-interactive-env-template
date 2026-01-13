@@ -1,0 +1,36 @@
+export HADOOP_OPTS="$HADOOP_OPTS -Xloggc:{{hive_log_dir}}/hiveserverinteractive-gc-%t.log -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={{hive_log_dir}}/hsi_heapdump.hprof -Dhive.log.dir={{hive_log_dir}} -Dhive.log.file=hiveserver2Interactive.log"
+{% if java_version|int > 11 %}
+export HADOOP_OPTS="$HADOOP_OPTS {{jvm_flags}}"
+{% endif %}
+# The heap size of the jvm stared by hive shell script can be controlled via:
+export HADOOP_HEAPSIZE={{hive_interactive_heapsize}} # Setting for HiveServer2 and Client
+
+{% if security_enabled %}
+export HADOOP_OPTS="$HADOOP_OPTS -Dzookeeper.sasl.client.username={{zk_principal_user}}"
+{% endif %}
+
+export HADOOP_CLIENT_OPTS="$HADOOP_CLIENT_OPTS  -Xmx${HADOOP_HEAPSIZE}m"
+export HADOOP_CLIENT_OPTS="$HADOOP_CLIENT_OPTS{{heap_dump_opts}}"
+{% if java_version|int > 11 %}
+export HADOOP_CLIENT_OPTS="$HADOOP_CLIENT_OPTS {{jvm_flags}}"
+{% endif %}
+
+# Larger heap size may be required when running queries over large number of files or partitions.
+# By default hive shell scripts use a heap size of 256 (MB).  Larger heap size would also be
+# appropriate for hive server (hwi etc).
+
+
+# Set HADOOP_HOME to point to a specific hadoop install directory
+HADOOP_HOME=${HADOOP_HOME:-{{hadoop_home}}}
+
+# Hive Configuration Directory can be controlled by:
+export HIVE_CONF_DIR={{hive_server_interactive_conf_dir}}
+
+# Add additional hcatalog jars
+if [ "${HIVE_AUX_JARS_PATH}" != "" ]; then
+  export HIVE_AUX_JARS_PATH=${HIVE_AUX_JARS_PATH}
+else
+  export HIVE_AUX_JARS_PATH=/usr/odp/current/hive-server2/lib/hive-hcatalog-core.jar
+fi
+
+export METASTORE_PORT={{hive_metastore_port}}
