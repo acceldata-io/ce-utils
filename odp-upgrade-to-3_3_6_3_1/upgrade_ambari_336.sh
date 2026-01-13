@@ -36,4 +36,17 @@ echo "7.################# Amabri Infra Solr scripts params #################"
 mv /var/lib/ambari-server/resources/common-services/AMBARI_INFRA_SOLR/2.7.6.0/package/scripts/params.py  backup-files/ambari_infra_solr_params.py_bkp
 cp upgrade_files_336/ambari_infra_solr_package_scripts_params.py /var/lib/ambari-server/resources/common-services/AMBARI_INFRA_SOLR/2.7.6.0/package/scripts/params.py
 
+echo "8. removing ranger-Admin and kms server's solr audit bootstrap warnings."
+sed -i '/<execute-stage service="RANGER" component="RANGER_ADMIN" title="Disabling Ranger Audit Solr Bootstrap Configuration">/,/<\/execute-stage>/d' /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/nonrolling-upgrade-3.2.xml
+
+sed -i '/<execute-stage service="RANGER_KMS" component="RANGER_KMS_SERVER" title="Updating dbks-site configurations for Ranger KMS Keysecure support">/,/<\/execute-stage>/d' /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/nonrolling-upgrade-3.2.xml
+
+sed -i '/<execute-stage service="RANGER" component="RANGER_ADMIN" title="Disabling Ranger Audit Solr Bootstrap Configuration">/,/<\/execute-stage>/d' /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/nonrolling-upgrade-3.3.xml
+
+sed -i '/<execute-stage service="RANGER_KMS" component="RANGER_KMS_SERVER" title="Updating dbks-site configurations for Ranger KMS Keysecure support">/,/<\/execute-stage>/d' /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/nonrolling-upgrade-3.3.xml
+
+sed -i '/<execute-stage service="RANGER" component="RANGER_ADMIN" title="Disabling Ranger Audit Solr Bootstrap Configuration">/,/<\/execute-stage>/d' /var/lib/ambari-server/resources/stacks/ODP/3.3/upgrades/nonrolling-upgrade-3.3.xml
+
+sed -i '/<execute-stage service="RANGER_KMS" component="RANGER_KMS_SERVER" title="Updating dbks-site configurations for Ranger KMS Keysecure support">/,/<\/execute-stage>/d' /var/lib/ambari-server/resources/stacks/ODP/3.3/upgrades/nonrolling-upgrade-3.3.xml
+
 echo "################# changes completed #################"
