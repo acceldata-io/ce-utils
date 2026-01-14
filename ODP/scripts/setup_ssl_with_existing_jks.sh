@@ -23,8 +23,8 @@ PORT=8080
 PROTOCOL="http"  # Change to "https" if Ambari Server is configured with SSL
 
 # Keystore and Truststore details (JKS format)
-keystorepassword="keystore_Password"       # Replace with actual keystore password
-truststorepassword="truststore_Password"     # Replace with actual truststore password
+keystorepassword='keystore_Password'       # Replace with actual keystore password
+truststorepassword='truststore_Password'     # Replace with actual truststore password
 keystore="/opt/security/pki/server.jks"
 truststore="/opt/security/pki/ca-certs.jks"
 
