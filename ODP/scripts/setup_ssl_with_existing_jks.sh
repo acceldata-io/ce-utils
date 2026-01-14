@@ -2,17 +2,13 @@
 ##########################################################################
 # Acceldata Inc. | ODP
 #
-# This script enables SSL for various Hadoop-related services using an
-# existing Java KeyStore (JKS) and corresponding PKCS12 files.
+# This script enables SSL for various Hadoop-related services using an existing Java KeyStore (JKS).
 #
 # Usage:
 #   ./setup_ssl_with_existing_jks.sh
+# Supported Services: HDFS/YARN/MapReduce, Infra-Solr, Hive, Ranger, Spark2, Kafka, HBase, Spark3, Oozie, Ranger KMS, Ozone, NiFi, Schema Registry, Livy2, Kafka3, Livy3, NiFi Registry, Trino
 ##########################################################################
-GREEN='\e[32m'
-YELLOW='\e[33m'
-RED='\e[31m'
-CYAN='\e[36m'
-NC='\e[0m'  # No Color
+GREEN='\e[32m'; YELLOW='\e[33m'; RED='\e[31m'; CYAN='\e[36m'; NC='\e[0m'  # Color codes
 #---------------------------------------------------------
 # Default Values (Edit these if required)
 #---------------------------------------------------------
@@ -23,6 +19,7 @@ PORT=8080
 PROTOCOL="http"  # Change to "https" if Ambari Server is configured with SSL
 
 # Keystore and Truststore details (JKS format)
+# Note: Use single quotes to prevent variable expansion (important if password contains $, `, or \)
 keystorepassword='keystore_Password'       # Replace with actual keystore password
 truststorepassword='truststore_Password'     # Replace with actual truststore password
 keystore="/opt/security/pki/server.jks"
