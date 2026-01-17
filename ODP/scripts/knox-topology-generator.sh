@@ -26,6 +26,7 @@
 #   3. Generate Both Topologies
 #   4. Import TLS Certificate to Knox Java cacerts
 #   5. Create Knox Truststore from TLS endpoint
+#   6. Validate Knox ODP Proxy Topology (test topology endpoints)
 #
 IFS=$'\n\t'
 
@@ -55,7 +56,9 @@ AMBARI_PROTOCOL="http"            # Protocol to use: "http" or "https"
 # LDAP Configuration
 # These variables configure LDAP authentication for the API Proxy Topology (ShiroProvider)
 # NOTE: LDAP configuration is only used for the API Proxy Topology, not for SSO Proxy Topology
-LDAP_HOST="10.100.8.85"                              # LDAP server hostname or IP address
+# LDAP_HOST will be automatically set to Knox Gateway hostname after cluster is fetched
+# If you want to override it, set it manually below
+LDAP_HOST=""                                                 # LDAP server hostname or IP address (auto-set from Knox Gateway)
 LDAP_PROTOCOL="ldap"                                  # Protocol: "ldap" or "ldaps" (for secure connections)
 LDAP_PORT=33389                                       # LDAP server port
 LDAP_URL="${LDAP_PROTOCOL}://${LDAP_HOST}:${LDAP_PORT}"  # Full LDAP URL
@@ -86,6 +89,26 @@ TOPOLOGY_PROXY="odp-proxy"                            # API Proxy Topology file 
 # List of Ambari services to exclude from topology generation (space-separated)
 # These services will not appear in the generated topology files
 EXCLUDED_SERVICES="HTTPFS KAFKA KAFKA3 KERBEROS KNOX MLFLOW RANGER_KMS REGISTRY SQOOP TEZ ZOOKEEPER"
+
+# Output Directory Configuration
+# Directory where generated topology files and temporary files will be stored
+# Default: /tmp (can be changed to any writable directory)
+OUTPUT_DIR="/tmp"
+
+# Ensure output directory exists and is writable
+if [[ ! -d "$OUTPUT_DIR" ]]; then
+    mkdir -p "$OUTPUT_DIR" 2>/dev/null || {
+        error "Cannot create output directory: ${OUTPUT_DIR}"
+        error "Please check permissions or set OUTPUT_DIR to a writable directory"
+        exit 1
+    }
+fi
+
+if [[ ! -w "$OUTPUT_DIR" ]]; then
+    error "Output directory is not writable: ${OUTPUT_DIR}"
+    error "Please set OUTPUT_DIR to a writable directory"
+    exit 1
+fi
 
 #---------------------------
 # Color Variables
@@ -118,7 +141,7 @@ error() {
 # =========================
 handle_ssl_failure() {
     local err_msg="$1"
-    local cert_path="/tmp/ambari-ca-bundle.crt"
+    local cert_path="${OUTPUT_DIR}/ambari-ca-bundle.crt"
 
     # Extract certificates for validation
     echo | openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" 2>/dev/null |
@@ -355,6 +378,20 @@ get_host_for_component() {
   fi
 }
 
+# Set LDAP_HOST to Knox Gateway hostname if not already set manually
+# This uses the Knox Gateway hostname as the LDAP server host
+if [[ -z "${LDAP_HOST:-}" ]]; then
+    knox_host_for_ldap=""
+    set +e
+    knox_host_for_ldap=$(get_host_for_component "KNOX_GATEWAY" 2>/dev/null)
+    set -e
+    if [[ -n "$knox_host_for_ldap" ]]; then
+        LDAP_HOST="$knox_host_for_ldap"
+        # Update LDAP_URL with the new host
+        LDAP_URL="${LDAP_PROTOCOL}://${LDAP_HOST}:${LDAP_PORT}"
+    fi
+fi
+
 #---------------------------
 # Function to Get All Hosts for a Component
 #---------------------------
@@ -473,7 +510,7 @@ import_certificate_to_cacerts() {
         
         # Create certificate export file
         local CERT_EXPORT_FILE
-        CERT_EXPORT_FILE="/tmp/${HOSTNAME}-${PORT}-certificates-$(date +%Y%m%d%H%M%S).pem"
+        CERT_EXPORT_FILE="${OUTPUT_DIR}/${HOSTNAME}-${PORT}-certificates-$(date +%Y%m%d%H%M%S).pem"
         cp "$CERT_BUNDLE" "$CERT_EXPORT_FILE"
         
         # Count certificates
@@ -510,8 +547,8 @@ import_certificate_to_cacerts() {
         echo ""
         if [[ $CERT_COUNT -gt 1 ]]; then
             echo -e "${YELLOW}   To import all ${CERT_COUNT} certificates separately, split the bundle first:${NC}"
-            echo -e "${CYAN}   awk '/BEGIN CERTIFICATE/{i++}{print > \"/tmp/cert-\" i \".pem\"}' ${CERT_EXPORT_FILE}${NC}"
-            echo -e "${CYAN}   Then import each /tmp/cert-*.pem file with a unique alias${NC}"
+            echo -e "${CYAN}   awk '/BEGIN CERTIFICATE/{i++}{print > \"${OUTPUT_DIR}/cert-\" i \".pem\"}' ${CERT_EXPORT_FILE}${NC}"
+            echo -e "${CYAN}   Then import each ${OUTPUT_DIR}/cert-*.pem file with a unique alias${NC}"
             echo ""
         fi
         echo -e "${YELLOW}Note:${NC} Replace \${JAVA_HOME} with the actual Java home path used by Knox Gateway"
@@ -626,6 +663,692 @@ import_certificate_to_cacerts() {
 }
 
 #---------------------------
+# Function to Run a Single Topology Test
+#---------------------------
+# Executes a single topology test and returns the HTTP status code
+# Arguments:
+#   $1 - Test name
+#   $2 - Test URL
+#   $3 - Username
+#   $4 - Password
+# Returns:
+#   0 on success (HTTP 200), 1 on failure
+run_topology_test() {
+    local test_name="$1"
+    local test_url="$2"
+    local username="$3"
+    local password="$4"
+    local no_truncate="${5:-false}"  # Optional 5th parameter to disable truncation
+    
+    echo -e "${CYAN}Test: ${test_name}${NC}"
+    echo -e "${YELLOW}URL: ${GREEN}${test_url}${NC}"
+    
+    # Build full curl command string for display (show actual password in command)
+    # Use printf to ensure proper formatting on a single line
+    local curl_cmd="curl -sik -u \"${username}:${password}\" --connect-timeout 10 --max-time 30 -w \"\\n%{http_code}\" \"${test_url}\""
+    printf "${YELLOW}Command: ${GREEN}%s${NC}\n" "$curl_cmd"
+    echo ""
+    
+    # Execute curl command and capture full response
+    local curl_response
+    curl_response=$(curl -sik -u "${username}:${password}" \
+        --connect-timeout 10 --max-time 30 \
+        -w "\n%{http_code}" \
+        "${test_url}" 2>/dev/null)
+    
+    # Extract HTTP status code (last line)
+    local http_code
+    http_code=$(echo "$curl_response" | tail -n 1 | tr -d '\r\n')
+    
+    # Extract response body/headers (everything except last line)
+    local response_body
+    response_body=$(echo "$curl_response" | sed '$d')
+    
+    # Display response output (truncated to 2000 chars to avoid overwhelming output, unless no_truncate is true)
+    echo -e "${CYAN}Response:${NC}"
+    if [[ -n "$response_body" ]]; then
+        if [[ "$no_truncate" != "true" ]] && [[ ${#response_body} -gt 2000 ]]; then
+            echo "${response_body:0:2000}"
+            echo ""
+            echo -e "${YELLOW}... (response truncated, showing first 2000 characters)${NC}"
+        else
+            echo "$response_body"
+        fi
+    else
+        echo -e "${YELLOW}(No response body)${NC}"
+    fi
+    echo ""
+    
+    # Display result
+    if [[ "$http_code" == "200" ]]; then
+        echo -e "${GREEN}✓ PASSED (HTTP ${http_code})${NC}"
+        echo ""
+        return 0
+    else
+        echo -e "${RED}✗ FAILED (HTTP ${http_code:-unknown})${NC}"
+        echo ""
+        return 1
+    fi
+}
+
+#---------------------------
+# Function to Run an Oozie Test with Error Handling
+#---------------------------
+# Executes an Oozie test and provides specific suggestions for 403 errors
+# Arguments:
+#   $1 - Test name
+#   $2 - Test URL
+#   $3 - Username
+#   $4 - Password
+# Returns:
+#   0 on success (HTTP 200), 1 on failure
+run_oozie_test() {
+    local test_name="$1"
+    local test_url="$2"
+    local username="$3"
+    local password="$4"
+    
+    echo -e "${CYAN}Test: ${test_name}${NC}"
+    echo -e "${YELLOW}URL: ${GREEN}${test_url}${NC}"
+    
+    # Build full curl command string for display
+    local curl_cmd="curl -sik -u \"${username}:${password}\" --connect-timeout 10 --max-time 30 -w \"\\n%{http_code}\" \"${test_url}\""
+    printf "${YELLOW}Command: ${GREEN}%s${NC}\n" "$curl_cmd"
+    echo ""
+    
+    # Execute curl command and capture full response
+    local curl_response
+    curl_response=$(curl -sik -u "${username}:${password}" \
+        --connect-timeout 10 --max-time 30 \
+        -w "\n%{http_code}" \
+        "${test_url}" 2>/dev/null)
+    
+    # Extract HTTP status code (last line)
+    local http_code
+    http_code=$(echo "$curl_response" | tail -n 1 | tr -d '\r\n')
+    
+    # Extract response body/headers (everything except last line)
+    local response_body
+    response_body=$(echo "$curl_response" | sed '$d')
+    
+    # Display response output (truncated to 2000 chars to avoid overwhelming output)
+    echo -e "${CYAN}Response:${NC}"
+    if [[ -n "$response_body" ]]; then
+        if [[ ${#response_body} -gt 2000 ]]; then
+            echo "${response_body:0:2000}"
+            echo ""
+            echo -e "${YELLOW}... (response truncated, showing first 2000 characters)${NC}"
+        else
+            echo "$response_body"
+        fi
+    else
+        echo -e "${YELLOW}(No response body)${NC}"
+    fi
+    echo ""
+    
+    # Display result and error handling for Oozie-specific issues
+    if [[ "$http_code" == "200" ]]; then
+        echo -e "${GREEN}✓ PASSED (HTTP ${http_code})${NC}"
+        echo ""
+        return 0
+    elif [[ "$http_code" == "403" ]]; then
+        echo -e "${RED}✗ FAILED (HTTP ${http_code})${NC}"
+        echo ""
+        
+        # Check for proxy user or impersonation errors
+        if echo "$response_body" | grep -qiE "(proxy|impersonat|unauthorized|forbidden)" || true; then
+            # Error: Oozie proxy user not configured
+            echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+            echo -e "${YELLOW}Error: Oozie Proxy User Configuration Missing${NC}"
+            echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+            echo ""
+            echo -e "${CYAN}Solution:${NC}"
+            echo -e "Add the following properties to ${GREEN}Oozie Custom oozie-site.xml${NC} in Ambari:"
+            echo ""
+            echo -e "${GREEN}<property>${NC}"
+            echo -e "${GREEN}  <name>oozie.service.ProxyUserService.proxyuser.knox.hosts</name>${NC}"
+            echo -e "${GREEN}  <value>*</value>${NC}"
+            echo -e "${GREEN}</property>${NC}"
+            echo ""
+            echo -e "${GREEN}<property>${NC}"
+            echo -e "${GREEN}  <name>oozie.service.ProxyUserService.proxyuser.knox.groups</name>${NC}"
+            echo -e "${GREEN}  <value>*</value>${NC}"
+            echo -e "${GREEN}</property>${NC}"
+            echo ""
+            echo -e "${CYAN}Steps:${NC}"
+            echo -e "  1. Go to ${GREEN}Ambari UI → Oozie → Configs → Advanced oozie-site → Custom oozie-site${NC}"
+            echo -e "  2. Add the above properties"
+            echo -e "  3. Save configuration"
+            echo -e "  4. Restart ${GREEN}Oozie${NC} from Ambari UI"
+            echo ""
+        else
+            # Generic 403 error
+            echo -e "${YELLOW}Note: If this is a proxy user issue, configure Oozie proxy user settings as shown above.${NC}"
+            echo ""
+        fi
+        return 1
+    else
+        echo -e "${RED}✗ FAILED (HTTP ${http_code:-unknown})${NC}"
+        echo ""
+        return 1
+    fi
+}
+
+#---------------------------
+# Function to Run a Ranger Test with Error Handling
+#---------------------------
+# Executes a Ranger test and provides specific suggestions for 403 errors
+# Arguments:
+#   $1 - Test name
+#   $2 - Test URL
+#   $3 - Username
+#   $4 - Password
+# Returns:
+#   0 on success (HTTP 200), 1 on failure
+run_ranger_test() {
+    local test_name="$1"
+    local test_url="$2"
+    local username="$3"
+    local password="$4"
+    
+    echo -e "${CYAN}Test: ${test_name}${NC}"
+    echo -e "${YELLOW}URL: ${GREEN}${test_url}${NC}"
+    
+    # Build full curl command string for display
+    local curl_cmd="curl -sik -u \"${username}:${password}\" --connect-timeout 10 --max-time 30 -w \"\\n%{http_code}\" \"${test_url}\""
+    printf "${YELLOW}Command: ${GREEN}%s${NC}\n" "$curl_cmd"
+    echo ""
+    
+    # Execute curl command and capture full response
+    local curl_response
+    curl_response=$(curl -sik -u "${username}:${password}" \
+        --connect-timeout 10 --max-time 30 \
+        -w "\n%{http_code}" \
+        "${test_url}" 2>/dev/null)
+    
+    # Extract HTTP status code (last line)
+    local http_code
+    http_code=$(echo "$curl_response" | tail -n 1 | tr -d '\r\n')
+    
+    # Extract response body/headers (everything except last line)
+    local response_body
+    response_body=$(echo "$curl_response" | sed '$d')
+    
+    # Display response output (truncated to 2000 chars to avoid overwhelming output)
+    echo -e "${CYAN}Response:${NC}"
+    if [[ -n "$response_body" ]]; then
+        if [[ ${#response_body} -gt 2000 ]]; then
+            echo "${response_body:0:2000}"
+            echo ""
+            echo -e "${YELLOW}... (response truncated, showing first 2000 characters)${NC}"
+        else
+            echo "$response_body"
+        fi
+    else
+        echo -e "${YELLOW}(No response body)${NC}"
+    fi
+    echo ""
+    
+    # Display result and error handling for Ranger-specific issues
+    if [[ "$http_code" == "200" ]]; then
+        echo -e "${GREEN}✓ PASSED (HTTP ${http_code})${NC}"
+        echo ""
+        return 0
+    elif [[ "$http_code" == "403" ]]; then
+        echo -e "${RED}✗ FAILED (HTTP ${http_code})${NC}"
+        echo ""
+        
+        # Check for specific error messages in response body
+        if echo "$response_body" | grep -qi "not allowed to impersonate"; then
+            # Error: User impersonation not allowed
+            echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+            echo -e "${YELLOW}Error: User impersonation not allowed${NC}"
+            echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+            echo ""
+            echo -e "${CYAN}Solution:${NC}"
+            echo -e "Add the following properties to ${GREEN}HDFS Custom core-site.xml${NC} in Ambari:"
+            echo ""
+            echo -e "${GREEN}<property>${NC}"
+            echo -e "${GREEN}  <name>ranger.proxyuser.knox.hosts</name>${NC}"
+            echo -e "${GREEN}  <value>*</value>${NC}"
+            echo -e "${GREEN}</property>${NC}"
+            echo ""
+            echo -e "${GREEN}<property>${NC}"
+            echo -e "${GREEN}  <name>ranger.proxyuser.knox.users</name>${NC}"
+            echo -e "${GREEN}  <value>*</value>${NC}"
+            echo -e "${GREEN}</property>${NC}"
+            echo ""
+            echo -e "${GREEN}<property>${NC}"
+            echo -e "${GREEN}  <name>ranger.proxyuser.knox.groups</name>${NC}"
+            echo -e "${GREEN}  <value>*</value>${NC}"
+            echo -e "${GREEN}</property>${NC}"
+            echo ""
+            echo -e "${CYAN}Steps:${NC}"
+            echo -e "  1. Go to ${GREEN}Ambari UI → HDFS → Configs → Advanced core-site → Custom core-site${NC}"
+            echo -e "  2. Add the above properties"
+            echo -e "  3. Save configuration"
+            echo -e "  4. Restart ${GREEN}HDFS${NC} from Ambari UI"
+            echo -e "  5. Restart ${GREEN}Ranger${NC} from Ambari UI"
+            echo ""
+        else
+            # Generic 403 error - likely Ranger authentication not configured
+            echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+            echo -e "${YELLOW}Error: Ranger authentication not configured for proxy${NC}"
+            echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+            echo ""
+            echo -e "${CYAN}Solution:${NC}"
+            echo -e "Enable Ranger trusted proxy authentication:"
+            echo ""
+            echo -e "${CYAN}Steps:${NC}"
+            echo -e "  1. Go to ${GREEN}Ambari UI → Ranger → Configs${NC}"
+            echo -e "  2. Add/set the property: ${GREEN}ranger.authentication.allow.trustedproxy${NC} = ${GREEN}true${NC}"
+            echo -e "  3. Save configuration"
+            echo -e "  4. Restart ${GREEN}Ranger${NC} from Ambari UI"
+            echo ""
+        fi
+        return 1
+    else
+        echo -e "${RED}✗ FAILED (HTTP ${http_code:-unknown})${NC}"
+        echo ""
+        return 1
+    fi
+}
+
+#---------------------------
+# Function to Run a Beeline Test
+#---------------------------
+# Executes a beeline JDBC test and returns success/failure
+# Arguments:
+#   $1 - Test name
+#   $2 - JDBC URL
+#   $3 - Username
+#   $4 - Password
+#   $5 - SQL command
+# Returns:
+#   0 on success, 1 on failure
+run_beeline_test() {
+    local test_name="$1"
+    local jdbc_url="$2"
+    local username="$3"
+    local password="$4"
+    local sql_command="$5"
+    
+    echo -e "${CYAN}Test: ${test_name}${NC}"
+    
+    # Check if beeline is available
+    if ! command -v beeline &> /dev/null; then
+        echo -e "${RED}✗ FAILED: beeline command not found. Please ensure Hive client is installed.${NC}"
+        echo ""
+        return 1
+    fi
+    
+    # Check if truststore exists
+    local TRUSTSTORE="${OUTPUT_DIR}/truststore.jks"
+    local TRUSTSTORE_PASSWORD="changeit"
+    local use_truststore=false
+    local modified_jdbc_url="$jdbc_url"
+    
+    if [[ -f "$TRUSTSTORE" ]]; then
+        use_truststore=true
+        # Add truststore parameters to JDBC URL
+        # Check if URL already has parameters (contains ';')
+        if [[ "$modified_jdbc_url" == *";"* ]]; then
+            modified_jdbc_url="${modified_jdbc_url};sslTrustStore=${TRUSTSTORE};trustStorePassword=${TRUSTSTORE_PASSWORD}"
+        else
+            modified_jdbc_url="${modified_jdbc_url};sslTrustStore=${TRUSTSTORE};trustStorePassword=${TRUSTSTORE_PASSWORD}"
+        fi
+        echo -e "${YELLOW}JDBC URL: ${GREEN}${modified_jdbc_url}${NC}"
+        echo -e "${CYAN}Note: Using truststore ${TRUSTSTORE}${NC}"
+    else
+        echo -e "${YELLOW}JDBC URL: ${GREEN}${jdbc_url}${NC}"
+        echo -e "${YELLOW}Note: Truststore not found at ${TRUSTSTORE}${NC}"
+    fi
+    echo ""
+    
+    # Build full beeline command string for display
+    local beeline_cmd="beeline -u '${modified_jdbc_url}' -n ${username} -p '${password}' -e '${sql_command}'"
+    printf "${YELLOW}Command: ${GREEN}%s${NC}\n" "$beeline_cmd"
+    echo ""
+    
+    # Execute beeline command and capture output
+    echo -e "${CYAN}Response:${NC}"
+    local beeline_output
+    local beeline_exit_code
+    
+    # Use timeout to prevent hanging, capture both stdout and stderr
+    beeline_output=$(timeout 30 beeline -u "${modified_jdbc_url}" \
+        -n "${username}" \
+        -p "${password}" \
+        -e "${sql_command}" 2>&1)
+    beeline_exit_code=$?
+    
+    # Display output (truncated to 2000 chars to avoid overwhelming output)
+    if [[ -n "$beeline_output" ]]; then
+        if [[ ${#beeline_output} -gt 2000 ]]; then
+            echo "${beeline_output:0:2000}"
+            echo ""
+            echo -e "${YELLOW}... (response truncated, showing first 2000 characters)${NC}"
+        else
+            echo "$beeline_output"
+        fi
+    else
+        echo -e "${YELLOW}(No output)${NC}"
+    fi
+    echo ""
+    
+    # Display result and error handling for SSL issues and HTTP errors
+    if [[ $beeline_exit_code -eq 0 ]]; then
+        echo -e "${GREEN}✓ PASSED${NC}"
+        echo ""
+        return 0
+    else
+        echo -e "${RED}✗ FAILED (exit code: ${beeline_exit_code})${NC}"
+        echo ""
+        
+        # Check for HTTP 500 errors
+        if echo "$beeline_output" | grep -qiE "HTTP Response code: 500"; then
+            echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+            echo -e "${YELLOW}Error: HTTP 500 - Hive Server2 Transport Mode Configuration${NC}"
+            echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+            echo ""
+            echo -e "${CYAN}Solution:${NC}"
+            echo -e "Hive Server2 transport mode must be set to ${GREEN}http${NC} (not ${RED}binary${NC}) for Knox Gateway access."
+            echo ""
+            echo -e "${CYAN}Steps:${NC}"
+            echo -e "  1. Go to ${GREEN}Ambari UI → Hive → Configs → Advanced hive-site${NC}"
+            echo -e "  2. Check/set the property: ${GREEN}hive.server2.transport.mode${NC} = ${GREEN}http${NC}"
+            echo -e "  3. Save configuration"
+            echo -e "  4. Restart ${GREEN}Hive Server2${NC} from Ambari UI"
+            echo ""
+            echo -e "${YELLOW}Note:${NC} The default transport mode is ${RED}binary${NC}, but Knox Gateway requires ${GREEN}http${NC} mode."
+            echo ""
+            return 1
+        fi
+        
+        # Check for SSL certificate errors
+        if echo "$beeline_output" | grep -qiE "(SSLHandshakeException|PKIX|certification path|unable to find valid certification path)"; then
+            echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+            echo -e "${YELLOW}Error: SSL Certificate Validation Failed${NC}"
+            echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+            echo ""
+            if [[ "$use_truststore" == "false" ]]; then
+                echo -e "${CYAN}Solution:${NC}"
+                echo -e "Create a truststore file to trust the Knox Gateway SSL certificate:"
+                echo ""
+                echo -e "${CYAN}Steps:${NC}"
+                echo -e "  1. Run this script and select option ${GREEN}5${NC}: ${GREEN}Create Knox Truststore from TLS endpoint${NC}"
+                echo -e "  2. Enter the Knox Gateway hostname and port (e.g., ${GREEN}charlie.skyops.com:8443${NC})"
+                echo -e "  3. The truststore will be created at: ${GREEN}${TRUSTSTORE}${NC}"
+                echo -e "  4. Run this test again - it will automatically use the truststore"
+                echo ""
+            else
+                echo -e "${CYAN}Note:${NC} Truststore is being used but SSL error still occurred."
+                echo -e "The truststore may not contain the required certificate."
+                echo -e "Please regenerate the truststore using option ${GREEN}5${NC} of this script."
+                echo ""
+            fi
+            return 1
+        fi
+        
+        return 1
+    fi
+}
+
+#---------------------------
+# Function to Validate Knox ODP Proxy Topology
+#---------------------------
+# Validates the Knox ODP proxy topology by testing various service endpoints
+# This function:
+#   1. Prompts for username and password (defaults: admin/admin-password)
+#   2. Allows user to select which tests to run
+#   3. Tests selected endpoints
+#   4. Uses Knox Gateway hostname from configuration
+# Returns: 0 on success, 1 on failure
+validate_knox_topology() {
+    local DEFAULT_USERNAME="admin"
+    local DEFAULT_PASSWORD="admin-password"
+    local KNOX_PORT="8443"
+    local TOPOLOGY_NAME="odp-proxy"
+    
+    # Get Knox Gateway hostname
+    local knox_host
+    if [[ -n "${KNOX_GATEWAY:-}" ]]; then
+        knox_host="$KNOX_GATEWAY"
+    elif [[ -n "${CLUSTER:-}" ]]; then
+        set +e
+        knox_host=$(get_host_for_component "KNOX_GATEWAY" 2>/dev/null)
+        set -e
+    fi
+    
+    if [[ -z "$knox_host" ]]; then
+        error "Knox Gateway hostname not found. Please ensure Knox Gateway is installed and configured."
+        return 1
+    fi
+    
+    echo ""
+    echo -e "${CYAN}Knox ODP Proxy Topology Validation${NC}"
+    echo ""
+    echo -e "${YELLOW}Knox Gateway: ${GREEN}${knox_host}${NC}"
+    echo -e "${YELLOW}Topology: ${GREEN}${TOPOLOGY_NAME}${NC}"
+    echo ""
+    
+    # Prompt for username and password
+    read -p "$(echo -e "${CYAN}Username [${DEFAULT_USERNAME}]: ${NC}")" username
+    read -p "$(echo -e "${CYAN}Password [${DEFAULT_PASSWORD}]: ${NC}")" password
+    
+    username=${username:-$DEFAULT_USERNAME}
+    password=${password:-$DEFAULT_PASSWORD}
+    
+    echo ""
+    echo -e "${CYAN}Select tests to run (comma-separated, e.g., 1,2,3,4,5,6 or 'all' for all tests):${NC}"
+    echo -e "  1) WebHDFS LISTSTATUS"
+    echo -e "  2) Oozie Build Version"
+    echo -e "  3) Yarn ResourceManager Cluster Info"
+    echo -e "  4) Ranger Service Definitions"
+    echo -e "  5) Hive Show Databases (beeline)"
+    echo -e "  6) Service-Test"
+    echo ""
+    read -p "$(echo -e "${CYAN}Enter your choice [all]: ${NC}")" test_choice
+    
+    # Normalize input: trim whitespace and convert to lowercase
+    test_choice=$(echo "${test_choice:-all}" | tr '[:upper:]' '[:lower:]' | xargs)
+    
+    # Determine which tests to run
+    local run_test1=0
+    local run_test2=0
+    local run_test3=0
+    local run_test4=0
+    local run_test5=0
+    local run_test6=0
+    
+    if [[ "$test_choice" == "all" ]]; then
+        run_test1=1
+        run_test2=1
+        run_test3=1
+        run_test4=1
+        run_test5=1
+        # Service-Test is excluded from "all" option
+    else
+        [[ "$test_choice" == *"1"* ]] && run_test1=1
+        [[ "$test_choice" == *"2"* ]] && run_test2=1
+        [[ "$test_choice" == *"3"* ]] && run_test3=1
+        [[ "$test_choice" == *"4"* ]] && run_test4=1
+        [[ "$test_choice" == *"5"* ]] && run_test5=1
+        [[ "$test_choice" == *"6"* ]] && run_test6=1
+    fi
+    
+    # If no valid selection, default to all (excluding Service-Test)
+    if [[ $run_test1 -eq 0 ]] && [[ $run_test2 -eq 0 ]] && [[ $run_test3 -eq 0 ]] && [[ $run_test4 -eq 0 ]] && [[ $run_test5 -eq 0 ]] && [[ $run_test6 -eq 0 ]]; then
+        echo -e "${YELLOW}Warning: Invalid selection, running all tests${NC}"
+        run_test1=1
+        run_test2=1
+        run_test3=1
+        run_test4=1
+        run_test5=1
+        # Service-Test is excluded from default "all" option
+    fi
+    
+    echo ""
+    info "Testing topology endpoints with user: ${username}"
+    
+    # Check if beeline is available when Hive test is selected
+    if [[ $run_test5 -eq 1 ]]; then
+        if ! command -v beeline &> /dev/null; then
+            echo -e "${YELLOW}Warning: beeline command not found. Hive test will be skipped.${NC}"
+            echo -e "${YELLOW}Please ensure Hive client is installed to run Hive tests.${NC}"
+            echo ""
+        fi
+    fi
+    
+    if [[ $run_test1 -eq 1 ]] && [[ $run_test2 -eq 1 ]] && [[ $run_test3 -eq 1 ]] && [[ $run_test4 -eq 1 ]] && [[ $run_test5 -eq 1 ]]; then
+        info "Running all tests (WebHDFS, Oozie, Yarn, Ranger, and Hive)"
+    else
+        local test_list=()
+        [[ $run_test1 -eq 1 ]] && test_list+=("WebHDFS")
+        [[ $run_test2 -eq 1 ]] && test_list+=("Oozie")
+        [[ $run_test3 -eq 1 ]] && test_list+=("Yarn")
+        [[ $run_test4 -eq 1 ]] && test_list+=("Ranger")
+        [[ $run_test5 -eq 1 ]] && test_list+=("Hive")
+        [[ $run_test6 -eq 1 ]] && test_list+=("Service-Test")
+        if [[ ${#test_list[@]} -gt 0 ]]; then
+            info "Running tests: ${test_list[*]}"
+        fi
+    fi
+    echo ""
+    
+    local test_passed=0
+    local test_failed=0
+    local passed_tests=()
+    local failed_tests=()
+    
+    # Test 1: WebHDFS
+    if [[ $run_test1 -eq 1 ]]; then
+        local webhdfs_url="https://${knox_host}:${KNOX_PORT}/gateway/${TOPOLOGY_NAME}/webhdfs/v1/?op=LISTSTATUS"
+        if run_topology_test "WebHDFS LISTSTATUS" "$webhdfs_url" "$username" "$password"; then
+            test_passed=$((test_passed + 1))
+            passed_tests+=("WebHDFS")
+        else
+            test_failed=$((test_failed + 1))
+            failed_tests+=("WebHDFS")
+        fi
+    fi
+    
+    # Test 2: Oozie
+    if [[ $run_test2 -eq 1 ]]; then
+        local oozie_url="https://${knox_host}:${KNOX_PORT}/gateway/${TOPOLOGY_NAME}/oozie/v1/admin/build-version"
+        if run_oozie_test "Oozie Build Version" "$oozie_url" "$username" "$password"; then
+            test_passed=$((test_passed + 1))
+            passed_tests+=("Oozie")
+        else
+            test_failed=$((test_failed + 1))
+            failed_tests+=("Oozie")
+        fi
+    fi
+    
+    # Test 3: Yarn
+    if [[ $run_test3 -eq 1 ]]; then
+        local yarn_url="https://${knox_host}:${KNOX_PORT}/gateway/${TOPOLOGY_NAME}/resourcemanager/v1/cluster"
+        if run_topology_test "Yarn ResourceManager Cluster Info" "$yarn_url" "$username" "$password"; then
+            test_passed=$((test_passed + 1))
+            passed_tests+=("Yarn")
+        else
+            test_failed=$((test_failed + 1))
+            failed_tests+=("Yarn")
+        fi
+    fi
+    
+    # Test 4: Ranger
+    if [[ $run_test4 -eq 1 ]]; then
+        local ranger_url="https://${knox_host}:${KNOX_PORT}/gateway/${TOPOLOGY_NAME}/ranger/service/public/v2/api/servicedef"
+        if run_ranger_test "Ranger Service Definitions" "$ranger_url" "$username" "$password"; then
+            test_passed=$((test_passed + 1))
+            passed_tests+=("Ranger")
+        else
+            test_failed=$((test_failed + 1))
+            failed_tests+=("Ranger")
+        fi
+    fi
+    
+    # Test 5: Hive (beeline)
+    if [[ $run_test5 -eq 1 ]]; then
+        # Check if beeline is available before attempting test
+        if ! command -v beeline &> /dev/null; then
+            echo -e "${CYAN}Test: Hive Show Databases${NC}"
+            echo -e "${YELLOW}beeline command not found. Please run the following command manually:${NC}"
+            echo ""
+            local hive_jdbc_url="jdbc:hive2://${knox_host}:${KNOX_PORT}/;ssl=true;transportMode=http;httpPath=gateway/${TOPOLOGY_NAME}/hive"
+            local hive_sql="show databases;"
+            local beeline_cmd="beeline -u '${hive_jdbc_url}' -n ${username} -p '${password}' -e '${hive_sql}'"
+            echo -e "${GREEN}${beeline_cmd}${NC}"
+            echo ""
+            echo -e "${YELLOW}Note: Skipping automated test. Please ensure Hive client is installed to run this test.${NC}"
+            echo ""
+            # Don't mark as failed, just skip
+        else
+            local hive_jdbc_url="jdbc:hive2://${knox_host}:${KNOX_PORT}/;ssl=true;transportMode=http;httpPath=gateway/${TOPOLOGY_NAME}/hive"
+            local hive_sql="show databases;"
+            if run_beeline_test "Hive Show Databases" "$hive_jdbc_url" "$username" "$password" "$hive_sql"; then
+                test_passed=$((test_passed + 1))
+                passed_tests+=("Hive")
+            else
+                test_failed=$((test_failed + 1))
+                failed_tests+=("Hive")
+            fi
+        fi
+    fi
+    
+    # Test 6: Service-Test (no truncation)
+    if [[ $run_test6 -eq 1 ]]; then
+        local service_test_url="https://${knox_host}:${KNOX_PORT}/gateway/${TOPOLOGY_NAME}/service-test"
+        if run_topology_test "Service-Test" "$service_test_url" "$username" "$password" "true"; then
+            test_passed=$((test_passed + 1))
+            passed_tests+=("Service-Test")
+        else
+            test_failed=$((test_failed + 1))
+            failed_tests+=("Service-Test")
+        fi
+    fi
+    
+    # Summary
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}Validation Summary${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}Topology: ${GREEN}${TOPOLOGY_NAME}${NC}"
+    echo -e "${YELLOW}Tests Passed: ${GREEN}${test_passed}${NC}"
+    echo -e "${YELLOW}Tests Failed: ${RED}${test_failed}${NC}"
+    echo ""
+    
+    # Display passed tests
+    if [[ ${#passed_tests[@]} -gt 0 ]]; then
+        echo -e "${GREEN}✓ Passed Tests:${NC}"
+        for test_name in "${passed_tests[@]}"; do
+            echo -e "  ${GREEN}✓${NC} ${test_name}"
+        done
+        echo ""
+    fi
+    
+    # Display failed tests
+    if [[ ${#failed_tests[@]} -gt 0 ]]; then
+        echo -e "${RED}✗ Failed Tests:${NC}"
+        for test_name in "${failed_tests[@]}"; do
+            echo -e "  ${RED}✗${NC} ${test_name}"
+        done
+        echo ""
+    fi
+    
+    if [[ $test_failed -eq 0 ]] && [[ $test_passed -gt 0 ]]; then
+        info "All topology validation tests passed!"
+        return 0
+    elif [[ $test_failed -gt 0 ]]; then
+        error "Some topology validation tests failed. Please verify topology configuration."
+        return 1
+    else
+        error "No tests were selected or executed."
+        return 1
+    fi
+}
+
+#---------------------------
 # Function to Create Knox Truststore from TLS endpoint
 #---------------------------
 # Creates a Java truststore (JKS file) from a TLS endpoint's certificate chain
@@ -636,7 +1359,7 @@ import_certificate_to_cacerts() {
 #   4. Lists the truststore contents
 # Returns: 0 on success, 1 on failure
 create_knox_truststore() {
-    local TRUSTSTORE="/tmp/truststore.jks"
+    local TRUSTSTORE="${OUTPUT_DIR}/truststore.jks"
     local PASSWORD="changeit"
     local DEFAULT_HOSTNAME
     local DEFAULT_PORT="8443"
@@ -756,21 +1479,25 @@ create_knox_truststore() {
 clear
 
 # Display title
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${CYAN}Knox Gateway Topology Generator${NC}"
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "${YELLOW}Ambari    : ${GREEN}${AMBARI_PROTOCOL}://${AMBARI_SERVER}:${AMBARI_PORT}${NC}"
+echo -e "${YELLOW}Output Dir: ${GREEN}${OUTPUT_DIR}${NC}"
 echo ""
 
 #---------------------------
 # Topology Selection Prompt
 #---------------------------
-echo ""
 echo -e "${CYAN}Select an option:${NC}"
 echo -e "  1) Generate SSO Proxy Topology (odp-proxy-sso.xml) - For UI access with SSO cookies"
 echo -e "  2) Generate API Proxy Topology (odp-proxy.xml) - For API access with LDAP/Basic auth"
 echo -e "  3) Generate Both Topologies - Create both SSO and API topology files"
 echo -e "  4) Import TLS Certificate to Knox Java cacerts - Import service certificate to Knox JVM trust store"
 echo -e "  5) Create Knox Truststore from TLS endpoint - Generate truststore.jks file from service certificate"
+echo -e "  6) Validate Knox ODP Proxy Topology - Test topology endpoints (WebHDFS, Oozie, etc.)"
 echo ""
-read -p "Enter your choice (1, 2, 3, 4, or 5): " topology_choice
+read -p "Enter your choice (1, 2, 3, 4, 5, or 6): " topology_choice
 
 # Initialize topology generation flags
 # These flags determine which topology files will be generated
@@ -802,9 +1529,14 @@ case "$topology_choice" in
         create_knox_truststore
         exit 0
         ;;
+    6)
+        # Option 6: Validate Knox ODP Proxy Topology
+        validate_knox_topology
+        exit 0
+        ;;
     *)
         # Invalid selection - exit with error
-        error "Invalid choice. Please run the script again and select 1, 2, 3, 4, or 5."
+        error "Invalid choice. Please run the script again and select 1, 2, 3, 4, 5, or 6."
         exit 1
         ;;
 esac
@@ -848,6 +1580,7 @@ if [[ "$GENERATE_API" == "true" ]]; then
     print_config_line "AUTHZ_PROVIDER"          "$([ "${RANGER_PLUGIN_ENABLED}" = "true" ] && echo "XASecurePDPKnox" || echo "AclsAuthz")"
     print_config_line "TOPOLOGY_SSO_PROXY_UI"   "$TOPOLOGY_SSO_PROXY_UI"
     print_config_line "TOPOLOGY_PROXY"          "$TOPOLOGY_PROXY"
+    print_config_line "OUTPUT_DIR"              "$OUTPUT_DIR"
     
     # Bottom border for configuration table
     printf "${YELLOW}╚"
@@ -955,7 +1688,7 @@ get_components_for_service() {
 #   2. Maps each service to its component(s)
 #   3. Fetches host information for each component
 #   4. Handles special cases (e.g., KNOX gets single host, others get all hosts)
-#   5. Saves service-to-host mappings to /tmp/knox-service-hosts-mapping.txt
+#   5. Saves service-to-host mappings to ${OUTPUT_DIR}/knox-service-hosts-mapping.txt
 #   6. Exports environment variables for each component's host(s)
 # Returns:
 #   0 on success, 1 on failure
@@ -964,7 +1697,7 @@ get_hosts_for_all_services() {
     
     # Read services from the file if available, otherwise use AMBARI_SERVICES
     local services
-    local services_file="/tmp/knox-services-list.txt"
+    local services_file="${OUTPUT_DIR}/knox-services-list.txt"
     if [[ -f "${services_file}" ]]; then
         services=$(cat "${services_file}")
     elif [[ -n "${AMBARI_SERVICES}" ]]; then
@@ -979,9 +1712,9 @@ get_hosts_for_all_services() {
         return 1
     fi
     
-    local hosts_file="/tmp/knox-services-hosts.txt"
-    local service_hosts_file="/tmp/knox-service-hosts-mapping.txt"
-    local service_hosts_vars_file="/tmp/knox-service-hosts-vars.txt"
+    local hosts_file="${OUTPUT_DIR}/knox-services-hosts.txt"
+    local service_hosts_file="${OUTPUT_DIR}/knox-service-hosts-mapping.txt"
+    local service_hosts_vars_file="${OUTPUT_DIR}/knox-service-hosts-vars.txt"
     
     # Clear output files
     : > "${hosts_file}"
@@ -1327,7 +2060,7 @@ fetch_services() {
     fi
     
     # Save services list to file under /tmp/
-    local services_file="/tmp/knox-services-list.txt"
+    local services_file="${OUTPUT_DIR}/knox-services-list.txt"
     if ! echo "$services" > "${services_file}" 2>/dev/null; then
         error "Failed to save services list"
         return 1
@@ -1431,9 +2164,9 @@ check_hdfs_ha_enabled() {
     
     if [[ -z "$namenode_hosts" ]]; then
         # Get hosts from the mapping file
-        if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+        if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
             local hdfs_line
-            hdfs_line=$(grep "^HDFS=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+            hdfs_line=$(grep "^HDFS=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
             if [[ -n "$hdfs_line" ]]; then
                 namenode_hosts=$(echo "$hdfs_line" | sed 's/^HDFS=//')
             fi
@@ -1460,7 +2193,7 @@ check_hdfs_ha_enabled() {
 # Function to Get HDFS Nameservice
 #---------------------------
 get_hdfs_nameservice() {
-    local temp_config="/tmp/hdfs-site-config.json"
+    local temp_config="${OUTPUT_DIR}/hdfs-site-config.json"
     
     if ! get_ambari_config "hdfs-site" "$temp_config"; then
         error "Failed to get hdfs-site config"
@@ -1483,7 +2216,7 @@ get_hdfs_nameservice() {
 # Function to Get HDFS Protocol (HTTP or HTTPS)
 #---------------------------
 get_hdfs_protocol() {
-    local temp_config="/tmp/hdfs-site-config.json"
+    local temp_config="${OUTPUT_DIR}/hdfs-site-config.json"
     
     if ! get_ambari_config "hdfs-site" "$temp_config"; then
         error "Failed to get hdfs-site config"
@@ -1506,7 +2239,7 @@ get_hdfs_protocol() {
 #---------------------------
 get_hdfs_port() {
     local protocol="$1"
-    local temp_config="/tmp/hdfs-site-config.json"
+    local temp_config="${OUTPUT_DIR}/hdfs-site-config.json"
     
     if [[ -z "$protocol" ]]; then
         protocol=$(get_hdfs_protocol)
@@ -1563,7 +2296,7 @@ get_yarn_protocol() {
     fi
     
     # HDFS is HTTPS, so check YARN's own configuration
-    local temp_config="/tmp/yarn-site-config.json"
+    local temp_config="${OUTPUT_DIR}/yarn-site-config.json"
     
     if ! get_ambari_config "yarn-site" "$temp_config"; then
         error "Failed to get yarn-site config"
@@ -1589,7 +2322,7 @@ get_yarn_protocol() {
 #---------------------------
 get_hbase_protocol() {
     # Check HBASE's own SSL configuration (independent from HDFS)
-    local temp_config="/tmp/hbase-site-config.json"
+    local temp_config="${OUTPUT_DIR}/hbase-site-config.json"
     
     if ! get_ambari_config "hbase-site" "$temp_config"; then
         error "Failed to get hbase-site config"
@@ -1612,7 +2345,7 @@ get_hbase_protocol() {
 # Function to Get HBASE Port
 #---------------------------
 get_hbase_port() {
-    local temp_config="/tmp/hbase-site-config.json"
+    local temp_config="${OUTPUT_DIR}/hbase-site-config.json"
     
     if ! get_ambari_config "hbase-site" "$temp_config"; then
         error "Failed to get hbase-site config"
@@ -1637,7 +2370,7 @@ get_hbase_port() {
 #---------------------------
 get_hive_protocol() {
     # Check HIVE's own SSL configuration (independent from HDFS)
-    local temp_config="/tmp/hive-site-config.json"
+    local temp_config="${OUTPUT_DIR}/hive-site-config.json"
     
     if ! get_ambari_config "hive-site" "$temp_config"; then
         error "Failed to get hive-site config"
@@ -1667,7 +2400,7 @@ get_hive_port() {
 # Function to Get HIVESERVER2UI Port
 #---------------------------
 get_hive_webui_port() {
-    local temp_config="/tmp/hive-site-config.json"
+    local temp_config="${OUTPUT_DIR}/hive-site-config.json"
     
     if ! get_ambari_config "hive-site" "$temp_config"; then
         error "Failed to get hive-site config"
@@ -1692,7 +2425,7 @@ get_hive_webui_port() {
 #---------------------------
 get_oozie_protocol() {
     # Check OOZIE's own SSL configuration (independent from HDFS)
-    local temp_config="/tmp/oozie-site-config.json"
+    local temp_config="${OUTPUT_DIR}/oozie-site-config.json"
     
     if ! get_ambari_config "oozie-site" "$temp_config"; then
         error "Failed to get oozie-site config"
@@ -1717,7 +2450,7 @@ get_oozie_protocol() {
 #---------------------------
 get_oozie_port() {
     local protocol="$1"
-    local temp_config="/tmp/oozie-site-config.json"
+    local temp_config="${OUTPUT_DIR}/oozie-site-config.json"
     
     if [[ -z "$protocol" ]]; then
         protocol=$(get_oozie_protocol)
@@ -1751,7 +2484,7 @@ get_oozie_port() {
 #---------------------------
 get_ranger_protocol() {
     # Check RANGER's own SSL configuration (independent from HDFS)
-    local temp_config="/tmp/ranger-admin-site-config.json"
+    local temp_config="${OUTPUT_DIR}/ranger-admin-site-config.json"
     
     if ! get_ambari_config "ranger-admin-site" "$temp_config"; then
         error "Failed to get ranger-admin-site config"
@@ -1777,7 +2510,7 @@ get_ranger_protocol() {
 #---------------------------
 get_ranger_port() {
     local protocol="$1"
-    local temp_config="/tmp/ranger-admin-site-config.json"
+    local temp_config="${OUTPUT_DIR}/ranger-admin-site-config.json"
     
     if [[ -z "$protocol" ]]; then
         protocol=$(get_ranger_protocol)
@@ -1811,7 +2544,7 @@ get_ranger_port() {
 #---------------------------
 get_spark3_protocol() {
     # Check Spark3's own SSL configuration (independent from HDFS)
-    local temp_config="/tmp/spark3-defaults-config.json"
+    local temp_config="${OUTPUT_DIR}/spark3-defaults-config.json"
     
     if ! get_ambari_config "spark3-defaults" "$temp_config"; then
         error "Failed to get spark3-defaults config"
@@ -1834,7 +2567,7 @@ get_spark3_protocol() {
 # Function to Get Spark3 Port
 #---------------------------
 get_spark3_port() {
-    local temp_config="/tmp/spark3-defaults-config.json"
+    local temp_config="${OUTPUT_DIR}/spark3-defaults-config.json"
     
     if ! get_ambari_config "spark3-defaults" "$temp_config"; then
         error "Failed to get spark3-defaults config"
@@ -1859,7 +2592,7 @@ get_spark3_port() {
 #---------------------------
 get_trino_protocol() {
     # Check TRINO's own SSL configuration first
-    local temp_config="/tmp/trino-env-config.json"
+    local temp_config="${OUTPUT_DIR}/trino-env-config.json"
     
     if ! get_ambari_config "trino-env" "$temp_config"; then
         error "Failed to get trino-env config"
@@ -1886,7 +2619,7 @@ get_trino_protocol() {
 #---------------------------
 get_trino_port() {
     local protocol="$1"
-    local temp_config="/tmp/trino-env-config.json"
+    local temp_config="${OUTPUT_DIR}/trino-env-config.json"
     
     if [[ -z "$protocol" ]]; then
         protocol=$(get_trino_protocol)
@@ -1932,7 +2665,7 @@ get_trino_port() {
 #---------------------------
 get_pinot_protocol() {
     # Check PINOT's own SSL configuration first
-    local temp_config="/tmp/pinot-env-config.json"
+    local temp_config="${OUTPUT_DIR}/pinot-env-config.json"
     
     if ! get_ambari_config "pinot-env" "$temp_config"; then
         error "Failed to get pinot-env config"
@@ -1959,7 +2692,7 @@ get_pinot_protocol() {
 #---------------------------
 get_pinot_port() {
     local protocol="$1"
-    local temp_config="/tmp/pinot-env-config.json"
+    local temp_config="${OUTPUT_DIR}/pinot-env-config.json"
     
     if [[ -z "$protocol" ]]; then
         protocol=$(get_pinot_protocol)
@@ -1989,12 +2722,47 @@ get_pinot_port() {
 }
 
 #---------------------------
+# Function to Get IMPALA Protocol (HTTP or HTTPS)
+#---------------------------
+get_impala_protocol() {
+    # Check IMPALA's own SSL configuration
+    local temp_config="${OUTPUT_DIR}/impala-env-config.json"
+    
+    if ! get_ambari_config "impala-env" "$temp_config"; then
+        error "Failed to get impala-env config"
+        # Default to http if config unavailable
+        echo "http"
+        return 1
+    fi
+    
+    # Check client_services_ssl_enabled - this is the primary decision
+    # false means HTTP, true means HTTPS
+    local ssl_enabled
+    ssl_enabled=$(get_config_value "$temp_config" "client_services_ssl_enabled")
+    
+    if [[ "$ssl_enabled" == "true" ]]; then
+        echo "https"
+    else
+        echo "http"
+    fi
+}
+
+#---------------------------
+# Function to Get IMPALA Port
+#---------------------------
+get_impala_port() {
+    # Both HTTP and HTTPS use the same port (21050) for Impala Daemon
+    # This is the default Impala HS2 port
+    echo "21050"
+}
+
+#---------------------------
 # Function to Get OZONE Protocol (HTTP or HTTPS)
 # Independent from HDFS - checks its own SSL configuration
 #---------------------------
 get_ozone_protocol() {
     # Check OZONE's own SSL configuration (independent from HDFS)
-    local temp_config="/tmp/ozone-env-config.json"
+    local temp_config="${OUTPUT_DIR}/ozone-env-config.json"
     
     if ! get_ambari_config "ozone-env" "$temp_config"; then
         error "Failed to get ozone-env config"
@@ -2018,7 +2786,7 @@ get_ozone_protocol() {
 #---------------------------
 get_ozone_port() {
     local protocol="$1"
-    local temp_config="/tmp/ozone-site-config.json"
+    local temp_config="${OUTPUT_DIR}/ozone-site-config.json"
     
     if [[ -z "$protocol" ]]; then
         protocol=$(get_ozone_protocol)
@@ -2072,7 +2840,7 @@ get_ozone_port() {
 # Function to Get JobHistory Server Details
 #---------------------------
 get_jobhistory_details() {
-    local temp_config="/tmp/yarn-site-config.json"
+    local temp_config="${OUTPUT_DIR}/yarn-site-config.json"
     
     if ! get_ambari_config "yarn-site" "$temp_config"; then
         error "Failed to get yarn-site config for JobHistory"
@@ -2123,7 +2891,7 @@ get_jobhistory_details() {
 #---------------------------
 get_yarn_port() {
     local protocol="$1"
-    local temp_config="/tmp/yarn-site-config.json"
+    local temp_config="${OUTPUT_DIR}/yarn-site-config.json"
     
     if [[ -z "$protocol" ]]; then
         protocol=$(get_yarn_protocol)
@@ -2187,18 +2955,18 @@ get_yarn_port() {
 #   - Proper SSL/HTTPS configuration based on service settings
 #   - Support for High Availability (HA) configurations
 #
-# Output file: /tmp/odp-proxy-sso.xml
+# Output file: ${OUTPUT_DIR}/odp-proxy-sso.xml
 # Returns: 0 on success, 1 on failure
 generate_sso_proxy_topology() {
-    local output_file="/tmp/odp-proxy-sso.xml"
+    local output_file="${OUTPUT_DIR}/odp-proxy-sso.xml"
     
     info "Generating SSO proxy topology (${output_file##*/})..."
     
     # Get HDFS hosts from mapping file
     local hdfs_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local hdfs_line
-        hdfs_line=$(grep "^HDFS=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        hdfs_line=$(grep "^HDFS=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$hdfs_line" ]]; then
             hdfs_hosts=$(echo "$hdfs_line" | sed 's/^HDFS=//')
         fi
@@ -2321,9 +3089,9 @@ EOF
     # Add YARN services
     # Get YARN hosts from mapping file
     local yarn_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local yarn_line
-        yarn_line=$(grep "^YARN=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        yarn_line=$(grep "^YARN=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$yarn_line" ]]; then
             yarn_hosts=$(echo "$yarn_line" | sed 's/^YARN=//')
         fi
@@ -2411,9 +3179,9 @@ EOF
     # Add HBASE services
     # Get HBASE hosts from mapping file
     local hbase_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local hbase_line
-        hbase_line=$(grep "^HBASE=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        hbase_line=$(grep "^HBASE=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$hbase_line" ]]; then
             hbase_hosts=$(echo "$hbase_line" | sed 's/^HBASE=//')
         fi
@@ -2463,9 +3231,9 @@ EOF
     # Add HIVE services
     # Get HIVE hosts from mapping file
     local hive_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local hive_line
-        hive_line=$(grep "^HIVE=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        hive_line=$(grep "^HIVE=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$hive_line" ]]; then
             hive_hosts=$(echo "$hive_line" | sed 's/^HIVE=//')
         fi
@@ -2494,6 +3262,10 @@ EOF
         done
         
         cat >> "$output_file" <<EOF
+        <param>
+            <name>replayBufferSize</name>
+            <value>8</value>
+        </param>
     </service>
     
     <service>
@@ -2516,9 +3288,9 @@ EOF
     # Add OOZIE services
     # Get OOZIE hosts from mapping file
     local oozie_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local oozie_line
-        oozie_line=$(grep "^OOZIE=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        oozie_line=$(grep "^OOZIE=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$oozie_line" ]]; then
             oozie_hosts=$(echo "$oozie_line" | sed 's/^OOZIE=//')
         fi
@@ -2567,9 +3339,9 @@ EOF
     # Add RANGER services
     # Get RANGER hosts from mapping file
     local ranger_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local ranger_line
-        ranger_line=$(grep "^RANGER=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        ranger_line=$(grep "^RANGER=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$ranger_line" ]]; then
             ranger_hosts=$(echo "$ranger_line" | sed 's/^RANGER=//')
         fi
@@ -2618,9 +3390,9 @@ EOF
     # Add SPARK3 services
     # Get SPARK3 hosts from mapping file
     local spark3_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local spark3_line
-        spark3_line=$(grep "^SPARK3=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        spark3_line=$(grep "^SPARK3=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$spark3_line" ]]; then
             spark3_hosts=$(echo "$spark3_line" | sed 's/^SPARK3=//')
         fi
@@ -2655,9 +3427,9 @@ EOF
     # Add TRINO services
     # Get TRINO hosts from mapping file
     local trino_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local trino_line
-        trino_line=$(grep "^TRINO=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        trino_line=$(grep "^TRINO=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$trino_line" ]]; then
             trino_hosts=$(echo "$trino_line" | sed 's/^TRINO=//')
         fi
@@ -2692,9 +3464,9 @@ EOF
     # Add PINOT services
     # Get PINOT hosts from mapping file
     local pinot_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local pinot_line
-        pinot_line=$(grep "^PINOT=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        pinot_line=$(grep "^PINOT=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$pinot_line" ]]; then
             pinot_hosts=$(echo "$pinot_line" | sed 's/^PINOT=//')
         fi
@@ -2729,9 +3501,9 @@ EOF
     # Add OZONE services
     # Get OZONE hosts from mapping file
     local ozone_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local ozone_line
-        ozone_line=$(grep "^OZONE=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        ozone_line=$(grep "^OZONE=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$ozone_line" ]]; then
             ozone_hosts=$(echo "$ozone_line" | sed 's/^OZONE=//')
         fi
@@ -2756,6 +3528,95 @@ EOF
                 echo "        <url>${ozone_protocol}://${host}:${ozone_port}</url>" >> "$output_file"
             fi
         done
+        
+        cat >> "$output_file" <<EOF
+    </service>
+    
+EOF
+    fi
+    
+    # Add IMPALA service
+    # Get IMPALA_DAEMON host from mapping file
+    local impala_host
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
+        local impala_line
+        impala_line=$(grep "^IMPALA_DAEMON=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
+        if [[ -n "$impala_line" ]]; then
+            impala_host=$(echo "$impala_line" | sed 's/^IMPALA_DAEMON=//')
+        fi
+    fi
+    
+    if [[ -n "$impala_host" ]] && [[ "$impala_host" != "NONE" ]]; then
+        # Determine IMPALA protocol and port
+        local impala_protocol
+        impala_protocol=$(get_impala_protocol)
+        local impala_port
+        impala_port=$(get_impala_port "$impala_protocol")
+        
+        # Add IMPALA service
+        cat >> "$output_file" <<EOF
+    <service>
+        <role>IMPALA</role>
+        <url>${impala_protocol}://${impala_host}:${impala_port}</url>
+    </service>
+    
+EOF
+    fi
+    
+    # Add IMPALAUI service (requires Catalog, Statestore, and Daemon hosts)
+    local impala_catalog_host
+    local impala_statestore_host
+    local impala_daemon_host
+    
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
+        # Get IMPALA_CATALOG_SERVICE host
+        local catalog_line
+        catalog_line=$(grep "^IMPALA_CATALOG_SERVICE=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
+        if [[ -n "$catalog_line" ]]; then
+            impala_catalog_host=$(echo "$catalog_line" | sed 's/^IMPALA_CATALOG_SERVICE=//')
+        fi
+        
+        # Get IMPALA_STATE_STORE host
+        local statestore_line
+        statestore_line=$(grep "^IMPALA_STATE_STORE=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
+        if [[ -n "$statestore_line" ]]; then
+            impala_statestore_host=$(echo "$statestore_line" | sed 's/^IMPALA_STATE_STORE=//')
+        fi
+        
+        # Get IMPALA_DAEMON host
+        local daemon_line
+        daemon_line=$(grep "^IMPALA_DAEMON=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
+        if [[ -n "$daemon_line" ]]; then
+            impala_daemon_host=$(echo "$daemon_line" | sed 's/^IMPALA_DAEMON=//')
+        fi
+    fi
+    
+    # Add IMPALAUI service if we have at least one host
+    if [[ -n "$impala_catalog_host" ]] && [[ "$impala_catalog_host" != "NONE" ]] || \
+       [[ -n "$impala_statestore_host" ]] && [[ "$impala_statestore_host" != "NONE" ]] || \
+       [[ -n "$impala_daemon_host" ]] && [[ "$impala_daemon_host" != "NONE" ]]; then
+        local impala_protocol
+        impala_protocol=$(get_impala_protocol)
+        
+        cat >> "$output_file" <<EOF
+    <service>
+        <role>IMPALAUI</role>
+EOF
+        
+        # Add Catalog host URL (port 25020)
+        if [[ -n "$impala_catalog_host" ]] && [[ "$impala_catalog_host" != "NONE" ]]; then
+            echo "        <url>${impala_protocol}://${impala_catalog_host}:25020</url>" >> "$output_file"
+        fi
+        
+        # Add Statestore host URL (port 25010)
+        if [[ -n "$impala_statestore_host" ]] && [[ "$impala_statestore_host" != "NONE" ]]; then
+            echo "        <url>${impala_protocol}://${impala_statestore_host}:25010</url>" >> "$output_file"
+        fi
+        
+        # Add Daemon host URL (port 25000)
+        if [[ -n "$impala_daemon_host" ]] && [[ "$impala_daemon_host" != "NONE" ]]; then
+            echo "        <url>${impala_protocol}://${impala_daemon_host}:25000</url>" >> "$output_file"
+        fi
         
         cat >> "$output_file" <<EOF
     </service>
@@ -2799,18 +3660,18 @@ EOF
 #   - Proper SSL/HTTPS configuration based on service settings
 #   - Support for High Availability (HA) configurations
 #
-# Output file: /tmp/odp-proxy.xml
+# Output file: ${OUTPUT_DIR}/odp-proxy.xml
 # Returns: 0 on success, 1 on failure
 generate_api_proxy_topology() {
-    local output_file="/tmp/odp-proxy.xml"
+    local output_file="${OUTPUT_DIR}/odp-proxy.xml"
     
     info "Generating proxy topology with ShiroProvider (${output_file##*/})..."
     
     # Get HDFS hosts from mapping file (needed for services)
     local hdfs_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local hdfs_line
-        hdfs_line=$(grep "^HDFS=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        hdfs_line=$(grep "^HDFS=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$hdfs_line" ]]; then
             hdfs_hosts=$(echo "$hdfs_line" | sed 's/^HDFS=//')
         fi
@@ -2935,6 +3796,35 @@ EOF
     
     cat >> "$output_file" <<EOF
         <provider>
+            <role>ha</role>
+            <name>HaProvider</name>
+            <enabled>true</enabled>
+            <param>
+                <name>HBASE</name>
+                <value>maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=true</value>
+            </param>
+            <param>
+                <name>HIVE</name>
+                <value>maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enableStickySession=true;enabled=true</value>
+            </param>
+            <param>
+                <name>OOZIE</name>
+                <value>maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=true</value>
+            </param>
+            <param>
+                <name>WEBHBASE</name>
+                <value>maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=true</value>
+            </param>
+            <param>
+                <name>WEBHDFS</name>
+                <value>maxFailoverAttempts=3;failoverSleep=1000;maxRetryAttempts=3;retrySleep=1000;enabled=true</value>
+            </param>
+            <param>
+                <name>YARN</name>
+                <value>maxFailoverAttempts=5;failoverSleep=5000;maxRetryAttempts=3;retrySleep=1000;enabled=true</value>
+            </param>
+        </provider>
+        <provider>
             <role>identity-assertion</role>
             <name>Default</name>
             <enabled>true</enabled>
@@ -3001,9 +3891,9 @@ EOF
     # Copy all services from the first XML (YARN, HBASE, HIVE, OOZIE, RANGER, SPARK3, TRINO, PINOT, OZONE, AMBARI)
     # Get YARN hosts
     local yarn_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local yarn_line
-        yarn_line=$(grep "^YARN=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        yarn_line=$(grep "^YARN=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$yarn_line" ]]; then
             yarn_hosts=$(echo "$yarn_line" | sed 's/^YARN=//')
         fi
@@ -3083,9 +3973,9 @@ EOF
     
     # Get HBASE hosts
     local hbase_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local hbase_line
-        hbase_line=$(grep "^HBASE=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        hbase_line=$(grep "^HBASE=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$hbase_line" ]]; then
             hbase_hosts=$(echo "$hbase_line" | sed 's/^HBASE=//')
         fi
@@ -3130,9 +4020,9 @@ EOF
     
     # Add HIVE services
     local hive_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local hive_line
-        hive_line=$(grep "^HIVE=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        hive_line=$(grep "^HIVE=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$hive_line" ]]; then
             hive_hosts=$(echo "$hive_line" | sed 's/^HIVE=//')
         fi
@@ -3158,6 +4048,10 @@ EOF
         done
         
         cat >> "$output_file" <<EOF
+        <param>
+            <name>replayBufferSize</name>
+            <value>8</value>
+        </param>
     </service>
     
     <service>
@@ -3178,9 +4072,9 @@ EOF
     
     # Add OOZIE services
     local oozie_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local oozie_line
-        oozie_line=$(grep "^OOZIE=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        oozie_line=$(grep "^OOZIE=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$oozie_line" ]]; then
             oozie_hosts=$(echo "$oozie_line" | sed 's/^OOZIE=//')
         fi
@@ -3224,9 +4118,9 @@ EOF
     
     # Add RANGER services
     local ranger_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local ranger_line
-        ranger_line=$(grep "^RANGER=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        ranger_line=$(grep "^RANGER=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$ranger_line" ]]; then
             ranger_hosts=$(echo "$ranger_line" | sed 's/^RANGER=//')
         fi
@@ -3270,9 +4164,9 @@ EOF
     
     # Add SPARK3 services
     local spark3_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local spark3_line
-        spark3_line=$(grep "^SPARK3=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        spark3_line=$(grep "^SPARK3=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$spark3_line" ]]; then
             spark3_hosts=$(echo "$spark3_line" | sed 's/^SPARK3=//')
         fi
@@ -3303,9 +4197,9 @@ EOF
     
     # Add TRINO services
     local trino_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local trino_line
-        trino_line=$(grep "^TRINO=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        trino_line=$(grep "^TRINO=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$trino_line" ]]; then
             trino_hosts=$(echo "$trino_line" | sed 's/^TRINO=//')
         fi
@@ -3336,9 +4230,9 @@ EOF
     
     # Add PINOT services
     local pinot_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local pinot_line
-        pinot_line=$(grep "^PINOT=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        pinot_line=$(grep "^PINOT=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$pinot_line" ]]; then
             pinot_hosts=$(echo "$pinot_line" | sed 's/^PINOT=//')
         fi
@@ -3369,9 +4263,9 @@ EOF
     
     # Add OZONE services
     local ozone_hosts
-    if [[ -f "/tmp/knox-service-hosts-mapping.txt" ]]; then
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
         local ozone_line
-        ozone_line=$(grep "^OZONE=" /tmp/knox-service-hosts-mapping.txt | head -n 1)
+        ozone_line=$(grep "^OZONE=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
         if [[ -n "$ozone_line" ]]; then
             ozone_hosts=$(echo "$ozone_line" | sed 's/^OZONE=//')
         fi
@@ -3400,6 +4294,95 @@ EOF
 EOF
     fi
     
+    # Add IMPALA service
+    # Get IMPALA_DAEMON host from mapping file
+    local impala_host
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
+        local impala_line
+        impala_line=$(grep "^IMPALA_DAEMON=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
+        if [[ -n "$impala_line" ]]; then
+            impala_host=$(echo "$impala_line" | sed 's/^IMPALA_DAEMON=//')
+        fi
+    fi
+    
+    if [[ -n "$impala_host" ]] && [[ "$impala_host" != "NONE" ]]; then
+        # Determine IMPALA protocol and port
+        local impala_protocol
+        impala_protocol=$(get_impala_protocol)
+        local impala_port
+        impala_port=$(get_impala_port "$impala_protocol")
+        
+        # Add IMPALA service
+        cat >> "$output_file" <<EOF
+    <service>
+        <role>IMPALA</role>
+        <url>${impala_protocol}://${impala_host}:${impala_port}</url>
+    </service>
+    
+EOF
+    fi
+    
+    # Add IMPALAUI service (requires Catalog, Statestore, and Daemon hosts)
+    local impala_catalog_host
+    local impala_statestore_host
+    local impala_daemon_host
+    
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
+        # Get IMPALA_CATALOG_SERVICE host
+        local catalog_line
+        catalog_line=$(grep "^IMPALA_CATALOG_SERVICE=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
+        if [[ -n "$catalog_line" ]]; then
+            impala_catalog_host=$(echo "$catalog_line" | sed 's/^IMPALA_CATALOG_SERVICE=//')
+        fi
+        
+        # Get IMPALA_STATE_STORE host
+        local statestore_line
+        statestore_line=$(grep "^IMPALA_STATE_STORE=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
+        if [[ -n "$statestore_line" ]]; then
+            impala_statestore_host=$(echo "$statestore_line" | sed 's/^IMPALA_STATE_STORE=//')
+        fi
+        
+        # Get IMPALA_DAEMON host
+        local daemon_line
+        daemon_line=$(grep "^IMPALA_DAEMON=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
+        if [[ -n "$daemon_line" ]]; then
+            impala_daemon_host=$(echo "$daemon_line" | sed 's/^IMPALA_DAEMON=//')
+        fi
+    fi
+    
+    # Add IMPALAUI service if we have at least one host
+    if [[ -n "$impala_catalog_host" ]] && [[ "$impala_catalog_host" != "NONE" ]] || \
+       [[ -n "$impala_statestore_host" ]] && [[ "$impala_statestore_host" != "NONE" ]] || \
+       [[ -n "$impala_daemon_host" ]] && [[ "$impala_daemon_host" != "NONE" ]]; then
+        local impala_protocol
+        impala_protocol=$(get_impala_protocol)
+        
+        cat >> "$output_file" <<EOF
+    <service>
+        <role>IMPALAUI</role>
+EOF
+        
+        # Add Catalog host URL (port 25020)
+        if [[ -n "$impala_catalog_host" ]] && [[ "$impala_catalog_host" != "NONE" ]]; then
+            echo "        <url>${impala_protocol}://${impala_catalog_host}:25020</url>" >> "$output_file"
+        fi
+        
+        # Add Statestore host URL (port 25010)
+        if [[ -n "$impala_statestore_host" ]] && [[ "$impala_statestore_host" != "NONE" ]]; then
+            echo "        <url>${impala_protocol}://${impala_statestore_host}:25010</url>" >> "$output_file"
+        fi
+        
+        # Add Daemon host URL (port 25000)
+        if [[ -n "$impala_daemon_host" ]] && [[ "$impala_daemon_host" != "NONE" ]]; then
+            echo "        <url>${impala_protocol}://${impala_daemon_host}:25000</url>" >> "$output_file"
+        fi
+        
+        cat >> "$output_file" <<EOF
+    </service>
+    
+EOF
+    fi
+    
     # Add AMBARI services
     cat >> "$output_file" <<EOF
     <service>
@@ -3412,6 +4395,10 @@ EOF
         <url>${AMBARI_PROTOCOL}://${AMBARI_SERVER}:${AMBARI_PORT}</url>
     </service>
     
+    <service>
+        <role>SERVICE-TEST</role>
+    </service>
+    
 EOF
     
     # Close topology
@@ -3422,6 +4409,47 @@ EOF
 }
 
 #---------------------------
+# Function to Cleanup Temporary Files
+#---------------------------
+# Removes temporary files created during script execution
+# This includes service mapping files and Ambari config JSON files
+# Note: Generated topology XML files are NOT removed as they are the desired output
+cleanup_temp_files() {
+    local temp_files=(
+        "${OUTPUT_DIR}/knox-services-list.txt"
+        "${OUTPUT_DIR}/knox-service-hosts-mapping.txt"
+        "${OUTPUT_DIR}/knox-service-hosts-vars.txt"
+        "${OUTPUT_DIR}/knox-services-hosts.txt"
+        "${OUTPUT_DIR}/hdfs-site-config.json"
+        "${OUTPUT_DIR}/yarn-site-config.json"
+        "${OUTPUT_DIR}/hbase-site-config.json"
+        "${OUTPUT_DIR}/hive-site-config.json"
+        "${OUTPUT_DIR}/oozie-site-config.json"
+        "${OUTPUT_DIR}/ranger-admin-site-config.json"
+        "${OUTPUT_DIR}/spark3-defaults-config.json"
+        "${OUTPUT_DIR}/trino-env-config.json"
+        "${OUTPUT_DIR}/pinot-env-config.json"
+        "${OUTPUT_DIR}/ozone-env-config.json"
+        "${OUTPUT_DIR}/ozone-site-config.json"
+    )
+    
+    local cleaned=0
+    for file in "${temp_files[@]}"; do
+        if [[ -f "$file" ]]; then
+            rm -f "$file" 2>/dev/null && ((cleaned++))
+        fi
+    done
+    
+    # Only log if files were actually cleaned (to avoid noise)
+    if [[ $cleaned -gt 0 ]]; then
+        info "Cleaned up ${cleaned} temporary file(s)"
+    fi
+}
+
+# Set up cleanup trap to run on script exit
+trap cleanup_temp_files EXIT
+
+#---------------------------
 # Main Execution Flow
 #---------------------------
 # This is the main script execution flow that:
@@ -3430,6 +4458,7 @@ EOF
 #   3. Retrieves host information for all services and their components
 #   4. Generates topology XML files based on user selection (SSO, API, or both)
 #   5. Displays completion message and copy instructions
+#   6. Cleans up temporary files on exit
 
 info "Starting Knox topology generation..."
 
@@ -3451,42 +4480,57 @@ generated_files=""
 # Generate SSO Proxy Topology if selected (uses SSOCookieProvider)
 if [[ "$GENERATE_SSO" == "true" ]]; then
     generate_sso_proxy_topology
-    generated_files="/tmp/odp-proxy-sso.xml"
+    generated_files="${OUTPUT_DIR}/odp-proxy-sso.xml"
 fi
 
 # Generate API Proxy Topology if selected (uses ShiroProvider with LDAP)
 if [[ "$GENERATE_API" == "true" ]]; then
     generate_api_proxy_topology
     if [[ -n "$generated_files" ]]; then
-        generated_files="${generated_files}, /tmp/odp-proxy.xml"
+        generated_files="${generated_files}, ${OUTPUT_DIR}/odp-proxy.xml"
     else
-        generated_files="/tmp/odp-proxy.xml"
+        generated_files="${OUTPUT_DIR}/odp-proxy.xml"
     fi
 fi
 
-info "Topology generation completed successfully"
-info "Generated files: ${generated_files}"
+echo ""
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}✓ Topology Generation Completed Successfully${NC}"
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+echo -e "${YELLOW}Generated Files:${NC}"
+if [[ "$GENERATE_SSO" == "true" ]] && [[ -f "${OUTPUT_DIR}/odp-proxy-sso.xml" ]]; then
+    echo -e "  ${GREEN}✓${NC} ${OUTPUT_DIR}/odp-proxy-sso.xml"
+fi
+if [[ "$GENERATE_API" == "true" ]] && [[ -f "${OUTPUT_DIR}/odp-proxy.xml" ]]; then
+    echo -e "  ${GREEN}✓${NC} ${OUTPUT_DIR}/odp-proxy.xml"
+fi
+echo ""
+echo -e "${YELLOW}Output Directory:${NC} ${GREEN}${OUTPUT_DIR}${NC}"
 echo ""
 
 # Only show copy instructions if files were generated
 # Display scp commands only for the files that were actually generated
 # We check both the flag AND file existence to ensure accuracy
 if [[ -n "$generated_files" ]]; then
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}Next Steps${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
     echo ""
-    echo -e "${CYAN}Next Steps:${NC}"
-    echo ""
-    echo "Copy the generated topology files to the Knox Gateway host:"
+    echo -e "${YELLOW}Copy the generated topology files to the Knox Gateway host:${NC}"
     echo ""
     
     # Show SSO file scp command only if SSO topology was generated AND file exists
-    if [[ "$GENERATE_SSO" == "true" ]] && [[ -f "/tmp/odp-proxy-sso.xml" ]]; then
-        echo "  scp /tmp/odp-proxy-sso.xml ${KNOX_GATEWAY}:/etc/knox/conf/topologies/"
+    if [[ "$GENERATE_SSO" == "true" ]] && [[ -f "${OUTPUT_DIR}/odp-proxy-sso.xml" ]]; then
+        echo -e "  ${GREEN}scp ${OUTPUT_DIR}/odp-proxy-sso.xml ${KNOX_GATEWAY}:/etc/knox/conf/topologies/${NC}"
     fi
     
     # Show API file scp command only if API topology was generated AND file exists
-    if [[ "$GENERATE_API" == "true" ]] && [[ -f "/tmp/odp-proxy.xml" ]]; then
-        echo "  scp /tmp/odp-proxy.xml ${KNOX_GATEWAY}:/etc/knox/conf/topologies/"
+    if [[ "$GENERATE_API" == "true" ]] && [[ -f "${OUTPUT_DIR}/odp-proxy.xml" ]]; then
+        echo -e "  ${GREEN}scp ${OUTPUT_DIR}/odp-proxy.xml ${KNOX_GATEWAY}:/etc/knox/conf/topologies/${NC}"
     fi
     
+    echo ""
+    echo -e "${YELLOW}After copying, restart Knox Gateway service to apply changes.${NC}"
     echo ""
 fi
