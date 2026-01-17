@@ -1146,7 +1146,8 @@ validate_knox_topology() {
     echo -e "  3) Yarn ResourceManager Cluster Info"
     echo -e "  4) Ranger Service Definitions"
     echo -e "  5) Hive Show Databases (beeline)"
-    echo -e "  6) Service-Test"
+    echo -e "  6) Solr System Info"
+    echo -e "  7) Service-Test"
     echo ""
     read -p "$(echo -e "${CYAN}Enter your choice [all]: ${NC}")" test_choice
     
@@ -1160,6 +1161,7 @@ validate_knox_topology() {
     local run_test4=0
     local run_test5=0
     local run_test6=0
+    local run_test7=0
     
     if [[ "$test_choice" == "all" ]]; then
         run_test1=1
@@ -1175,10 +1177,11 @@ validate_knox_topology() {
         [[ "$test_choice" == *"4"* ]] && run_test4=1
         [[ "$test_choice" == *"5"* ]] && run_test5=1
         [[ "$test_choice" == *"6"* ]] && run_test6=1
+        [[ "$test_choice" == *"7"* ]] && run_test7=1
     fi
     
     # If no valid selection, default to all (excluding Service-Test)
-    if [[ $run_test1 -eq 0 ]] && [[ $run_test2 -eq 0 ]] && [[ $run_test3 -eq 0 ]] && [[ $run_test4 -eq 0 ]] && [[ $run_test5 -eq 0 ]] && [[ $run_test6 -eq 0 ]]; then
+    if [[ $run_test1 -eq 0 ]] && [[ $run_test2 -eq 0 ]] && [[ $run_test3 -eq 0 ]] && [[ $run_test4 -eq 0 ]] && [[ $run_test5 -eq 0 ]] && [[ $run_test6 -eq 0 ]] && [[ $run_test7 -eq 0 ]]; then
         echo -e "${YELLOW}Warning: Invalid selection, running all tests${NC}"
         run_test1=1
         run_test2=1
@@ -1200,8 +1203,8 @@ validate_knox_topology() {
         fi
     fi
     
-    if [[ $run_test1 -eq 1 ]] && [[ $run_test2 -eq 1 ]] && [[ $run_test3 -eq 1 ]] && [[ $run_test4 -eq 1 ]] && [[ $run_test5 -eq 1 ]]; then
-        info "Running all tests (WebHDFS, Oozie, Yarn, Ranger, and Hive)"
+    if [[ $run_test1 -eq 1 ]] && [[ $run_test2 -eq 1 ]] && [[ $run_test3 -eq 1 ]] && [[ $run_test4 -eq 1 ]] && [[ $run_test5 -eq 1 ]] && [[ $run_test6 -eq 1 ]]; then
+        info "Running all tests (WebHDFS, Oozie, Yarn, Ranger, Hive, and Solr)"
     else
         local test_list=()
         [[ $run_test1 -eq 1 ]] && test_list+=("WebHDFS")
@@ -1209,7 +1212,8 @@ validate_knox_topology() {
         [[ $run_test3 -eq 1 ]] && test_list+=("Yarn")
         [[ $run_test4 -eq 1 ]] && test_list+=("Ranger")
         [[ $run_test5 -eq 1 ]] && test_list+=("Hive")
-        [[ $run_test6 -eq 1 ]] && test_list+=("Service-Test")
+        [[ $run_test6 -eq 1 ]] && test_list+=("Solr")
+        [[ $run_test7 -eq 1 ]] && test_list+=("Service-Test")
         if [[ ${#test_list[@]} -gt 0 ]]; then
             info "Running tests: ${test_list[*]}"
         fi
@@ -1297,8 +1301,20 @@ validate_knox_topology() {
         fi
     fi
     
-    # Test 6: Service-Test (no truncation)
+    # Test 6: Solr System Info
     if [[ $run_test6 -eq 1 ]]; then
+        local solr_url="https://${knox_host}:${KNOX_PORT}/gateway/${TOPOLOGY_NAME}/solr/admin/info/system"
+        if run_topology_test "Solr System Info" "$solr_url" "$username" "$password"; then
+            test_passed=$((test_passed + 1))
+            passed_tests+=("Solr")
+        else
+            test_failed=$((test_failed + 1))
+            failed_tests+=("Solr")
+        fi
+    fi
+    
+    # Test 7: Service-Test (no truncation)
+    if [[ $run_test7 -eq 1 ]]; then
         local service_test_url="https://${knox_host}:${KNOX_PORT}/gateway/${TOPOLOGY_NAME}/service-test"
         if run_topology_test "Service-Test" "$service_test_url" "$username" "$password" "true"; then
             test_passed=$((test_passed + 1))
@@ -2420,6 +2436,36 @@ get_hive_webui_port() {
 }
 
 #---------------------------
+# Function to Get SOLR Protocol (HTTP or HTTPS)
+#---------------------------
+get_solr_protocol() {
+    local temp_config="${OUTPUT_DIR}/infra-solr-env-config.json"
+    
+    if ! get_ambari_config "infra-solr-env" "$temp_config"; then
+        error "Failed to get infra-solr-env config"
+        echo "http"  # Default to http
+        return 1
+    fi
+    
+    # Check infra_solr_ssl_enabled - true means HTTPS, false means HTTP
+    local ssl_enabled
+    ssl_enabled=$(get_config_value "$temp_config" "infra_solr_ssl_enabled")
+    
+    if [[ "$ssl_enabled" == "true" ]]; then
+        echo "https"
+    else
+        echo "http"
+    fi
+}
+
+#---------------------------
+# Function to Get SOLR Port
+#---------------------------
+get_solr_port() {
+    echo "8886"  # Default SOLR port
+}
+
+#---------------------------
 # Function to Get OOZIE Protocol (HTTP or HTTPS)
 # Follows HDFS protocol: if HDFS is HTTP, OOZIE will be HTTP by default
 #---------------------------
@@ -3424,6 +3470,41 @@ EOF
 EOF
     fi
     
+    # Add SOLR services
+    # Get AMBARI_INFRA_SOLR hosts from mapping file
+    local solr_hosts
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
+        local solr_line
+        solr_line=$(grep "^AMBARI_INFRA_SOLR=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
+        if [[ -n "$solr_line" ]]; then
+            solr_hosts=$(echo "$solr_line" | sed 's/^AMBARI_INFRA_SOLR=//')
+        fi
+    fi
+    
+    if [[ -n "$solr_hosts" ]]; then
+        local solr_protocol
+        solr_protocol=$(get_solr_protocol)
+        local solr_port
+        solr_port=$(get_solr_port)
+        
+        cat >> "$output_file" <<EOF
+    <service>
+        <role>SOLR</role>
+        <version>6.0.0</version>
+EOF
+        
+        echo "$solr_hosts" | tr ',' '\n' | while IFS= read -r host; do
+            if [[ -n "$host" ]]; then
+                echo "        <url>${solr_protocol}://${host}:${solr_port}</url>" >> "$output_file"
+            fi
+        done
+        
+        cat >> "$output_file" <<EOF
+    </service>
+    
+EOF
+    fi
+    
     # Add TRINO services
     # Get TRINO hosts from mapping file
     local trino_hosts
@@ -4186,6 +4267,40 @@ EOF
         echo "$spark3_hosts" | tr ',' '\n' | while IFS= read -r host; do
             if [[ -n "$host" ]]; then
                 echo "        <url>${spark3_protocol}://${host}:${spark3_port}</url>" >> "$output_file"
+            fi
+        done
+        
+        cat >> "$output_file" <<EOF
+    </service>
+    
+EOF
+    fi
+    
+    # Add SOLR services
+    local solr_hosts
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
+        local solr_line
+        solr_line=$(grep "^AMBARI_INFRA_SOLR=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
+        if [[ -n "$solr_line" ]]; then
+            solr_hosts=$(echo "$solr_line" | sed 's/^AMBARI_INFRA_SOLR=//')
+        fi
+    fi
+    
+    if [[ -n "$solr_hosts" ]]; then
+        local solr_protocol
+        solr_protocol=$(get_solr_protocol)
+        local solr_port
+        solr_port=$(get_solr_port)
+        
+        cat >> "$output_file" <<EOF
+    <service>
+        <role>SOLR</role>
+        <version>6.0.0</version>
+EOF
+        
+        echo "$solr_hosts" | tr ',' '\n' | while IFS= read -r host; do
+            if [[ -n "$host" ]]; then
+                echo "        <url>${solr_protocol}://${host}:${solr_port}</url>" >> "$output_file"
             fi
         done
         
