@@ -30,6 +30,9 @@
 #
 IFS=$'\n\t'
 
+# Exit immediately if a command exits with a non-zero status
+set -e
+
 #---------------------------
 # Function to Get Ambari Server Hostname
 #---------------------------
@@ -94,6 +97,12 @@ EXCLUDED_SERVICES="HTTPFS KAFKA KAFKA3 KERBEROS KNOX MLFLOW RANGER_KMS REGISTRY 
 # Directory where generated topology files and temporary files will be stored
 # Default: /tmp (can be changed to any writable directory)
 OUTPUT_DIR="/tmp"
+
+# Cleanup Configuration
+# Set to "true" to automatically cleanup temporary files on script exit
+# Set to "false" to keep temporary files for troubleshooting
+# Default: "true"
+CLEANUP_TEMP_FILES="true"
 
 # Ensure output directory exists and is writable
 if [[ ! -d "$OUTPUT_DIR" ]]; then
@@ -1146,8 +1155,7 @@ validate_knox_topology() {
     echo -e "  3) Yarn ResourceManager Cluster Info"
     echo -e "  4) Ranger Service Definitions"
     echo -e "  5) Hive Show Databases (beeline)"
-    echo -e "  6) Solr System Info"
-    echo -e "  7) Service-Test"
+    echo -e "  6) Service-Test"
     echo ""
     read -p "$(echo -e "${CYAN}Enter your choice [all]: ${NC}")" test_choice
     
@@ -1161,7 +1169,6 @@ validate_knox_topology() {
     local run_test4=0
     local run_test5=0
     local run_test6=0
-    local run_test7=0
     
     if [[ "$test_choice" == "all" ]]; then
         run_test1=1
@@ -1177,11 +1184,10 @@ validate_knox_topology() {
         [[ "$test_choice" == *"4"* ]] && run_test4=1
         [[ "$test_choice" == *"5"* ]] && run_test5=1
         [[ "$test_choice" == *"6"* ]] && run_test6=1
-        [[ "$test_choice" == *"7"* ]] && run_test7=1
     fi
     
     # If no valid selection, default to all (excluding Service-Test)
-    if [[ $run_test1 -eq 0 ]] && [[ $run_test2 -eq 0 ]] && [[ $run_test3 -eq 0 ]] && [[ $run_test4 -eq 0 ]] && [[ $run_test5 -eq 0 ]] && [[ $run_test6 -eq 0 ]] && [[ $run_test7 -eq 0 ]]; then
+    if [[ $run_test1 -eq 0 ]] && [[ $run_test2 -eq 0 ]] && [[ $run_test3 -eq 0 ]] && [[ $run_test4 -eq 0 ]] && [[ $run_test5 -eq 0 ]] && [[ $run_test6 -eq 0 ]]; then
         echo -e "${YELLOW}Warning: Invalid selection, running all tests${NC}"
         run_test1=1
         run_test2=1
@@ -1203,8 +1209,8 @@ validate_knox_topology() {
         fi
     fi
     
-    if [[ $run_test1 -eq 1 ]] && [[ $run_test2 -eq 1 ]] && [[ $run_test3 -eq 1 ]] && [[ $run_test4 -eq 1 ]] && [[ $run_test5 -eq 1 ]] && [[ $run_test6 -eq 1 ]]; then
-        info "Running all tests (WebHDFS, Oozie, Yarn, Ranger, Hive, and Solr)"
+    if [[ $run_test1 -eq 1 ]] && [[ $run_test2 -eq 1 ]] && [[ $run_test3 -eq 1 ]] && [[ $run_test4 -eq 1 ]] && [[ $run_test5 -eq 1 ]]; then
+        info "Running all tests (WebHDFS, Oozie, Yarn, Ranger, and Hive)"
     else
         local test_list=()
         [[ $run_test1 -eq 1 ]] && test_list+=("WebHDFS")
@@ -1212,8 +1218,7 @@ validate_knox_topology() {
         [[ $run_test3 -eq 1 ]] && test_list+=("Yarn")
         [[ $run_test4 -eq 1 ]] && test_list+=("Ranger")
         [[ $run_test5 -eq 1 ]] && test_list+=("Hive")
-        [[ $run_test6 -eq 1 ]] && test_list+=("Solr")
-        [[ $run_test7 -eq 1 ]] && test_list+=("Service-Test")
+        [[ $run_test6 -eq 1 ]] && test_list+=("Service-Test")
         if [[ ${#test_list[@]} -gt 0 ]]; then
             info "Running tests: ${test_list[*]}"
         fi
@@ -1301,20 +1306,8 @@ validate_knox_topology() {
         fi
     fi
     
-    # Test 6: Solr System Info
+    # Test 6: Service-Test (no truncation)
     if [[ $run_test6 -eq 1 ]]; then
-        local solr_url="https://${knox_host}:${KNOX_PORT}/gateway/${TOPOLOGY_NAME}/solr/admin/info/system"
-        if run_topology_test "Solr System Info" "$solr_url" "$username" "$password"; then
-            test_passed=$((test_passed + 1))
-            passed_tests+=("Solr")
-        else
-            test_failed=$((test_failed + 1))
-            failed_tests+=("Solr")
-        fi
-    fi
-    
-    # Test 7: Service-Test (no truncation)
-    if [[ $run_test7 -eq 1 ]]; then
         local service_test_url="https://${knox_host}:${KNOX_PORT}/gateway/${TOPOLOGY_NAME}/service-test"
         if run_topology_test "Service-Test" "$service_test_url" "$username" "$password" "true"; then
             test_passed=$((test_passed + 1))
@@ -1492,6 +1485,75 @@ create_knox_truststore() {
     echo ""
 }
 
+#---------------------------
+# Function to Display Usage/Help
+#---------------------------
+show_usage() {
+    printf '%b\n' \
+        "${CYAN}Knox Gateway Topology Generator${NC}" \
+        "" \
+        "${YELLOW}Usage:${NC}" \
+        "    bash knox-topology-generator.sh [OPTIONS]" \
+        "" \
+        "${YELLOW}Options:${NC}" \
+        "    --cleanup              Enable automatic cleanup of temporary files" \
+        "    --dry-run              Show what would be done without actually generating topologies" \
+        "    --help, -h             Show this help message" \
+        "" \
+        "${YELLOW}Examples:${NC}" \
+        "    bash knox-topology-generator.sh --cleanup --dry-run" \
+        "    bash knox-topology-generator.sh --cleanup" \
+        "    bash knox-topology-generator.sh --help" \
+        "    bash knox-topology-generator.sh -h" \
+        "" \
+        "${YELLOW}Description:${NC}" \
+        "    This script generates Knox Gateway topology XML files for ODP clusters." \
+        "    It supports two topology types:" \
+        "    1. SSO Proxy Topology (odp-proxy-sso.xml) - Uses SSOCookieProvider for federated authentication" \
+        "    2. API Proxy Topology (odp-proxy.xml) - Uses ShiroProvider with LDAP for API authentication" \
+        "" \
+        "    The script fetches service configurations from Ambari, determines SSL/HTTPS settings," \
+        "    retrieves host information, and generates topology XML files accordingly." \
+        "" \
+        "${YELLOW}Configuration:${NC}" \
+        "    Edit the configuration variables at the top of the script to customize:" \
+        "    - Ambari server connection details" \
+        "    - LDAP configuration (for API Proxy Topology)" \
+        "    - Output directory" \
+        "    - Service exclusion list" \
+        ""
+    exit 0
+}
+
+#---------------------------
+# Parse Command Line Arguments
+#---------------------------
+DRY_RUN=false
+FORCE_CLEANUP=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cleanup)
+            FORCE_CLEANUP=true
+            CLEANUP_TEMP_FILES="true"
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --help|-h)
+            show_usage
+            ;;
+        *)
+            error "Unknown option: $1"
+            echo ""
+            echo "Use --help or -h for usage information."
+            exit 1
+            ;;
+    esac
+done
+
 clear
 
 # Display title
@@ -1500,6 +1562,12 @@ echo -e "${CYAN}Knox Gateway Topology Generator${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${YELLOW}Ambari    : ${GREEN}${AMBARI_PROTOCOL}://${AMBARI_SERVER}:${AMBARI_PORT}${NC}"
 echo -e "${YELLOW}Output Dir: ${GREEN}${OUTPUT_DIR}${NC}"
+if [[ "$DRY_RUN" == "true" ]]; then
+    echo -e "${YELLOW}Mode      : ${CYAN}DRY RUN (no files will be generated)${NC}"
+fi
+if [[ "$FORCE_CLEANUP" == "true" ]]; then
+    echo -e "${YELLOW}Cleanup   : ${GREEN}Enabled${NC}"
+fi
 echo ""
 
 #---------------------------
@@ -1604,9 +1672,11 @@ if [[ "$GENERATE_API" == "true" ]]; then
     printf "╝${NC}\n"
     
     echo ""
-    read -p "Do you want to proceed with topology generation? (yes/no): " proceed_choice
+    read -p "Do you want to proceed with topology generation? (yes/y/no): " proceed_choice
     
-    if [[ "${proceed_choice,,}" != "yes" ]]; then
+    # Convert to lowercase and check for yes or y
+    proceed_choice_lower="${proceed_choice,,}"
+    if [[ "$proceed_choice_lower" != "yes" ]] && [[ "$proceed_choice_lower" != "y" ]]; then
         info "Topology generation cancelled by user."
         exit 0
     fi
@@ -1665,6 +1735,9 @@ get_components_for_service() {
             ;;
         NIFI)
             echo "NIFI_MASTER"
+            ;;
+        NIFI-REGISTRY|NIFI_REGISTRY)
+            echo "NIFI_REGISTRY_MASTER"
             ;;
         HBASE)
             echo "HBASE_MASTER"
@@ -2064,9 +2137,10 @@ fetch_services() {
     local services="$all_services"
     if [[ -n "${EXCLUDED_SERVICES}" ]]; then
         # Convert EXCLUDED_SERVICES to newline-separated list and exclude those services
+        # Use -x flag for exact line matching to avoid substring matches (e.g., REGISTRY matching NIFI_REGISTRY)
         local excluded_services
         excluded_services=$(echo "${EXCLUDED_SERVICES}" | tr ' ' '\n')
-        services=$(echo "$all_services" | grep -vF "$excluded_services")
+        services=$(echo "$all_services" | grep -vFx "$excluded_services")
     fi
     
     if [[ -z "${services}" ]]; then
@@ -2879,6 +2953,47 @@ get_ozone_port() {
         else
             echo "9898"  # Default HTTP port
         fi
+    fi
+}
+
+#---------------------------
+# Function to Get NIFI-REGISTRY Protocol (HTTP or HTTPS)
+#---------------------------
+get_nifi_registry_protocol() {
+    # Check NIFI-REGISTRY's own SSL configuration
+    local temp_config="${OUTPUT_DIR}/nifi-registry-ambari-ssl-config.json"
+    
+    if ! get_ambari_config "nifi-registry-ambari-ssl-config" "$temp_config"; then
+        error "Failed to get nifi-registry-ambari-ssl-config config"
+        echo "http"  # Default to http
+        return 1
+    fi
+    
+    # Check nifi.registry.ssl.isenabled - this is the primary decision
+    local ssl_enabled
+    ssl_enabled=$(get_config_value "$temp_config" "nifi.registry.ssl.isenabled")
+    
+    if [[ "$ssl_enabled" == "true" ]]; then
+        echo "https"
+    else
+        echo "http"
+    fi
+}
+
+#---------------------------
+# Function to Get NIFI-REGISTRY Port
+#---------------------------
+get_nifi_registry_port() {
+    local protocol="$1"
+    
+    if [[ -z "$protocol" ]]; then
+        protocol=$(get_nifi_registry_protocol)
+    fi
+    
+    if [[ "$protocol" == "https" ]]; then
+        echo "61443"  # Default HTTPS port
+    else
+        echo "61080"  # Default HTTP port
     fi
 }
 
@@ -3705,6 +3820,44 @@ EOF
 EOF
     fi
     
+    # Add NIFI-REGISTRY services
+    # Get NIFI-REGISTRY hosts from mapping file (check both hyphen and underscore formats)
+    local nifi_registry_hosts
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
+        local nifi_registry_line
+        # Try hyphen format first, then underscore format
+        nifi_registry_line=$(grep -E "^NIFI-REGISTRY=|^NIFI_REGISTRY=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
+        if [[ -n "$nifi_registry_line" ]]; then
+            nifi_registry_hosts=$(echo "$nifi_registry_line" | sed -E 's/^NIFI-REGISTRY=|^NIFI_REGISTRY=//')
+        fi
+    fi
+    
+    if [[ -n "$nifi_registry_hosts" ]] && [[ "$nifi_registry_hosts" != "NONE" ]]; then
+        # Determine NIFI-REGISTRY protocol and port
+        local nifi_registry_protocol
+        nifi_registry_protocol=$(get_nifi_registry_protocol)
+        local nifi_registry_port
+        nifi_registry_port=$(get_nifi_registry_port "$nifi_registry_protocol")
+        
+        # Add NIFI-REGISTRY service
+        cat >> "$output_file" <<EOF
+    <service>
+        <role>NIFI-REGISTRY</role>
+EOF
+        
+        # Add NIFI-REGISTRY URLs for each host
+        echo "$nifi_registry_hosts" | tr ',' '\n' | while IFS= read -r host; do
+            if [[ -n "$host" ]]; then
+                echo "        <url>${nifi_registry_protocol}://${host}:${nifi_registry_port}</url>" >> "$output_file"
+            fi
+        done
+        
+        cat >> "$output_file" <<EOF
+    </service>
+    
+EOF
+    fi
+    
     # Add AMBARI services using configuration variables
     cat >> "$output_file" <<EOF
     <service>
@@ -4498,6 +4651,44 @@ EOF
 EOF
     fi
     
+    # Add NIFI-REGISTRY services
+    # Get NIFI-REGISTRY hosts from mapping file (check both hyphen and underscore formats)
+    local nifi_registry_hosts
+    if [[ -f "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" ]]; then
+        local nifi_registry_line
+        # Try hyphen format first, then underscore format
+        nifi_registry_line=$(grep -E "^NIFI-REGISTRY=|^NIFI_REGISTRY=" "${OUTPUT_DIR}/knox-service-hosts-mapping.txt" | head -n 1)
+        if [[ -n "$nifi_registry_line" ]]; then
+            nifi_registry_hosts=$(echo "$nifi_registry_line" | sed -E 's/^NIFI-REGISTRY=|^NIFI_REGISTRY=//')
+        fi
+    fi
+    
+    if [[ -n "$nifi_registry_hosts" ]] && [[ "$nifi_registry_hosts" != "NONE" ]]; then
+        # Determine NIFI-REGISTRY protocol and port
+        local nifi_registry_protocol
+        nifi_registry_protocol=$(get_nifi_registry_protocol)
+        local nifi_registry_port
+        nifi_registry_port=$(get_nifi_registry_port "$nifi_registry_protocol")
+        
+        # Add NIFI-REGISTRY service
+        cat >> "$output_file" <<EOF
+    <service>
+        <role>NIFI-REGISTRY</role>
+EOF
+        
+        # Add NIFI-REGISTRY URLs for each host
+        echo "$nifi_registry_hosts" | tr ',' '\n' | while IFS= read -r host; do
+            if [[ -n "$host" ]]; then
+                echo "        <url>${nifi_registry_protocol}://${host}:${nifi_registry_port}</url>" >> "$output_file"
+            fi
+        done
+        
+        cat >> "$output_file" <<EOF
+    </service>
+    
+EOF
+    fi
+    
     # Add AMBARI services
     cat >> "$output_file" <<EOF
     <service>
@@ -4529,7 +4720,14 @@ EOF
 # Removes temporary files created during script execution
 # This includes service mapping files and Ambari config JSON files
 # Note: Generated topology XML files are NOT removed as they are the desired output
+# This function respects the CLEANUP_TEMP_FILES flag
 cleanup_temp_files() {
+    # Check if cleanup is enabled
+    if [[ "${CLEANUP_TEMP_FILES,,}" != "true" ]]; then
+        info "Cleanup disabled. Temporary files preserved for troubleshooting."
+        return 0
+    fi
+    
     local temp_files=(
         "${OUTPUT_DIR}/knox-services-list.txt"
         "${OUTPUT_DIR}/knox-service-hosts-mapping.txt"
@@ -4546,14 +4744,24 @@ cleanup_temp_files() {
         "${OUTPUT_DIR}/pinot-env-config.json"
         "${OUTPUT_DIR}/ozone-env-config.json"
         "${OUTPUT_DIR}/ozone-site-config.json"
+        "${OUTPUT_DIR}/nifi-registry-ambari-ssl-config.json"
     )
     
     local cleaned=0
     for file in "${temp_files[@]}"; do
         if [[ -f "$file" ]]; then
-            rm -f "$file" 2>/dev/null && ((cleaned++))
+            rm -f "$file" 2>/dev/null && ((cleaned++)) || true
         fi
     done
+    
+    # Clean up doSet_* files in the current directory
+    set +e  # Temporarily disable exit on error for doSet cleanup
+    echo "cleanup : $PWD" >&2
+    echo "ls -ltr doSet_*.json" >&2
+    ls -ltr doSet_*.json 2>&1 || true
+    echo "rm -rf doSet_*.json" >&2
+    rm -rf doSet_*.json 2>/dev/null || true
+    set -e  # Re-enable exit on error
     
     # Only log if files were actually cleaned (to avoid noise)
     if [[ $cleaned -gt 0 ]]; then
@@ -4561,7 +4769,7 @@ cleanup_temp_files() {
     fi
 }
 
-# Set up cleanup trap to run on script exit
+# Set up cleanup trap to run on script exit (respects CLEANUP_TEMP_FILES flag)
 trap cleanup_temp_files EXIT
 
 #---------------------------
@@ -4592,42 +4800,80 @@ get_hosts_for_all_services
 # Step 4: Generate topology files based on user selection
 generated_files=""
 
-# Generate SSO Proxy Topology if selected (uses SSOCookieProvider)
-if [[ "$GENERATE_SSO" == "true" ]]; then
-    generate_sso_proxy_topology
-    generated_files="${OUTPUT_DIR}/odp-proxy-sso.xml"
-fi
+if [[ "$DRY_RUN" == "true" ]]; then
+    info "DRY RUN MODE: Topology files will NOT be generated"
+    echo ""
+    if [[ "$GENERATE_SSO" == "true" ]]; then
+        info "Would generate: ${OUTPUT_DIR}/odp-proxy-sso.xml"
+        generated_files="${OUTPUT_DIR}/odp-proxy-sso.xml"
+    fi
+    if [[ "$GENERATE_API" == "true" ]]; then
+        if [[ -n "$generated_files" ]]; then
+            generated_files="${generated_files}, ${OUTPUT_DIR}/odp-proxy.xml"
+        else
+            generated_files="${OUTPUT_DIR}/odp-proxy.xml"
+        fi
+        info "Would generate: ${OUTPUT_DIR}/odp-proxy.xml"
+    fi
+    echo ""
+    info "DRY RUN: Service discovery and host mapping completed successfully"
+    info "DRY RUN: Topology generation skipped (no files created)"
+else
+    # Generate SSO Proxy Topology if selected (uses SSOCookieProvider)
+    if [[ "$GENERATE_SSO" == "true" ]]; then
+        generate_sso_proxy_topology
+        generated_files="${OUTPUT_DIR}/odp-proxy-sso.xml"
+    fi
 
-# Generate API Proxy Topology if selected (uses ShiroProvider with LDAP)
-if [[ "$GENERATE_API" == "true" ]]; then
-    generate_api_proxy_topology
-    if [[ -n "$generated_files" ]]; then
-        generated_files="${generated_files}, ${OUTPUT_DIR}/odp-proxy.xml"
-    else
-        generated_files="${OUTPUT_DIR}/odp-proxy.xml"
+    # Generate API Proxy Topology if selected (uses ShiroProvider with LDAP)
+    if [[ "$GENERATE_API" == "true" ]]; then
+        generate_api_proxy_topology
+        if [[ -n "$generated_files" ]]; then
+            generated_files="${generated_files}, ${OUTPUT_DIR}/odp-proxy.xml"
+        else
+            generated_files="${OUTPUT_DIR}/odp-proxy.xml"
+        fi
     fi
 fi
 
 echo ""
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}✓ Topology Generation Completed Successfully${NC}"
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-echo ""
-echo -e "${YELLOW}Generated Files:${NC}"
-if [[ "$GENERATE_SSO" == "true" ]] && [[ -f "${OUTPUT_DIR}/odp-proxy-sso.xml" ]]; then
-    echo -e "  ${GREEN}✓${NC} ${OUTPUT_DIR}/odp-proxy-sso.xml"
-fi
-if [[ "$GENERATE_API" == "true" ]] && [[ -f "${OUTPUT_DIR}/odp-proxy.xml" ]]; then
-    echo -e "  ${GREEN}✓${NC} ${OUTPUT_DIR}/odp-proxy.xml"
-fi
-echo ""
-echo -e "${YELLOW}Output Directory:${NC} ${GREEN}${OUTPUT_DIR}${NC}"
-echo ""
+if [[ "$DRY_RUN" == "true" ]]; then
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}DRY RUN: Topology Generation Simulation Completed${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${YELLOW}Files that would be generated:${NC}"
+    if [[ "$GENERATE_SSO" == "true" ]]; then
+        echo -e "  ${CYAN}○${NC} ${OUTPUT_DIR}/odp-proxy-sso.xml"
+    fi
+    if [[ "$GENERATE_API" == "true" ]]; then
+        echo -e "  ${CYAN}○${NC} ${OUTPUT_DIR}/odp-proxy.xml"
+    fi
+    echo ""
+    echo -e "${YELLOW}Output Directory:${NC} ${GREEN}${OUTPUT_DIR}${NC}"
+    echo ""
+    echo -e "${CYAN}Note:${NC} No files were actually created. Run without --dry-run to generate topologies."
+    echo ""
+else
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}✓ Topology Generation Completed Successfully${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${YELLOW}Generated Files:${NC}"
+    if [[ "$GENERATE_SSO" == "true" ]] && [[ -f "${OUTPUT_DIR}/odp-proxy-sso.xml" ]]; then
+        echo -e "  ${GREEN}✓${NC} ${OUTPUT_DIR}/odp-proxy-sso.xml"
+    fi
+    if [[ "$GENERATE_API" == "true" ]] && [[ -f "${OUTPUT_DIR}/odp-proxy.xml" ]]; then
+        echo -e "  ${GREEN}✓${NC} ${OUTPUT_DIR}/odp-proxy.xml"
+    fi
+    echo ""
+    echo -e "${YELLOW}Output Directory:${NC} ${GREEN}${OUTPUT_DIR}${NC}"
+    echo ""
 
-# Only show copy instructions if files were generated
-# Display scp commands only for the files that were actually generated
-# We check both the flag AND file existence to ensure accuracy
-if [[ -n "$generated_files" ]]; then
+    # Only show copy instructions if files were generated
+    # Display scp commands only for the files that were actually generated
+    # We check both the flag AND file existence to ensure accuracy
+    if [[ -n "$generated_files" ]] && [[ "$DRY_RUN" != "true" ]]; then
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}Next Steps${NC}"
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
@@ -4648,4 +4894,34 @@ if [[ -n "$generated_files" ]]; then
     echo ""
     echo -e "${YELLOW}After copying, restart Knox Gateway service to apply changes.${NC}"
     echo ""
+    fi
+fi
+
+# Prompt for cleanup if enabled (skip prompt if --cleanup flag was used)
+if [[ "${CLEANUP_TEMP_FILES,,}" == "true" ]]; then
+    if [[ "$FORCE_CLEANUP" == "true" ]]; then
+        # --cleanup flag was used, perform cleanup immediately without prompting
+        cleanup_temp_files
+        # Disable trap cleanup since we already cleaned up
+        trap - EXIT
+    else
+        # Interactive prompt
+        echo ""
+        read -p "$(echo -e "${CYAN}Do you want to cleanup temporary files? (yes/y/no) [yes]: ${NC}")" cleanup_choice
+        cleanup_choice_lower="${cleanup_choice,,}"
+        # Default to yes if empty
+        if [[ -z "$cleanup_choice" ]]; then
+            cleanup_choice_lower="yes"
+        fi
+        # If user says no, disable cleanup
+        if [[ "$cleanup_choice_lower" != "yes" ]] && [[ "$cleanup_choice_lower" != "y" ]]; then
+            CLEANUP_TEMP_FILES="false"
+            info "Cleanup disabled. Temporary files preserved in ${OUTPUT_DIR} for troubleshooting."
+        else
+            # User said yes, perform cleanup immediately
+            cleanup_temp_files
+            # Disable trap cleanup since we already cleaned up
+            trap - EXIT
+        fi
+    fi
 fi
