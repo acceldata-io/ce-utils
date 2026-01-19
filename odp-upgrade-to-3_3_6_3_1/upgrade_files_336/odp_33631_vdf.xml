@@ -21,7 +21,7 @@
         <version>3.3.6.3</version>
         <build>1</build>
         <compatible-with>3.3.6.[0-9]</compatible-with>
-        <release-notes>https://docs.acceldata.io/odp/odp-3.3.6.1-1/documentation</release-notes>
+        <release-notes>https://docs.acceldata.io/odp/odp-3.3.6.3-1/documentation</release-notes>
     </release>
     <manifest>
         <service id="HDFS-336" name="HDFS" version="3.3.6" version-id="1"/>
@@ -60,13 +60,13 @@
     <repository-info>
         <os family="redhat8">
             <repo>
-                <baseurl>https://mirror.odp.acceldata.dev/staging/ODP-3.3.6.3-1-REPOS/ODP/rhel8/</baseurl>
+                <baseurl>https://mirror.odp.acceldata.dev/v2/odp/python3/jdk17/3.3.6.3-1/releases/rhel8/</baseurl>
                 <repoid>ODP-3.3</repoid>
                 <reponame>ODP</reponame>
                 <unique>true</unique>
             </repo>
             <repo>
-                <baseurl>https://mirror.odp.acceldata.dev/staging/ODP-3.3.6.3-1-REPOS/UTILS/ODP-UTILS_RHEL8/</baseurl>
+                <baseurl>https://mirror.odp.acceldata.dev/v2/odp-utils/rhel8/</baseurl>
                 <repoid>ODP-UTILS-1.1.0.22-repo-1</repoid>
                 <reponame>ODP-UTILS</reponame>
                 <unique>false</unique>
