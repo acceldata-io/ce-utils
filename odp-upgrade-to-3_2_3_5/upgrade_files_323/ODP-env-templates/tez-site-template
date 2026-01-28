@@ -1,0 +1,1 @@
+-XX:+PrintGCDetails -verbose:gc -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}}
