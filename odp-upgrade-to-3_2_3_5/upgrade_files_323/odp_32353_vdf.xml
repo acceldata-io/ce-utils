@@ -66,7 +66,7 @@
     <repository-info>
         <os family="redhat8">
             <repo>
-                <baseurl>http://95.217.141.48/data/ODP-3.2.3.5-3-staging-main/odp/rhel8/odp-19Jan2026_052627/</baseurl>
+                <baseurl>https://mirror.odp.acceldata.dev/v2/ambari/python3/jdk8/2.7.8.4-3/releases/rhel8/</baseurl>
                 <repoid>ODP-3.2</repoid>
                 <reponame>ODP</reponame>
                 <unique>true</unique>
@@ -80,13 +80,41 @@
         </os>
         <os family="redhat9">
             <repo>
-                <baseurl>http://95.217.141.48/data/ODP-3.2.3.5-3-staging-main/ODP/rhel9/</baseurl>
+                <baseurl>https://mirror.odp.acceldata.dev/v2/ambari/python3/jdk8/2.7.8.4-3/releases/rhel9/</baseurl>
                 <repoid>ODP-3.2</repoid>
                 <reponame>ODP</reponame>
                 <unique>true</unique>
             </repo>
             <repo>
                 <baseurl>https://mirror.odp.acceldata.dev/v2/odp-utils/rhel9/</baseurl>
+                <repoid>ODP-UTILS-1.1.0.22-repo-1</repoid>
+                <reponame>ODP-UTILS</reponame>
+                <unique>false</unique>
+            </repo>
+        </os>
+        <os family="ubuntu20">
+            <repo>
+                <baseurl>https://mirror.odp.acceldata.dev/v2/ambari/python3/jdk8/2.7.8.4-3/releases/ubuntu20/</baseurl>
+                <repoid>ODP-3.2</repoid>
+                <reponame>ODP</reponame>
+                <unique>true</unique>
+            </repo>
+            <repo>
+                <baseurl>https://mirror.odp.acceldata.dev/v2/odp-utils/ubuntu20/</baseurl>
+                <repoid>ODP-UTILS-1.1.0.22-repo-1</repoid>
+                <reponame>ODP-UTILS</reponame>
+                <unique>false</unique>
+            </repo>
+        </os>
+        <os family="ubuntu22">
+            <repo>
+                <baseurl>https://mirror.odp.acceldata.dev/v2/ambari/python3/jdk8/2.7.8.4-3/releases/ubuntu22/</baseurl>
+                <repoid>ODP-3.2</repoid>
+                <reponame>ODP</reponame>
+                <unique>true</unique>
+            </repo>
+            <repo>
+                <baseurl>https://mirror.odp.acceldata.dev/v2/odp-utils/ubuntu22/</baseurl>
                 <repoid>ODP-UTILS-1.1.0.22-repo-1</repoid>
                 <reponame>ODP-UTILS</reponame>
                 <unique>false</unique>
