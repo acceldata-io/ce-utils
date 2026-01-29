@@ -1,6 +1,6 @@
 #!/bin/bash
 # © 2025 Acceldata Inc. All rights reserved.
-set -euo pipefail
+# set -euo pipefail
 ###############################################################################
 # Usage:
 #   ./pulse_dashplot_export_import.sh [function]
