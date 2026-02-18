@@ -287,7 +287,14 @@ backup_config() {
 
 restore_config() {
     local config="$1"
-    local backup_dir="$(latest_backup_run_dir)/$BACKUP_SUBDIR/$config"
+    local run_dir
+    run_dir="$(latest_backup_run_dir 2>/dev/null)"
+    local backup_dir
+    if [[ -n "$run_dir" ]]; then
+        backup_dir="$run_dir/$BACKUP_SUBDIR/$config"
+    else
+        backup_dir="$BACKUP_SUBDIR/$config"
+    fi
     print_warning "Restoring configuration: $config"
     local ssl_flag=""
     if [ "$PROTOCOL" == "https" ]; then
