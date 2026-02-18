@@ -837,7 +837,7 @@ backup_service_configs() {
         echo -e "${GREEN}18) ${BOLD}🍷 Pinot${NC}"
         echo -e "${GREEN}19) ${BOLD}🏦 ClickHouse${NC}"
         echo -e "${GREEN}20) ${BOLD}🤖 MLflow${NC}"
-        echo -e "${GREEN}21) ${BOLD}🔄 All (Backup configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, NiFi Registry, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone, Pinot, Kafka3, ClickHouse, MLflow)${NC}"
+        echo -e "${GREEN}21) ${BOLD}🔄 All (Backup configurations of all services)${NC}"
         echo -e "${RED}Q) ${BOLD}Quit${NC}"
         echo -ne "${BOLD}${YELLOW}Enter your choice [1-22, Q]:${NC} "
         read choice
@@ -921,7 +921,7 @@ restore_service_configs() {
         echo -e "${GREEN}18) ${BOLD}🍷 Pinot${NC}"
         echo -e "${GREEN}19) ${BOLD}🏦 ClickHouse${NC}"
         echo -e "${GREEN}20) ${BOLD}🤖 MLflow${NC}"
-        echo -e "${GREEN}21) ${BOLD}🔄 All (Restore configurations of all services like Hue, Impala, Kafka, Ranger, Ranger KMS, NiFi, NiFi Registry, Schema Registry, HTTPFS, Kudu, Jupyter, Flink, Druid, Airflow, Ozone, Pinot, Kafka3, ClickHouse, MLflow)${NC}"
+        echo -e "${GREEN}21) ${BOLD}🔄 All (Restore configurations of all services)${NC}"
         echo -e "${RED}Q) ${BOLD}Quit${NC}"
         echo -ne "${BOLD}${YELLOW}Enter your choice [1-22, Q]:${NC} "
         read choice
