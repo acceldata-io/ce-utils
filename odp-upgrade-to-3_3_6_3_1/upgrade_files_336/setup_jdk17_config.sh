@@ -150,6 +150,51 @@ JVM_FLAGS_HIVE="--add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/
 JVM_FLAGS_OOZIE="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED"
 JVM_FLAGS_KMS="--add-exports java.xml.crypto/com.sun.org.apache.xml.internal.security.utils=ALL-UNNAMED"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_PINOT_CONTROLLER_CONF="${SCRIPT_DIR}/../../../ambari-mpacks/common-services/PINOT/1.4.0/configuration/pinot-controller-conf.xml"
+
+PINOT_CONTROLLER_STARTSCRIPT_XML=$(cat <<'EOF'
+    <property>
+        <name>contentcontrollerstartscript</name>
+        <display-name>Pinot Controller Start Script</display-name>
+        <description>Pinot Controller Start Script.</description>
+        <value>#!/bin/bash
+
+# Extract secrets from JCEKS using your command
+export PINOT_ADMIN_PASSWORD=$(
+{{java_home_from_ambari}}/bin/java -cp "/var/lib/ambari-agent/cred/lib/*" \
+org.apache.ambari.server.credentialapi.CredentialUtil \
+-provider jceks://file/etc/security/credential/pinot.jceks get pinot.admin.pass
+)
+
+export PINOT_KEYSTORE_PASS=$(
+{{java_home_from_ambari}}/bin/java -cp "/var/lib/ambari-agent/cred/lib/*" \
+org.apache.ambari.server.credentialapi.CredentialUtil \
+-provider jceks://file/etc/security/credential/pinot.jceks get pinot.keystore.pass
+)
+
+export PINOT_TRUSTSTORE_PASS=$(
+{{java_home_from_ambari}}/bin/java -cp "/var/lib/ambari-agent/cred/lib/*" \
+org.apache.ambari.server.credentialapi.CredentialUtil \
+-provider jceks://file/etc/security/credential/pinot.jceks get pinot.truststore.pass
+)
+
+# Optionally source your /etc/sysconfig/pinot-controller for other variables
+if [ -f /etc/sysconfig/pinot-controller ]; then
+. /etc/sysconfig/pinot-controller
+fi
+
+# Start Pinot Controller
+exec /usr/odp/{{stack_version_buildnum}}/pinot/bin/pinot-admin.sh StartController -config /usr/odp/{{stack_version_buildnum}}/pinot/conf/pinot-controller.conf
+        </value>
+        <value-attributes>
+            <type>content</type>
+        </value-attributes>
+        <on-ambari-upgrade add="false"/>
+    </property>
+EOF
+)
+
 #---------------------------------------------------------
 # Service-Specific Configuration Update Functions
 #---------------------------------------------------------
@@ -264,6 +309,43 @@ update_druid_configuration_for_jdk17() {
     echo -e "${GREEN}Successfully updated configurations for Ranger Druid.${NC}"
 }
 
+update_pinot_mpack_configuration_for_140() {
+    local pinot_controller_conf="$DEFAULT_PINOT_CONTROLLER_CONF"
+    local tmp_file
+
+    echo -e "${YELLOW}Starting Pinot MPack consistency update for 1.4.0...${NC}"
+    read -rp "Enter pinot-controller-conf.xml path [${pinot_controller_conf}]: " user_path
+    pinot_controller_conf="${user_path:-$pinot_controller_conf}"
+
+    if [[ ! -f "$pinot_controller_conf" ]]; then
+        echo -e "${RED}File not found: $pinot_controller_conf${NC}"
+        return 1
+    fi
+
+    if grep -q "<name>contentcontrollerstartscript</name>" "$pinot_controller_conf"; then
+        echo -e "${GREEN}[OK]${NC} Pinot 1.4.0 start-script property already exists. No changes needed."
+        return 0
+    fi
+
+    tmp_file=$(mktemp)
+    awk -v block="$PINOT_CONTROLLER_STARTSCRIPT_XML" '
+        /<\/configuration>/ && !inserted {
+            print block
+            inserted=1
+        }
+        { print }
+    ' "$pinot_controller_conf" > "$tmp_file" && mv "$tmp_file" "$pinot_controller_conf"
+
+    if [[ $? -eq 0 ]]; then
+        echo -e "${GREEN}[OK]${NC} Added missing contentcontrollerstartscript property to:"
+        echo -e "${GREEN}${pinot_controller_conf}${NC}"
+    else
+        echo -e "${RED}Failed to update ${pinot_controller_conf}.${NC}" | tee -a /tmp/jdk17_update.log
+        rm -f "$tmp_file"
+        return 1
+    fi
+}
+
 #---------------------------------------------------------
 # Menu for Selecting Configuration Services
 #---------------------------------------------------------
@@ -281,6 +363,7 @@ display_service_options() {
                 echo -e "${GREEN}  5)${NC} 🌀   Oozie"
                 echo -e "${GREEN}  6)${NC} 🔑   Ranger KMS"
                 echo -e "${GREEN}  7)${NC} 📊   Druid"
+                echo -e "${GREEN}  8)${NC} 🧩   Pinot MPack Sync (1.4.0)"
                 ;;
             11)
                 echo -e "${GREEN}  1)${NC} 🗃️   HDFS, YARN & MapReduce"
@@ -288,6 +371,7 @@ display_service_options() {
                 echo -e "${GREEN}  3)${NC} 🐝   Hive & Tez"
                 echo -e "${GREEN}  4)${NC} 🌀   Oozie"
                 echo -e "${GREEN}  5)${NC} 🔑   Ranger KMS"
+                echo -e "${GREEN}  6)${NC} 🧩   Pinot MPack Sync (1.4.0)"
                 ;;
         esac
 
@@ -309,6 +393,7 @@ handle_selection() {
                 5) update_oozie_configuration_for_jdk17 ;;
                 6) update_kms_configuration_for_jdk17 ;;
                 7) update_druid_configuration_for_jdk17 ;;
+                8) update_pinot_mpack_configuration_for_140 ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17
@@ -317,6 +402,7 @@ handle_selection() {
                     update_oozie_configuration_for_jdk17
                     update_kms_configuration_for_jdk17
                     update_druid_configuration_for_jdk17
+                    update_pinot_mpack_configuration_for_140
                     ;;
                 [Qq]) return 1 ;;
                 *) echo -e "${RED}Invalid selection.${NC}" ;;
@@ -329,12 +415,14 @@ handle_selection() {
                 3) update_hive_configuration_for_jdk17 ;;
                 4) update_oozie_configuration_for_jdk17 ;;
                 5) update_kms_configuration_for_jdk17 ;;
+                6) update_pinot_mpack_configuration_for_140 ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17
                     update_hive_configuration_for_jdk17
                     update_oozie_configuration_for_jdk17
                     update_kms_configuration_for_jdk17
+                    update_pinot_mpack_configuration_for_140
                     ;;
                 [Qq]) return 1 ;;
                 *) echo -e "${RED}Invalid selection.${NC}" ;;
