@@ -153,6 +153,38 @@ JVM_FLAGS_KMS="--add-exports java.xml.crypto/com.sun.org.apache.xml.internal.sec
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_PINOT_CONTROLLER_CONF="${SCRIPT_DIR}/../../../ambari-mpacks/common-services/PINOT/1.4.0/configuration/pinot-controller-conf.xml"
 
+PINOT_CONTROLLER_STARTSCRIPT_VALUE=$(cat <<'EOF'
+#!/bin/bash
+
+# Extract secrets from JCEKS using your command
+export PINOT_ADMIN_PASSWORD=$(
+{{java_home_from_ambari}}/bin/java -cp "/var/lib/ambari-agent/cred/lib/*" \
+org.apache.ambari.server.credentialapi.CredentialUtil \
+-provider jceks://file/etc/security/credential/pinot.jceks get pinot.admin.pass
+)
+
+export PINOT_KEYSTORE_PASS=$(
+{{java_home_from_ambari}}/bin/java -cp "/var/lib/ambari-agent/cred/lib/*" \
+org.apache.ambari.server.credentialapi.CredentialUtil \
+-provider jceks://file/etc/security/credential/pinot.jceks get pinot.keystore.pass
+)
+
+export PINOT_TRUSTSTORE_PASS=$(
+{{java_home_from_ambari}}/bin/java -cp "/var/lib/ambari-agent/cred/lib/*" \
+org.apache.ambari.server.credentialapi.CredentialUtil \
+-provider jceks://file/etc/security/credential/pinot.jceks get pinot.truststore.pass
+)
+
+# Optionally source your /etc/sysconfig/pinot-controller for other variables
+if [ -f /etc/sysconfig/pinot-controller ]; then
+. /etc/sysconfig/pinot-controller
+fi
+
+# Start Pinot Controller
+exec /usr/odp/{{stack_version_buildnum}}/pinot/bin/pinot-admin.sh StartController -config /usr/odp/{{stack_version_buildnum}}/pinot/conf/pinot-controller.conf
+EOF
+)
+
 PINOT_CONTROLLER_STARTSCRIPT_XML=$(cat <<'EOF'
     <property>
         <name>contentcontrollerstartscript</name>
@@ -323,27 +355,30 @@ update_pinot_mpack_configuration_for_140() {
     fi
 
     if grep -q "<name>contentcontrollerstartscript</name>" "$pinot_controller_conf"; then
-        echo -e "${GREEN}[OK]${NC} Pinot 1.4.0 start-script property already exists. No changes needed."
-        return 0
-    fi
-
-    tmp_file=$(mktemp)
-    awk -v block="$PINOT_CONTROLLER_STARTSCRIPT_XML" '
-        /<\/configuration>/ && !inserted {
-            print block
-            inserted=1
-        }
-        { print }
-    ' "$pinot_controller_conf" > "$tmp_file" && mv "$tmp_file" "$pinot_controller_conf"
-
-    if [[ $? -eq 0 ]]; then
-        echo -e "${GREEN}[OK]${NC} Added missing contentcontrollerstartscript property to:"
-        echo -e "${GREEN}${pinot_controller_conf}${NC}"
+        echo -e "${GREEN}[OK]${NC} Pinot 1.4.0 start-script property already exists in MPack XML."
     else
-        echo -e "${RED}Failed to update ${pinot_controller_conf}.${NC}" | tee -a /tmp/jdk17_update.log
-        rm -f "$tmp_file"
-        return 1
+        tmp_file=$(mktemp)
+        awk -v block="$PINOT_CONTROLLER_STARTSCRIPT_XML" '
+            /<\/configuration>/ && !inserted {
+                print block
+                inserted=1
+            }
+            { print }
+        ' "$pinot_controller_conf" > "$tmp_file" && mv "$tmp_file" "$pinot_controller_conf"
+
+        if [[ $? -eq 0 ]]; then
+            echo -e "${GREEN}[OK]${NC} Added missing contentcontrollerstartscript property to:"
+            echo -e "${GREEN}${pinot_controller_conf}${NC}"
+        else
+            echo -e "${RED}Failed to update ${pinot_controller_conf}.${NC}" | tee -a /tmp/jdk17_update.log
+            rm -f "$tmp_file"
+            return 1
+        fi
     fi
+
+    echo -e "${YELLOW}Enforcing Pinot Controller Start Script in Ambari cluster configs...${NC}"
+    set_config "pinot-controller-conf" "contentcontrollerstartscript" "${PINOT_CONTROLLER_STARTSCRIPT_VALUE}"
+    echo -e "${GREEN}[OK]${NC} Enforced pinot-controller-conf:contentcontrollerstartscript in Ambari."
 }
 
 #---------------------------------------------------------
@@ -363,7 +398,7 @@ display_service_options() {
                 echo -e "${GREEN}  5)${NC} 🌀   Oozie"
                 echo -e "${GREEN}  6)${NC} 🔑   Ranger KMS"
                 echo -e "${GREEN}  7)${NC} 📊   Druid"
-                echo -e "${GREEN}  8)${NC} 🧩   Pinot MPack Sync (1.4.0)"
+                echo -e "${GREEN}  8)${NC} 🧩   Pinot MPack + Config Sync (1.4.0)"
                 ;;
             11)
                 echo -e "${GREEN}  1)${NC} 🗃️   HDFS, YARN & MapReduce"
@@ -371,7 +406,7 @@ display_service_options() {
                 echo -e "${GREEN}  3)${NC} 🐝   Hive & Tez"
                 echo -e "${GREEN}  4)${NC} 🌀   Oozie"
                 echo -e "${GREEN}  5)${NC} 🔑   Ranger KMS"
-                echo -e "${GREEN}  6)${NC} 🧩   Pinot MPack Sync (1.4.0)"
+                echo -e "${GREEN}  6)${NC} 🧩   Pinot MPack + Config Sync (1.4.0)"
                 ;;
         esac
 
