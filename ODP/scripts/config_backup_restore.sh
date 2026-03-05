@@ -15,6 +15,7 @@ export PROTOCOL=http
 # Determine Python binary and version
 PYTHON_BIN=python
 PYTHON_VERSION=$($PYTHON_BIN --version 2>&1)
+RESTORE_MODE="full"
 
 
 
@@ -130,6 +131,35 @@ print_warning() {
 # Function to display messages in red color
 print_error() {
     echo -e "${RED}$1${NC}"
+}
+
+# Function to prompt restore strategy
+prompt_restore_mode() {
+    while true; do
+        echo -e "${BOLD}${CYAN}┌────────────────────────────────────────────────────────────┐${NC}"
+        echo -e "${BOLD}${CYAN}│${NC} ${BOLD}Select restore strategy:${NC}                               ${BOLD}${CYAN}│${NC}"
+        echo -e "${BOLD}${CYAN}├────────────────────────────────────────────────────────────┤${NC}"
+        echo -e "${GREEN}[1]${NC} ${BOLD}Full restore${NC}  (current behavior, apply backup as-is)"
+        echo -e "${GREEN}[2]${NC} ${BOLD}Delta restore${NC} (apply only values changed vs current)"
+        echo -e "${BOLD}${CYAN}└────────────────────────────────────────────────────────────┘${NC}"
+        echo -ne "${BOLD}Enter your choice [1-2]:${NC} "
+        read mode_choice
+        case "$mode_choice" in
+        1)
+            RESTORE_MODE="full"
+            print_success "Restore mode set to FULL."
+            return 0
+            ;;
+        2)
+            RESTORE_MODE="delta"
+            print_success "Restore mode set to DELTA."
+            return 0
+            ;;
+        *)
+            print_error "Invalid option. Please enter either '1' or '2'."
+            ;;
+        esac
+    done
 }
 
 # Function to retrieve cluster name from Ambari
@@ -496,6 +526,10 @@ backup_config() {
 # Function to restore configuration
 restore_config() {
     local config="$1"
+    if [[ "${RESTORE_MODE:-full}" == "delta" ]]; then
+        restore_config_delta "$config"
+        return $?
+    fi
     local backup_dir="upgrade_backup/$config"
     print_warning "Restoring configuration: $config"
     local ssl_flag=""
@@ -519,6 +553,152 @@ restore_config() {
         return 1
     }
     print_success "Restore of $config completed successfully."
+}
+
+# Function to restore only delta changes from backup
+restore_config_delta() {
+    local config="$1"
+    local backup_dir="upgrade_backup/$config"
+    local backup_file="$backup_dir/$config.json"
+    local current_file="/tmp/current_${config//[^A-Za-z0-9._-]/_}.json"
+    local merged_file="/tmp/merged_${config//[^A-Za-z0-9._-]/_}.json"
+    local delta_summary="/tmp/delta_${config//[^A-Za-z0-9._-]/_}.txt"
+    local ssl_flag=""
+
+    if [ "$PROTOCOL" == "https" ]; then
+        ssl_flag="-s https"
+    fi
+
+    if [[ ! -f "$backup_file" ]]; then
+        print_error "Backup file not found for $config: $backup_file"
+        return 1
+    fi
+
+    print_warning "Preparing delta restore for configuration: $config"
+
+    # Pull current config from Ambari for comparison
+    local err
+    err=$($PYTHON_BIN /var/lib/ambari-server/resources/scripts/configs.py \
+        -u "$USER" -p "$PASSWORD" $ssl_flag -a get -t "$PORT" -l "$AMBARISERVER" -n "$CLUSTER" \
+        -c "$config" -f "$current_file" 2>&1 1>/dev/null) || {
+        if echo "$err" | grep -q "Missing parentheses in call to 'print'"; then
+            print_error "Detected Python version: $PYTHON_VERSION. Please modify the PYTHON_BIN variable at the top of this script to 'python2' so configs.py runs under Python 2."
+            return 1
+        fi
+        if [[ "$PROTOCOL" == "https" ]] && echo "$err" | grep -q "CERTIFICATE_VERIFY_FAILED"; then
+            handle_ssl_failure "$err"
+        fi
+        print_error "Failed to fetch current config for $config: $err"
+        return 1
+    }
+
+    # Compare backup vs current and build merged payload with only changed backup keys applied
+    $PYTHON_BIN - "$backup_file" "$current_file" "$merged_file" "$delta_summary" <<'PY'
+import json
+import sys
+
+backup_path, current_path, merged_path, summary_path = sys.argv[1:5]
+
+def find_properties(node):
+    if isinstance(node, dict):
+        if isinstance(node.get("properties"), dict):
+            return node["properties"], node, "properties"
+        for value in node.values():
+            props, parent, key = find_properties(value)
+            if props is not None:
+                return props, parent, key
+    elif isinstance(node, list):
+        for item in node:
+            props, parent, key = find_properties(item)
+            if props is not None:
+                return props, parent, key
+    return None, None, None
+
+with open(backup_path) as bf:
+    backup_data = json.load(bf)
+with open(current_path) as cf:
+    current_data = json.load(cf)
+
+backup_props, _, _ = find_properties(backup_data)
+current_props, current_parent, current_key = find_properties(current_data)
+
+if backup_props is None or current_props is None or current_parent is None:
+    sys.exit(3)
+
+merged_props = dict(current_props)
+changed_keys = []
+new_keys = []
+
+for key, value in backup_props.items():
+    if key not in current_props:
+        merged_props[key] = value
+        changed_keys.append(key)
+        new_keys.append(key)
+    elif current_props[key] != value:
+        merged_props[key] = value
+        changed_keys.append(key)
+
+if not changed_keys:
+    sys.exit(2)
+
+current_parent[current_key] = merged_props
+with open(merged_path, "w") as mf:
+    json.dump(current_data, mf, indent=2, sort_keys=True)
+
+with open(summary_path, "w") as sf:
+    sf.write("Changed keys count: {0}\n".format(len(changed_keys)))
+    for key in changed_keys:
+        suffix = " (new key)" if key in new_keys else ""
+        sf.write("- {0}{1}\n".format(key, suffix))
+PY
+    local delta_status=$?
+
+    case "$delta_status" in
+    0)
+        ;;
+    2)
+        print_warning "No differences found for $config. Skipping restore."
+        rm -f "$current_file" "$merged_file" "$delta_summary"
+        return 0
+        ;;
+    3)
+        print_error "Could not parse properties from backup/current JSON for $config."
+        rm -f "$current_file" "$merged_file" "$delta_summary"
+        return 1
+        ;;
+    *)
+        print_error "Failed to compute delta for $config."
+        rm -f "$current_file" "$merged_file" "$delta_summary"
+        return 1
+        ;;
+    esac
+
+    print_warning "Applying delta changes for $config"
+    if [[ -f "$delta_summary" ]]; then
+        while IFS= read -r summary_line; do
+            echo -e "${CYAN}${summary_line}${NC}"
+        done < "$delta_summary"
+    fi
+
+    err=$($PYTHON_BIN /var/lib/ambari-server/resources/scripts/configs.py \
+        -u "$USER" -p "$PASSWORD" $ssl_flag -a set -t "$PORT" -l "$AMBARISERVER" -n "$CLUSTER" \
+        -c "$config" -f "$merged_file" 2>&1 1>/dev/null) || {
+        if echo "$err" | grep -q "Missing parentheses in call to 'print'"; then
+            print_error "Detected Python version: $PYTHON_VERSION. Please modify the PYTHON_BIN variable at the top of this script to 'python2' so configs.py runs under Python 2."
+            rm -f "$current_file" "$merged_file" "$delta_summary"
+            return 1
+        fi
+        if [[ "$PROTOCOL" == "https" ]] && echo "$err" | grep -q "CERTIFICATE_VERIFY_FAILED"; then
+            rm -f "$current_file" "$merged_file" "$delta_summary"
+            handle_ssl_failure "$err"
+        fi
+        print_error "Failed to restore delta for $config: $err"
+        rm -f "$current_file" "$merged_file" "$delta_summary"
+        return 1
+    }
+
+    rm -f "$current_file" "$merged_file" "$delta_summary"
+    print_success "Delta restore of $config completed successfully."
 }
 
 # Function to backup Hue configurations
@@ -803,6 +983,7 @@ main() {
         backup_service_configs
         ;;
     "2")
+        prompt_restore_mode
         restore_service_configs
         ;;
     *)
