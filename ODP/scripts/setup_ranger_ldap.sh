@@ -12,25 +12,32 @@ export PORT=8080
 export PROTOCOL=http
 
 export LDAP_HOSTNAME="ad.adsre.com"
-export LDAP_PORT=636
+export LDAP_PORT="636"
 # If LDAP is non-ssl make below change from ldaps to ldap protocol
+# Note: Use 636 for LDAPS (LDAP over SSL) or 3269 for Global Catalog LDAP over SSL (Active Directory)
 export LDAP_URL="ldaps://$LDAP_HOSTNAME:$LDAP_PORT"
 export BASE_DN="DC=adsre,DC=com"
-export DOMAIN="adsre.com"
-export GROUP_FILTER="" # Add Filters via Ambari UI or use small filter string
-export USER_FILTER="" # Add Filters via Ambari UI, or use small filter string
+export DOMAIN="adsre.com"   # Replace with actual domain name
+export GROUP_FILTER=""  # Add LDAP filter string (e.g., "(objectClass=group)")
+export USER_FILTER=""   # Add LDAP filter string (e.g., "(objectClass=person)")
 export SEARCH_USER_BASE="OU=users,OU=hadoop,DC=adsre,DC=com"
 export BIND_USER="Administrator@ADSRE.COM"  # use UserPrincipalName only, do not use DN name
 export BIND_USER_PASSWORD="PASSWORD"
-export AMBARI_ADMIN_USER=admin
-export AMBARI_ADMIN_PASSWORD=admin
-export userObjectClass=person
-export usernameAttribute=sAMAccountName
-export groupObjectClass=group
-export groupNamingAttr=cn
-export groupMembershipAttr=member
-export referral=ignore
+export AMBARI_ADMIN_USER="admin"
+export AMBARI_ADMIN_PASSWORD="admin"
+export userObjectClass="person"
+export usernameAttribute="sAMAccountName"
+export groupObjectClass="group"
+export groupNamingAttr="cn"
+export groupMembershipAttr="member"
+export referral="ignore"
 export Groupsearchbase="OU=groups,OU=hadoop,DC=adsre,DC=com"
+
+# Only set truststore variables when using LDAPS (port 636 or 3269)
+if [ "$LDAP_PORT" = "636" ] || [ "$LDAP_PORT" = "3269" ]; then
+    export truststorepassword="changeme"     # Replace with actual truststore password
+    export truststore="/opt/odp/security/pki/truststore.jks"  # Replace with actual truststore path
+fi
 
 # curl command to get the required details from Ambari Cluster
 CLUSTER=$(curl -s -k -u "$USER:$PASSWORD" -i -H 'X-Requested-By: ambari' "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters" | sed -n 's/.*"cluster_name" : "\([^\"]*\)".*/\1/p')
@@ -66,7 +73,7 @@ set_config() {
 
     python /var/lib/ambari-server/resources/scripts/configs.py \
         -u $USER -p $PASSWORD -s $PROTOCOL -a set -t $PORT -l $AMBARISERVER -n $CLUSTER \
-        -c $config_file -k $key -v $value
+        -c "$config_file" -k "$key" -v "$value"
 }
 
 enable_ldap_usersync() {
@@ -95,6 +102,11 @@ enable_ldap_usersync() {
     set_config "ranger-ugsync-site"  "ranger.usersync.ldap.user.objectclass" "$userObjectClass"
     set_config "ranger-ugsync-site"  "ranger.usersync.ldap.ldapbindpassword" "$BIND_USER_PASSWORD"
 
+    # Only set truststore configuration when using LDAPS (port 636 or 3269)
+    if [ "$LDAP_PORT" = "636" ] || [ "$LDAP_PORT" = "3269" ]; then
+        set_config "ranger-ugsync-site" "ranger.usersync.truststore.file" "$truststore"
+        set_config "ranger-ugsync-site" "ranger.usersync.truststore.password" "$truststorepassword"
+    fi
 }
 
 enable_ldap_ranger_ui() {
