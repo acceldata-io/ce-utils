@@ -275,7 +275,7 @@ fi
 SOURCE_HTTP_SCHEME="${SOURCE_HTTP_SCHEME:-http}"  # http or https for source cluster
 SOURCE_NN_WEB_PORT="${SOURCE_NN_WEB_PORT:-50070}" # NameNode web UI port for source (commonly 50070 or 9870)
 DEST_HTTP_SCHEME="${DEST_HTTP_SCHEME:-http}"     # http or https for destination cluster
-DEST_NN_WEB_PORT="${DEST_NN_WEB_PORT:-9870}"     # NameNode web UI port for destination (commonly 50070 or 9870)
+DEST_NN_WEB_PORT="${DEST_NN_WEB_PORT:-50070}"     # NameNode web UI port for destination (commonly 50070 or 9870)
 
 # Kerberos credential cache path (KRB5CCNAME)
 # If your Kerberos plugin stores cache at a custom location (e.g., /tmp/krb_*),
@@ -283,6 +283,60 @@ DEST_NN_WEB_PORT="${DEST_NN_WEB_PORT:-9870}"     # NameNode web UI port for dest
 # Example: export KRB5CCNAME=/tmp/krb_12345
 # If not set, curl will use the default Kerberos cache location.
 KRB5CCNAME="${KRB5CCNAME:-}"
+
+# -----------------------------------------------------------------------------
+# Pulse Victoria Metrics (VMDB) Configuration
+# Auto-discovered from /opt/pulse/node/config/node.conf if available.
+# Override via env vars. Set VMDB_WRITE_URL="" to disable metric pushing.
+# -----------------------------------------------------------------------------
+# Resolve PULSE_HOME: env var > /etc/default/hydra > default /opt/pulse
+_pulse_home="${PULSE_HOME:-}"
+if [[ -z "$_pulse_home" && -f /etc/default/hydra ]]; then
+    _pulse_home=$(grep "^PULSE_HOME=" /etc/default/hydra 2>/dev/null | head -1 | sed -E 's/^PULSE_HOME=//' | sed -E "s/^[\"']|[\"']$//g" || echo "")
+fi
+_pulse_home="${_pulse_home:-/opt/pulse}"
+PULSE_NODE_CONF="${_pulse_home}/node/config/node.conf"
+unset _pulse_home
+if [[ -z "${VMDB_WRITE_URL:-}" && -f "$PULSE_NODE_CONF" ]]; then
+    _vmdb_base=$(grep "urls" "$PULSE_NODE_CONF" 2>/dev/null | head -1 | sed -E 's/.*"(http[^"]+)".*/\1/' || echo "")
+    _vmdb_base="${_vmdb_base%/}"  # strip trailing slash to avoid double-slash
+    [[ -n "$_vmdb_base" ]] && VMDB_WRITE_URL="${_vmdb_base}/write"
+    unset _vmdb_base
+fi
+if [[ -z "${VMDB_CLUSTER_NAME:-}" && -f "$PULSE_NODE_CONF" ]]; then
+    VMDB_CLUSTER_NAME=$(grep "cluster_name" "$PULSE_NODE_CONF" 2>/dev/null | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
+fi
+VMDB_WRITE_URL="${VMDB_WRITE_URL:-}"
+VMDB_AUTH="${VMDB_AUTH:-acceldata:D@t@Ops}"
+VMDB_CLUSTER_NAME="${VMDB_CLUSTER_NAME:-}"
+
+# Disable metrics if cluster name could not be resolved (prevents empty db= tag)
+if [[ -n "$VMDB_WRITE_URL" && -z "$VMDB_CLUSTER_NAME" ]]; then
+    log "[WARN] VMDB_WRITE_URL is set but VMDB_CLUSTER_NAME is empty. Metrics disabled."
+    VMDB_WRITE_URL=""
+fi
+
+# Push a single metric to Victoria VMDB (fire-and-forget, never blocks the script)
+# Usage: push_metric "metric_name" "value" ["extra_tags"]
+#   extra_tags: optional comma-separated influx tags, e.g. "dir=/test,stage=4"
+push_metric() {
+    [[ -z "$VMDB_WRITE_URL" ]] && return 0
+    local metric="$1" value="$2" extra_tags="${3:-}"
+    local tags="db=${VMDB_CLUSTER_NAME},job=${SNAP_PREFIX},src=${SOURCE_CLUSTER},dst=${DEST_CLUSTER}"
+    [[ -n "$extra_tags" ]] && tags="${tags},${extra_tags}"
+    curl -s -X POST -u "$VMDB_AUTH" "$VMDB_WRITE_URL" \
+        --data-raw "${metric},${tags} value=${value}" \
+        --max-time 5 >/dev/null 2>&1 || true
+}
+
+# Push failure metrics on early exit (Stage 1/2/3 failures that call exit directly)
+push_early_exit_metrics() {
+    local runtime=$(( $(date +%s) - SCRIPT_START_TS ))
+    push_metric "dr_repl_total_duration_sec" "$runtime"
+    push_metric "dr_repl_status" "0"
+    push_metric "dr_repl_dirs_success" "$METRICS_SUCCESSFUL_DIRECTORIES"
+    push_metric "dr_repl_dirs_failed" "${#SOURCE_DIRS[@]}"
+}
 
 # Lock file directory used to store per-directory snapshot capability locks.
 # Each directory will have its own lock file: ${SNAP_LOCK_DIR}/<sanitized_dir_path>.lock    
@@ -480,16 +534,38 @@ detect_kerberos_enabled() {
     fi
     
     if [[ -d "$pulse_cache_dir" ]]; then
-        for cc in "$pulse_cache_dir"/krb5cc_*; do
+        local best_cc="" fallback_cc=""
+        # Iterate newest-first (by modification time)
+        while IFS= read -r cc; do
             [[ -f "$cc" ]] || continue
 
             if KRB5CCNAME="$cc" klist -s 2>/dev/null; then
-                export KRB5CCNAME="$cc"
-                log "[INFO] Kerberos detected via Pulse cache: $KRB5CCNAME"
-                echo "[INFO] Kerberos detected via Pulse cache: $KRB5CCNAME"
-                return 0
+                # Extract the default principal from this cache
+                local cc_principal
+                cc_principal=$(KRB5CCNAME="$cc" klist 2>/dev/null | grep "Default principal:" | awk '{print $3}')
+
+                # Match principal against DISTCP_USER:
+                #   "user@REALM" or "user/hostname@REALM" (not loose prefix like "hdfs-other@REALM")
+                if [[ -n "$cc_principal" && ( "$cc_principal" == ${DISTCP_USER}@* || "$cc_principal" == ${DISTCP_USER}/* ) ]]; then
+                    best_cc="$cc"
+                    log "[DEBUG] Matched principal '$cc_principal' for DISTCP_USER='$DISTCP_USER' in $cc"
+                    break
+                elif [[ -z "$fallback_cc" ]]; then
+                    # Keep the newest valid cache as fallback in case no principal matches
+                    fallback_cc="$cc"
+                    log "[DEBUG] Valid cache $cc has principal '$cc_principal' (no match for DISTCP_USER='$DISTCP_USER')"
+                fi
             fi
-        done
+        done < <(ls -t "$pulse_cache_dir"/krb5cc_* 2>/dev/null)
+
+        # Prefer principal-matched cache, fall back to newest valid
+        local selected_cc="${best_cc:-$fallback_cc}"
+        if [[ -n "$selected_cc" ]]; then
+            export KRB5CCNAME="$selected_cc"
+            log "[INFO] Kerberos detected via Pulse cache: $KRB5CCNAME"
+            echo "[INFO] Kerberos detected via Pulse cache: $KRB5CCNAME"
+            return 0
+        fi
         log "[DEBUG] No valid Kerberos cache found in $pulse_cache_dir"
     fi
 
@@ -1041,6 +1117,7 @@ main() {
     if [[ "$SOURCE_CLUSTER" == "$DEST_CLUSTER" ]]; then
         echo "[ERROR] SOURCE_CLUSTER and DEST_CLUSTER are identical: '$SOURCE_CLUSTER'"
         echo "Refusing to run to prevent self-replication or data corruption."
+        push_early_exit_metrics
         exit 2
     fi
     
@@ -1189,12 +1266,14 @@ main() {
         log_substage "Checking SOURCE cluster: $source_host"
         if ! check_cluster_health "$source_host" "SOURCE" "$SOURCE_HTTP_SCHEME" "$SOURCE_NN_WEB_PORT"; then
             log_stage_failed "1" "Cluster Health Checks" "Source cluster health check failed"
+            push_early_exit_metrics
             exit 1
         fi
 
         log_substage "Checking DESTINATION cluster: $dest_host"
         if ! check_cluster_health "$dest_host" "DEST" "$DEST_HTTP_SCHEME" "$DEST_NN_WEB_PORT"; then
             log_stage_failed "1" "Cluster Health Checks" "Destination cluster health check failed"
+            push_early_exit_metrics
             exit 1
         fi
         log_stage_complete "1" "Cluster Health Checks"
@@ -1456,6 +1535,7 @@ main() {
                 echo "3. Manually run the failed DistCp commands or re-run this script"
                 echo ""
                 log "[ERROR] Baseline full DistCp failed for one or more directories. Script terminating."
+                push_early_exit_metrics
                 exit 1
             fi
             
@@ -1522,6 +1602,7 @@ main() {
             echo ""
             log "[INFO] All baseline full DistCp operations completed successfully. Post-DistCp snapshots created. Exiting to allow next run for incremental sync."
             log_stage_complete "3" "Baseline Snapshot Creation"
+            push_early_exit_metrics
             exit 0
         else
             # Manual mode: show commands and exit
@@ -1644,6 +1725,7 @@ main() {
                 METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
                 dir_end_ts=$(date +%s)
                 log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
+                push_metric "dr_repl_dir_duration_sec" "$((dir_end_ts - dir_start_ts))" "dir=$d,status=failed"
                 ALL_OK=false
                 continue
             fi
@@ -1666,6 +1748,7 @@ main() {
             METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
             dir_end_ts=$(date +%s)
             log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
+            push_metric "dr_repl_dir_duration_sec" "$((dir_end_ts - dir_start_ts))" "dir=$d,status=failed"
             ALL_OK=false
             continue
         fi
@@ -1884,6 +1967,7 @@ main() {
                             echo "=========================================================================================================================================="
                             dir_end_ts=$(date +%s)
                             log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
+                            push_metric "dr_repl_dir_duration_sec" "$((dir_end_ts - dir_start_ts))" "dir=$d,status=failed"
                             ALL_OK=false
                             continue
                         fi
@@ -1895,6 +1979,7 @@ main() {
                     METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
                     dir_end_ts=$(date +%s)
                     log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
+                    push_metric "dr_repl_dir_duration_sec" "$((dir_end_ts - dir_start_ts))" "dir=$d,status=failed"
                     ALL_OK=false
                     continue
                     fi
@@ -1907,6 +1992,7 @@ main() {
                     METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
                     dir_end_ts=$(date +%s)
                     log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
+                    push_metric "dr_repl_dir_duration_sec" "$((dir_end_ts - dir_start_ts))" "dir=$d,status=failed"
                     ALL_OK=false
                     continue
                 fi
@@ -1919,6 +2005,7 @@ main() {
                 METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
                 dir_end_ts=$(date +%s)
                 log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
+                push_metric "dr_repl_dir_duration_sec" "$((dir_end_ts - dir_start_ts))" "dir=$d,status=failed"
                 ALL_OK=false
                 continue
             fi
@@ -1945,6 +2032,7 @@ main() {
         fi
         dir_end_ts=$(date +%s)
         log "[METRIC] [STAGE 4] Directory '$d' completed in $((dir_end_ts - dir_start_ts)) seconds"
+        push_metric "dr_repl_dir_duration_sec" "$((dir_end_ts - dir_start_ts))" "dir=$d,status=success"
         echo ""
 
         # 4g) Cleanup old snapshots on source (retain SNAP_RETAIN most recent)
@@ -1997,6 +2085,18 @@ main() {
         OVERALL_STATUS="FAILED"
         STATUS_ICON="[ERROR]"
     fi
+
+    # -----------------------------------------------------------------------------
+    # Push final metrics to Pulse Victoria
+    # -----------------------------------------------------------------------------
+    local status_val=0
+    [[ "$OVERALL_STATUS" == "SUCCESS" ]] && status_val=1
+    [[ "$OVERALL_STATUS" == "PARTIAL" ]] && status_val=0.5
+    push_metric "dr_repl_total_duration_sec" "$SCRIPT_RUNTIME"
+    push_metric "dr_repl_status" "$status_val"
+    push_metric "dr_repl_dirs_success" "$METRICS_SUCCESSFUL_DIRECTORIES"
+    push_metric "dr_repl_dirs_failed" "$METRICS_FAILED_DIRECTORIES"
+    log "[INFO] Metrics pushed to Pulse Victoria (status=$OVERALL_STATUS, duration=${SCRIPT_RUNTIME}s, success=$METRICS_SUCCESSFUL_DIRECTORIES, failed=$METRICS_FAILED_DIRECTORIES)"
 
     # -----------------------------------------------------------------------------
     # Final Summary
