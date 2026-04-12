@@ -233,7 +233,7 @@ SOURCE_DIRS_RAW="${3:-/demo/oldfiles}"
 SNAP_PREFIX="${4:-dr_snap}"
 SNAP_RETAIN="${5:-3}"
 HDFS_USER="${6:-hdfs}"
-DISTCP_USER="${7:-hdfs}"
+DISTCP_USER="${7:-$HDFS_USER}"
 COPY_OPTS="${8:--strategy dynamic -direct -update -pugptx -skipcrccheck}"
 YARN_QUEUE="${9:-default}"
 LOG="${10:-/var/log/hadoop-dr-replicate.log}"
@@ -641,7 +641,7 @@ check_prerequisites() {
 # Cleanup temporary files on exit (silent unless in debug mode)
 cleanup_temp_files() {
     local cleaned=0
-    for f in "${TEMP_FILES[@]}"; do
+    for f in ${TEMP_FILES[@]+"${TEMP_FILES[@]}"}; do
         if [[ -f "$f" ]]; then
             rm -f "$f" 2>/dev/null && cleaned=$((cleaned + 1)) || true
         fi
@@ -1242,12 +1242,18 @@ main() {
             log "[DEBUG] Enabling snapshots for directory: $d"
             log_substage "Enabling on SOURCE: $d"
             log "[DEBUG] Allowing snapshot on source dir: $d"
-            if run_as_hdfs hdfs dfsadmin -fs "hdfs://$SOURCE_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true; then
+            allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$SOURCE_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
+            allow_snap_rc=${PIPESTATUS[0]}
+            if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
+                [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                 log "[INFO] Snapshot enabled on source directory $d"
+                src_snap_ok=true
             else
+                [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                 echo "[ERROR] FAILED to enable snapshot on SOURCE directory $d"
                 log "[ERROR] Failed to enable snapshot on source directory $d"
                 log "[ERROR] This may indicate permission issues or the directory doesn't exist on source cluster."
+                src_snap_ok=false
             fi
 
             # Check if destination dir exists
@@ -1282,16 +1288,26 @@ main() {
 
             # Now allowSnapshot on destination (whether just created or already exists)
             log "[DEBUG] Allowing snapshot on destination dir: $d"
-            if run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true; then
+            allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
+            allow_snap_rc=${PIPESTATUS[0]}
+            if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
+                [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                 log "[INFO] Snapshot enabled on destination directory $d"
+                dst_snap_ok=true
             else
+                [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                 echo "[ERROR] FAILED to enable snapshot on DESTINATION directory $d"
                 log "[ERROR] Failed to enable snapshot on destination directory $d"
                 log "[ERROR] This may indicate permission issues or the directory doesn't exist on destination cluster."
+                dst_snap_ok=false
             fi
             
-            : >"$dir_lock"
-            log "[DEBUG] Snapshot capability enabled for directory $d (lock: $dir_lock)"
+            if [[ "$src_snap_ok" == "true" ]] && [[ "$dst_snap_ok" == "true" ]]; then
+                : >"$dir_lock"
+                log "[DEBUG] Snapshot capability enabled for directory $d (lock: $dir_lock)"
+            else
+                log "[WARN] Skipping lock file creation for $d — allowSnapshot failed on one or both clusters (will retry on next run)"
+            fi
         else
             log "[DEBUG] Snapshot capability already enabled for directory $d (lock present: $dir_lock)"
         fi
@@ -1490,9 +1506,13 @@ main() {
             log_substage "Re-enabling snapshots on destination directories"
             for d in "${SOURCE_DIRS[@]}"; do
                 log "[DEBUG] Re-enabling snapshot on destination dir: $d"
-                if run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true; then
+                allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
+                allow_snap_rc=${PIPESTATUS[0]}
+                if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
+                    [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                     log "[INFO] Snapshot re-enabled on destination directory $d"
                 else
+                    [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                     log "[WARN] Failed to re-enable snapshot on destination directory $d (may already be enabled)"
                 fi
             done
@@ -1646,6 +1666,7 @@ main() {
     ALL_OK=true
     echo "[INFO] Starting incremental synchronization for directories: ${SOURCE_DIRS[*]}"
     for d in "${SOURCE_DIRS[@]}"; do
+        dir_start_ts=$(date +%s)
         echo ""
         log_cmd "Processing Directory: $d"
         log "[DEBUG] Starting incremental sync for directory: $d"
@@ -1708,8 +1729,8 @@ main() {
             # Use snapshotDiff to check if destination directory differs from snapshot
             # snapshotDiff returns non-zero if there are differences
             # We compare the snapshot to the current directory state (represented by ".")
-            snapshot_diff_output=$(run_as_hdfs hdfs snapshotDiff -fs "hdfs://$DEST_CLUSTER" "$d" "$baseline_snap" "." 2>&1 || true)
-            snapshot_diff_exit_code=$?
+            snapshot_diff_exit_code=0
+            snapshot_diff_output=$(run_as_hdfs hdfs snapshotDiff -fs "hdfs://$DEST_CLUSTER" "$d" "$baseline_snap" "." 2>&1) || snapshot_diff_exit_code=$?
             
             # If snapshotDiff shows differences (exit code != 0) or if it indicates modifications,
             # the destination has been modified since the snapshot was created
