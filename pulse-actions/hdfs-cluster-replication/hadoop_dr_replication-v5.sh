@@ -275,7 +275,7 @@ fi
 SOURCE_HTTP_SCHEME="${SOURCE_HTTP_SCHEME:-http}"  # http or https for source cluster
 SOURCE_NN_WEB_PORT="${SOURCE_NN_WEB_PORT:-50070}" # NameNode web UI port for source (commonly 50070 or 9870)
 DEST_HTTP_SCHEME="${DEST_HTTP_SCHEME:-http}"     # http or https for destination cluster
-DEST_NN_WEB_PORT="${DEST_NN_WEB_PORT:-9870}"     # NameNode web UI port for destination (commonly 50070 or 9870)
+DEST_NN_WEB_PORT="${DEST_NN_WEB_PORT:-50070}"     # NameNode web UI port for destination (commonly 50070 or 9870)
 
 # Kerberos credential cache path (KRB5CCNAME)
 # If your Kerberos plugin stores cache at a custom location (e.g., /tmp/krb_*),
@@ -480,16 +480,37 @@ detect_kerberos_enabled() {
     fi
     
     if [[ -d "$pulse_cache_dir" ]]; then
-        for cc in "$pulse_cache_dir"/krb5cc_*; do
+        local best_cc="" fallback_cc=""
+        # Iterate newest-first (by modification time)
+        while IFS= read -r cc; do
             [[ -f "$cc" ]] || continue
 
             if KRB5CCNAME="$cc" klist -s 2>/dev/null; then
-                export KRB5CCNAME="$cc"
-                log "[INFO] Kerberos detected via Pulse cache: $KRB5CCNAME"
-                echo "[INFO] Kerberos detected via Pulse cache: $KRB5CCNAME"
-                return 0
+                # Extract the default principal from this cache
+                local cc_principal
+                cc_principal=$(KRB5CCNAME="$cc" klist 2>/dev/null | grep "Default principal:" | awk '{print $3}')
+
+                # Match principal against DISTCP_USER (e.g., "hdfs" matches "hdfs-odp_phoenix@SPACE.COM")
+                if [[ -n "$cc_principal" && "$cc_principal" == ${DISTCP_USER}* ]]; then
+                    best_cc="$cc"
+                    log "[DEBUG] Matched principal '$cc_principal' for DISTCP_USER='$DISTCP_USER' in $cc"
+                    break
+                elif [[ -z "$fallback_cc" ]]; then
+                    # Keep the newest valid cache as fallback in case no principal matches
+                    fallback_cc="$cc"
+                    log "[DEBUG] Valid cache $cc has principal '$cc_principal' (no match for DISTCP_USER='$DISTCP_USER')"
+                fi
             fi
-        done
+        done < <(ls -t "$pulse_cache_dir"/krb5cc_* 2>/dev/null)
+
+        # Prefer principal-matched cache, fall back to newest valid
+        local selected_cc="${best_cc:-$fallback_cc}"
+        if [[ -n "$selected_cc" ]]; then
+            export KRB5CCNAME="$selected_cc"
+            log "[INFO] Kerberos detected via Pulse cache: $KRB5CCNAME"
+            echo "[INFO] Kerberos detected via Pulse cache: $KRB5CCNAME"
+            return 0
+        fi
         log "[DEBUG] No valid Kerberos cache found in $pulse_cache_dir"
     fi
 
@@ -644,19 +665,23 @@ write_state_file() {
 }
 
 # Cleanup old snapshots on a cluster (reduces code duplication)
+# Only removes snapshots matching the current SNAP_PREFIX to avoid deleting
+# snapshots from other replication directions (e.g., forward vs failover)
 cleanup_old_snapshots() {
     local cluster="$1"
     local d="$2"
     local cluster_name="$3"
     local snap_retain="$4"
-    
-    log "[DEBUG] Cleaning old snapshots on $cluster_name cluster for $d"
+    local snap_prefix="$5"
+
+    log "[DEBUG] Cleaning old snapshots on $cluster_name cluster for $d (prefix: ${snap_prefix})"
     mapfile -t snaps < <(
         run_as_hdfs hdfs dfs -fs "hdfs://$cluster" -ls "$d/.snapshot" 2>/dev/null |
-            awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' || true
+            awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' |
+            grep "^${snap_prefix}_" || true
     )
     total_snaps=${#snaps[@]}
-    log "[DEBUG] Found $total_snaps snapshots on $cluster_name for $d"
+    log "[DEBUG] Found $total_snaps snapshots matching prefix '${snap_prefix}' on $cluster_name for $d"
     if ((total_snaps > snap_retain)); then
         local count_to_remove=$((total_snaps - snap_retain))
         log "[DEBUG] Removing $count_to_remove old snapshots from $cluster_name for $d"
@@ -760,9 +785,10 @@ enable_debug_if_needed() {
 DISTCP_DEBUG="${DISTCP_DEBUG:-no}"
 DISTCP_DEBUG_OPTS=""
 
-# Build DistCp options with YARN queue
+# Build DistCp options with YARN queue and application tags
 YARN_QUEUE_OPTS="-Dmapred.job.queue.name=${YARN_QUEUE}"
-DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $DISTCP_DEBUG_OPTS"
+YARN_APP_TAGS="-Dmapreduce.job.tags=pulse-dr-replication,src:${SOURCE_CLUSTER},dst:${DEST_CLUSTER}"
+DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_DEBUG_OPTS"
 
 
 # -----------------------------------------------------------------------------
@@ -1103,6 +1129,7 @@ main() {
     echo "  Arg 12 (ROLLBACK_ON_FAILURE) : $ROLLBACK_ON_FAILURE"
     echo "  Arg 13 (DIR_BOOTSTRAP_MODE)  : $DIR_BOOTSTRAP_MODE"
     echo "  Arg 14 (KERBEROS_ENABLED)    : $KERBEROS_ENABLED"
+    echo "  YARN App Tags                : $YARN_APP_TAGS"
     echo "════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════"
     echo ""
 
@@ -1142,7 +1169,7 @@ main() {
     fi
     
     # Update DISTCP_FULL_OPTS with MapReduce options
-    DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS"
+    DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS"
     log "[INFO] Updated DistCp options: $DISTCP_FULL_OPTS"
     
     # -----------------------------------------------------------------------------
@@ -1281,7 +1308,7 @@ main() {
     for d in "${SOURCE_DIRS[@]}"; do
         log "[DEBUG] Checking baseline snapshot for directory: $d"
         key=$(sanitize "$d")
-        state="/var/tmp/dr-last-snap-${key}.txt"
+        state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
         if [[ ! -f "$state" ]]; then
             need_init=true
             base="${SNAP_PREFIX}_0"
@@ -1381,8 +1408,8 @@ main() {
             DISTCP_ALL_OK=true
             for d in "${SOURCE_DIRS[@]}"; do
                 key=$(sanitize "$d")
-                state="/var/tmp/dr-last-snap-${key}.txt"
-                
+                state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
+
                 # Skip directories that don't have state files (baseline creation failed)
                 if [[ ! -f "$state" ]]; then
                     echo ""
@@ -1547,8 +1574,8 @@ main() {
             local has_valid_dirs=false
             for d in "${SOURCE_DIRS[@]}"; do
                 key=$(sanitize "$d")
-                state="/var/tmp/dr-last-snap-${key}.txt"
-                
+                state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
+
                 # Skip directories that don't have state files (baseline creation failed)
                 if [[ ! -f "$state" ]]; then
                     echo "📁 Directory: $d"
@@ -1623,7 +1650,7 @@ main() {
         log_cmd "Processing Directory: $d"
         log "[DEBUG] Starting incremental sync for directory: $d"
         key=$(sanitize "$d")
-        state="/var/tmp/dr-last-snap-${key}.txt"
+        state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
         last_snap=$(<"$state")
         idx=${last_snap##*_}
         next_snap="${SNAP_PREFIX}_$((idx + 1))"
@@ -1947,11 +1974,11 @@ main() {
         log "[METRIC] [STAGE 4] Directory '$d' completed in $((dir_end_ts - dir_start_ts)) seconds"
         echo ""
 
-        # 4g) Cleanup old snapshots on source (retain SNAP_RETAIN most recent)
-        cleanup_old_snapshots "$SOURCE_CLUSTER" "$d" "source" "$SNAP_RETAIN"
+        # 4g) Cleanup old snapshots on source (retain SNAP_RETAIN most recent, matching current prefix only)
+        cleanup_old_snapshots "$SOURCE_CLUSTER" "$d" "source" "$SNAP_RETAIN" "$SNAP_PREFIX"
 
-        # 4h) Cleanup old snapshots on destination (retain SNAP_RETAIN most recent)
-        cleanup_old_snapshots "$DEST_CLUSTER" "$d" "destination" "$SNAP_RETAIN"
+        # 4h) Cleanup old snapshots on destination (retain SNAP_RETAIN most recent, matching current prefix only)
+        cleanup_old_snapshots "$DEST_CLUSTER" "$d" "destination" "$SNAP_RETAIN" "$SNAP_PREFIX"
     done
     
     # Stage 4 completion - only show errors if any occurred
