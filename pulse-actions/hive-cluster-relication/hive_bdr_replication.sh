@@ -41,6 +41,10 @@
 #                              Applies only to EVERY schedules, not CRON
 #                              Example: "00:05:00" for 5 minute delay
 #
+# Environment variable overrides:
+#   DISTCP_QUEUE            - YARN queue for DistCp jobs (default: default)
+#                              Example: DISTCP_QUEUE=replication ./hive_bdr.sh ...
+#
 # Example (Bootstrap + Scheduled Incremental):
 #   ./hive_bdr.sh \
 #     "migration01" \
@@ -82,21 +86,13 @@ DISTCP_MAPREDUCE_OPTS="${9:--Dmapreduce.job.ha-hdfs.token-renewal.exclude=${DST_
 SCHEDULE_EXPR="${10:-}"
 LOAD_OFFSET="${11:-00:03:00}"
 
-# Detect HA enabled if both SRC_NAMESERVICE and DST_NAMESERVICE do NOT contain ':'
-if [[ "$SRC_NAMESERVICE" != *:* ]] && [[ "$DST_NAMESERVICE" != *:* ]]; then
-  HA_ENABLED=true
-else
-  HA_ENABLED=false
-fi
+# YARN queue for DistCp jobs (override via environment: DISTCP_QUEUE=myqueue)
+DISTCP_QUEUE="${DISTCP_QUEUE:-default}"
 
-# Define HDFS_TOKEN_EXCLUDE_PROP based on HA_ENABLED
-if [[ "$HA_ENABLED" == true ]]; then
-  HDFS_TOKEN_EXCLUDE_PROP="'mapreduce.job.hdfs-servers.token-renewal.exclude'='${SRC_NAMESERVICE},${DST_NAMESERVICE}',"
-else
-  HDFS_TOKEN_EXCLUDE_PROP=""
-fi
+# Normalize REPL_BASE_DIR to always have a trailing slash
+REPL_BASE_DIR="${REPL_BASE_DIR%/}/"
 
-# Validate mandatory parameters
+# Validate mandatory parameters before deriving any variables from them
 if [[ -z "$HIVE_DB" ]]; then
     echo "Error: HIVE_DB (argument 1) is required"
     exit 1
@@ -116,6 +112,20 @@ fi
 if [[ -z "$DST_JDBC_URL" ]]; then
     echo "Error: DST_JDBC_URL (argument 5) is required"
     exit 1
+fi
+
+# Detect HA enabled if both SRC_NAMESERVICE and DST_NAMESERVICE do NOT contain ':'
+if [[ "$SRC_NAMESERVICE" != *:* ]] && [[ "$DST_NAMESERVICE" != *:* ]]; then
+  HA_ENABLED=true
+else
+  HA_ENABLED=false
+fi
+
+# Define HDFS_TOKEN_EXCLUDE_PROP based on HA_ENABLED
+if [[ "$HA_ENABLED" == true ]]; then
+  HDFS_TOKEN_EXCLUDE_PROP="'mapreduce.job.hdfs-servers.token-renewal.exclude'='${SRC_NAMESERVICE},${DST_NAMESERVICE}',"
+else
+  HDFS_TOKEN_EXCLUDE_PROP=""
 fi
 
 ########################################
@@ -147,14 +157,14 @@ detect_and_set_kerberos_cache() {
     fi
     if [[ -d "$pulse_cache_dir" ]]; then
         local cc
-        for cc in "$pulse_cache_dir"/krb5cc_*; do
+        while IFS= read -r cc; do
             [[ -f "$cc" ]] || continue
             if KRB5CCNAME="$cc" klist -s 2>/dev/null; then
                 export KRB5CCNAME="$cc"
                 echo "[INFO] Kerberos detected via Actions cache: $KRB5CCNAME"
                 return 0
             fi
-        done
+        done < <(ls -t "$pulse_cache_dir"/krb5cc_* 2>/dev/null)
     fi
     # 3) Fallback: /tmp/krb5cc_<uid>
     local uid cc_tmp
@@ -187,6 +197,53 @@ SRC_SCHEDULED_QUERY_NAME="sq_repl_dump_${HIVE_DB}"
 DST_SCHEDULED_QUERY_NAME="sq_repl_load_${HIVE_DB}"
 TOTAL_STEPS=7
 
+# Check if a scheduled query exists on a given cluster.
+# Tries sys.scheduled_queries first; falls back to information_schema.scheduled_queries.
+# Usage: check_scheduled_query_exists <jdbc_url> <query_name>
+# Sets global SQ_CHECK_RESULT to the matched name (empty if not found).
+check_scheduled_query_exists() {
+  local jdbc_url="$1"
+  local sq_name="$2"
+
+  local sq_output
+  local sq_sql="SELECT schedule_name FROM sys.scheduled_queries WHERE schedule_name = '${sq_name}';"
+  echo "Executing: ${sq_sql}"
+  sq_output=$( beeline -u "${jdbc_url}" \
+    --silent=true \
+    --showHeader=false \
+    --outputformat=tsv2 \
+    -e "${sq_sql}" 2>&1 || true )
+
+  # If sys.scheduled_queries is not available, fall back to information_schema
+  if echo "$sq_output" | grep -q "Table not found.*scheduled_queries"; then
+    echo "[INFO] sys.scheduled_queries not available, trying information_schema.scheduled_queries"
+    sq_sql="SELECT schedule_name FROM information_schema.scheduled_queries WHERE schedule_name = '${sq_name}';"
+    echo "Executing: ${sq_sql}"
+    sq_output=$( beeline -u "${jdbc_url}" \
+      --silent=true \
+      --showHeader=false \
+      --outputformat=tsv2 \
+      -e "${sq_sql}" 2>&1 || true )
+
+    # If information_schema also doesn't have the table, no scheduled queries exist yet
+    if echo "$sq_output" | grep -q "Table not found.*scheduled_queries"; then
+      echo "[INFO] information_schema.scheduled_queries also not available — no scheduled queries exist yet"
+      SQ_CHECK_RESULT=""
+      return 0
+    fi
+  fi
+
+  SQ_CHECK_RESULT=$(echo "$sq_output" | grep -v "^[0-9]\{2\}/[0-9]\{2\}/[0-9]\{2\}.*INFO" | grep -v "^[[:space:]]*$" | head -n 1 || true)
+
+  # Validate: if we got output but it doesn't match expected name, it's an error
+  if [[ -n "$SQ_CHECK_RESULT" && "$SQ_CHECK_RESULT" != "${sq_name}" ]]; then
+    echo "ERROR: Scheduled query exist check returned unexpected output"
+    echo "$sq_output"
+    return 1
+  fi
+  return 0
+}
+
 create_scheduled_queries() {
   local dump_schedule="${SCHEDULE_EXPR}"
   local load_offset="${LOAD_OFFSET}"
@@ -216,21 +273,12 @@ create_scheduled_queries() {
   echo "$SUBSEP"
   # Check if source scheduled query already exists
   echo "Checking if scheduled query exists on source: ${SRC_SCHEDULED_QUERY_NAME}"
-  SRC_SQ_OUTPUT=$( beeline -u "${SRC_JDBC_URL}" \
-    --silent=true \
-    --showHeader=false \
-    --outputformat=tsv2 \
-    -e "SELECT schedule_name FROM sys.scheduled_queries WHERE schedule_name LIKE '${SRC_SCHEDULED_QUERY_NAME}%';" 2>&1 || true )
-
-  SRC_SQ_EXISTS=$(echo "$SRC_SQ_OUTPUT" | grep -v "^[0-9]\{2\}/[0-9]\{2\}/[0-9]\{2\}.*INFO" | grep -v "^[[:space:]]*$" | head -n 1 || true)
-
-  if [[ -n "$SRC_SQ_EXISTS" && "$SRC_SQ_EXISTS" != "${SRC_SCHEDULED_QUERY_NAME}"* ]]; then
+  if ! check_scheduled_query_exists "${SRC_JDBC_URL}" "${SRC_SCHEDULED_QUERY_NAME}"; then
     echo "ERROR: Scheduled query exist check failed on source"
-    echo "$SRC_SQ_OUTPUT"
     exit 1
   fi
 
-  if [[ -n "$SRC_SQ_EXISTS" ]]; then
+  if [[ -n "$SQ_CHECK_RESULT" ]]; then
     echo "Scheduled query '${SRC_SCHEDULED_QUERY_NAME}' already exists on source. Skipping creation."
   else
     local dump_sql="CREATE SCHEDULED QUERY ${SRC_SCHEDULED_QUERY_NAME} ${dump_schedule} AS
@@ -254,22 +302,12 @@ ${HDFS_TOKEN_EXCLUDE_PROP}
   echo "$SUBSEP"
   # Check if destination scheduled query already exists
   echo "Checking if scheduled query exists on destination: ${DST_SCHEDULED_QUERY_NAME}"
-
-  DST_SQ_OUTPUT=$( beeline -u "${DST_JDBC_URL}" \
-    --silent=true \
-    --showHeader=false \
-    --outputformat=tsv2 \
-    -e "SELECT schedule_name FROM sys.scheduled_queries WHERE schedule_name LIKE '${DST_SCHEDULED_QUERY_NAME}%';" 2>&1 || true )
-
-  DST_SQ_EXISTS=$(echo "$DST_SQ_OUTPUT" | grep -v "^[0-9]\{2\}/[0-9]\{2\}/[0-9]\{2\}.*INFO" | grep -v "^[[:space:]]*$" | head -n 1 || true)
-
-  if [[ -n "$DST_SQ_EXISTS" && "$DST_SQ_EXISTS" != "${DST_SCHEDULED_QUERY_NAME}"* ]]; then
+  if ! check_scheduled_query_exists "${DST_JDBC_URL}" "${DST_SCHEDULED_QUERY_NAME}"; then
     echo "ERROR: Scheduled query exist check failed on destination"
-    echo "$DST_SQ_OUTPUT"
     exit 1
   fi
 
-  if [[ -n "$DST_SQ_EXISTS" ]]; then
+  if [[ -n "$SQ_CHECK_RESULT" ]]; then
     echo "Scheduled query '${DST_SCHEDULED_QUERY_NAME}' already exists on destination. Skipping creation."
   else
     local load_sql="CREATE SCHEDULED QUERY ${DST_SCHEDULED_QUERY_NAME} ${load_schedule} AS
@@ -316,6 +354,7 @@ echo "Database  : $HIVE_DB"
 
 echo "Source NS : $SRC_NAMESERVICE"
 echo "Dest NS   : $DST_NAMESERVICE"
+echo "YARN Queue: $DISTCP_QUEUE"
 echo "Log File  : $LOG_FILE"
 echo ""
 
@@ -331,9 +370,9 @@ DB_CHECK_OUTPUT=$( beeline -u "${DST_JDBC_URL}" \
   --outputformat=tsv2 \
   -e "SHOW DATABASES LIKE '${HIVE_DB}';" 2>&1 || true )
 
-DB_EXISTS=$(echo "$DB_CHECK_OUTPUT" | grep -v "^[0-9]\{2\}/[0-9]\{2\}/[0-9]\{2\}.*INFO" | grep -v "^[[:space:]]*$" | head -n 1 || true)
+DB_EXISTS=$(echo "$DB_CHECK_OUTPUT" | grep -v "^[0-9]\{2\}/[0-9]\{2\}/[0-9]\{2\}.*INFO" | grep -v "^[[:space:]]*$" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | head -n 1 || true)
 
-if [[ -n "$DB_EXISTS" && "$DB_EXISTS" != "${HIVE_DB}"* ]]; then
+if [[ -n "$DB_EXISTS" && "$DB_EXISTS" != "${HIVE_DB}" ]]; then
   echo "ERROR: Database exist check failed on destination"
   echo "$DB_CHECK_OUTPUT"
   exit 1
@@ -355,6 +394,9 @@ fi
 echo ""
 
 if [[ "$BOOTSTRAP" == "true" ]]; then
+  # Trap errors during bootstrap to warn about potential partial state
+  trap 'echo ""; echo "ERROR: Bootstrap failed at $(date). The destination database may be in an inconsistent state."; echo "Before re-running, check: REPL STATUS ${HIVE_DB} on destination and clean up if needed."; echo "Log File: $LOG_FILE"' ERR
+
   ########################################
   # 4. Run REPL DUMP (SOURCE) - Bootstrap
   ########################################
@@ -387,21 +429,41 @@ ${HDFS_TOKEN_EXCLUDE_PROP}
   echo "Dest  : ${DISTCP_DEST_DIR}"
   echo ""
 
-  DISTCP_CMD="hadoop distcp ${DISTCP_MAPREDUCE_OPTS} ${DISTCP_OPTS} \"${REPL_ROOT_DIR_SRC}\" \"${DISTCP_DEST_DIR}\""
+  # Build DistCp command as array for safe execution (no eval)
+  # shellcheck disable=SC2206
+  DISTCP_CMD=(hadoop distcp
+    "-Dmapreduce.job.queuename=${DISTCP_QUEUE}"
+    "-Dmapreduce.job.tags=hive-repl-distcp-${HIVE_DB}"
+    ${DISTCP_MAPREDUCE_OPTS}
+    ${DISTCP_OPTS}
+    "${REPL_ROOT_DIR_SRC}"
+    "${DISTCP_DEST_DIR}")
 
   echo "$SUBSEP"
   echo "Executing DistCp command:"
-  echo "${DISTCP_CMD}"
+  echo "${DISTCP_CMD[*]}"
   echo ""
 
-  eval ${DISTCP_CMD}
+  "${DISTCP_CMD[@]}"
   echo ""
 
   ########################################
-  # Wait to ensure dump metadata is fully visible
+  # Wait to ensure dump data is fully visible on destination
   ########################################
-  echo "Waiting 30 seconds before REPL LOAD to allow dump to stabilize..."
-  sleep 30
+  echo "Verifying DistCp data is visible on destination: ${DISTCP_DEST_DIR}"
+  WAIT_TIMEOUT=300
+  WAIT_INTERVAL=5
+  WAITED=0
+  while ! hdfs dfs -test -d "${DISTCP_DEST_DIR}" 2>/dev/null; do
+    sleep ${WAIT_INTERVAL}
+    WAITED=$((WAITED + WAIT_INTERVAL))
+    if [[ ${WAITED} -ge ${WAIT_TIMEOUT} ]]; then
+      echo "ERROR: Dump directory not visible on destination after ${WAIT_TIMEOUT}s: ${DISTCP_DEST_DIR}"
+      exit 1
+    fi
+    echo "  Waiting for dump directory... (${WAITED}s/${WAIT_TIMEOUT}s)"
+  done
+  echo "Dump directory confirmed on destination (waited ${WAITED}s)"
   echo ""
   ########################################
   # 6. REPL LOAD (DESTINATION) - Bootstrap
@@ -443,6 +505,9 @@ ${HDFS_TOKEN_EXCLUDE_PROP}
 
   beeline -u "${DST_JDBC_URL}" -e "REPL STATUS ${HIVE_DB};"
   echo ""
+
+  # Bootstrap completed successfully — clear the error trap
+  trap - ERR
 else
   echo "$SUBSEP"
   echo "[3-6/${TOTAL_STEPS}] Skipping bootstrap steps - Database already exists on destination"
