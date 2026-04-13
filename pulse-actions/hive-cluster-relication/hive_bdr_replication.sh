@@ -26,7 +26,11 @@
 #     "<LOAD_OFFSET>"
 #
 # Positional arguments (order matters):
-#   1) HIVE_DB              - Hive database name to replicate
+#   1) HIVE_DB              - Hive database (or database.table pattern) to replicate
+#                              Full DB:     "sales"
+#                              Single table: "sales.'t1'"
+#                              Multi table:  "sales.'(t1|t2|orders)'"
+#                              Exclude:      "sales.'(?!t1$).*'"
 #   2) SRC_NAMESERVICE      - Source cluster nameservice
 #   3) DST_NAMESERVICE      - Destination cluster nameservice
 #   4) SRC_JDBC_URL         - Source HiveServer2 JDBC connection URL
@@ -58,6 +62,14 @@
 #     "-Dmapreduce.job.ha-hdfs.token-renewal.exclude=ODP-Aurora" \
 #     "EVERY 5 MINUTES" \
 #     "00:03:00"
+#
+# Example (Table-level replication - specific tables only):
+#   ./hive_bdr.sh \
+#     "sales.'(t1|orders|course)'" \
+#     "ODP-Aquaman" \
+#     "ODP-Aurora" \
+#     "jdbc:hive2://host1:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#     "jdbc:hive2://host3:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2"
 #
 # Example (Incremental only - DB already exists):
 #   Same as above - script will detect existing DB and skip bootstrap
@@ -112,6 +124,23 @@ fi
 if [[ -z "$DST_JDBC_URL" ]]; then
     echo "Error: DST_JDBC_URL (argument 5) is required"
     exit 1
+fi
+
+# Parse HIVE_DB into database name and optional table pattern
+# Supports: "db_name" (full DB) or "db_name.'table_regex'" (table-level)
+# Examples:
+#   "sales"              → DB=sales, tables=all
+#   "sales.'t1'"         → DB=sales, tables=t1 only
+#   "sales.'(t1|t2)'"   → DB=sales, tables=t1 and t2
+#   "sales.'(?!t1$).*'" → DB=sales, tables=all except t1
+if [[ "$HIVE_DB" == *.* ]]; then
+  HIVE_DB_NAME="${HIVE_DB%%.*}"
+  HIVE_TABLE_PATTERN="${HIVE_DB#*.}"
+  HIVE_REPL_SPEC="${HIVE_DB}"
+else
+  HIVE_DB_NAME="${HIVE_DB}"
+  HIVE_TABLE_PATTERN=""
+  HIVE_REPL_SPEC="${HIVE_DB}"
 fi
 
 # Detect HA enabled if both SRC_NAMESERVICE and DST_NAMESERVICE do NOT contain ':'
@@ -187,14 +216,14 @@ detect_and_set_kerberos_cache() {
 detect_and_set_kerberos_cache
 
 # Derived variables
-REPL_ROOT_DIR_SRC="hdfs://${SRC_NAMESERVICE}${REPL_BASE_DIR}${HIVE_DB}"
+REPL_ROOT_DIR_SRC="hdfs://${SRC_NAMESERVICE}${REPL_BASE_DIR}${HIVE_DB_NAME}"
 # IMPORTANT: REPL LOAD must use the same nameservice as REPL DUMP
 REPL_ROOT_DIR_DST="${REPL_ROOT_DIR_SRC}"
 # Base directory on destination for replicated EXTERNAL tables (per-DB)
-REPL_EXTERNAL_BASE_DIR="hdfs://${DST_NAMESERVICE}/user/hive/external/${HIVE_DB}"
+REPL_EXTERNAL_BASE_DIR="hdfs://${DST_NAMESERVICE}/user/hive/external/${HIVE_DB_NAME}"
 
-SRC_SCHEDULED_QUERY_NAME="sq_repl_dump_${HIVE_DB}"
-DST_SCHEDULED_QUERY_NAME="sq_repl_load_${HIVE_DB}"
+SRC_SCHEDULED_QUERY_NAME="sq_repl_dump_${HIVE_DB_NAME}"
+DST_SCHEDULED_QUERY_NAME="sq_repl_load_${HIVE_DB_NAME}"
 TOTAL_STEPS=7
 
 # Check if a scheduled query exists on a given cluster.
@@ -282,7 +311,7 @@ create_scheduled_queries() {
     echo "Scheduled query '${SRC_SCHEDULED_QUERY_NAME}' already exists on source. Skipping creation."
   else
     local dump_sql="CREATE SCHEDULED QUERY ${SRC_SCHEDULED_QUERY_NAME} ${dump_schedule} AS
-REPL DUMP ${HIVE_DB} WITH(
+REPL DUMP ${HIVE_REPL_SPEC} WITH(
 ${HDFS_TOKEN_EXCLUDE_PROP}
 'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
 'hive.repl.include.external.tables'='true',
@@ -311,7 +340,7 @@ ${HDFS_TOKEN_EXCLUDE_PROP}
     echo "Scheduled query '${DST_SCHEDULED_QUERY_NAME}' already exists on destination. Skipping creation."
   else
     local load_sql="CREATE SCHEDULED QUERY ${DST_SCHEDULED_QUERY_NAME} ${load_schedule} AS
-REPL LOAD ${HIVE_DB} INTO ${HIVE_DB} WITH(
+REPL LOAD ${HIVE_DB_NAME} INTO ${HIVE_DB_NAME} WITH(
 ${HDFS_TOKEN_EXCLUDE_PROP}
 'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
 'hive.repl.include.external.tables'='true',
@@ -339,7 +368,7 @@ ${HDFS_TOKEN_EXCLUDE_PROP}
 ########################################
 
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/hive_bdr_${HIVE_DB}_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="$LOG_DIR/hive_bdr_${HIVE_DB_NAME}_$(date +%Y%m%d_%H%M%S).log"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 
@@ -350,7 +379,10 @@ echo "$SEP"
 echo " Hive Cluster Replication Script Started"
 echo "$SEP"
 echo "Timestamp : $(date)"
-echo "Database  : $HIVE_DB"
+echo "Database  : $HIVE_DB_NAME"
+if [[ -n "$HIVE_TABLE_PATTERN" ]]; then
+  echo "Tables    : $HIVE_TABLE_PATTERN"
+fi
 
 echo "Source NS : $SRC_NAMESERVICE"
 echo "Dest NS   : $DST_NAMESERVICE"
@@ -368,11 +400,11 @@ DB_CHECK_OUTPUT=$( beeline -u "${DST_JDBC_URL}" \
   --silent=true \
   --showHeader=false \
   --outputformat=tsv2 \
-  -e "SHOW DATABASES LIKE '${HIVE_DB}';" 2>&1 || true )
+  -e "SHOW DATABASES LIKE '${HIVE_DB_NAME}';" 2>&1 || true )
 
 DB_EXISTS=$(echo "$DB_CHECK_OUTPUT" | grep -v "^[0-9]\{2\}/[0-9]\{2\}/[0-9]\{2\}.*INFO" | grep -v "^[[:space:]]*$" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | head -n 1 || true)
 
-if [[ -n "$DB_EXISTS" && "$DB_EXISTS" != "${HIVE_DB}" ]]; then
+if [[ -n "$DB_EXISTS" && "$DB_EXISTS" != "${HIVE_DB_NAME}" ]]; then
   echo "ERROR: Database exist check failed on destination"
   echo "$DB_CHECK_OUTPUT"
   exit 1
@@ -385,17 +417,17 @@ echo "$SUBSEP"
 echo "[2/${TOTAL_STEPS}] Determining replication mode..."
 
 if [[ -n "$DB_EXISTS" ]]; then
-  echo "Database '${HIVE_DB}' exists on destination cluster - Incremental replication mode"
+  echo "Database '${HIVE_DB_NAME}' exists on destination cluster - Incremental replication mode"
   BOOTSTRAP=false
 else
-  echo "Database '${HIVE_DB}' DOES NOT exist on destination cluster - Bootstrap mode"
+  echo "Database '${HIVE_DB_NAME}' DOES NOT exist on destination cluster - Bootstrap mode"
   BOOTSTRAP=true
 fi
 echo ""
 
 if [[ "$BOOTSTRAP" == "true" ]]; then
   # Trap errors during bootstrap to warn about potential partial state
-  trap 'echo ""; echo "ERROR: Bootstrap failed at $(date). The destination database may be in an inconsistent state."; echo "Before re-running, check: REPL STATUS ${HIVE_DB} on destination and clean up if needed."; echo "Log File: $LOG_FILE"' ERR
+  trap 'echo ""; echo "ERROR: Bootstrap failed at $(date). The destination database may be in an inconsistent state."; echo "Before re-running, check: REPL STATUS ${HIVE_DB_NAME} on destination and clean up if needed."; echo "Log File: $LOG_FILE"' ERR
 
   ########################################
   # 4. Run REPL DUMP (SOURCE) - Bootstrap
@@ -403,7 +435,7 @@ if [[ "$BOOTSTRAP" == "true" ]]; then
   echo "$SUBSEP"
   echo "[3/${TOTAL_STEPS}] Running REPL DUMP on source cluster (Bootstrap)..."
 
-  DUMP_CMD="REPL DUMP ${HIVE_DB} WITH(
+  DUMP_CMD="REPL DUMP ${HIVE_REPL_SPEC} WITH(
 ${HDFS_TOKEN_EXCLUDE_PROP}
 'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
 'hive.repl.include.external.tables'='true',
@@ -424,7 +456,7 @@ ${HDFS_TOKEN_EXCLUDE_PROP}
   ########################################
   echo "$SUBSEP"
   echo "[4/${TOTAL_STEPS}] Running DistCp from source to destination (Bootstrap)..."
-  DISTCP_DEST_DIR="hdfs://${DST_NAMESERVICE}${REPL_BASE_DIR}${HIVE_DB}"
+  DISTCP_DEST_DIR="hdfs://${DST_NAMESERVICE}${REPL_BASE_DIR}${HIVE_DB_NAME}"
   echo "Source: ${REPL_ROOT_DIR_SRC}"
   echo "Dest  : ${DISTCP_DEST_DIR}"
   echo ""
@@ -433,7 +465,7 @@ ${HDFS_TOKEN_EXCLUDE_PROP}
   # shellcheck disable=SC2206
   DISTCP_CMD=(hadoop distcp
     "-Dmapreduce.job.queuename=${DISTCP_QUEUE}"
-    "-Dmapreduce.job.tags=hive-repl-distcp-${HIVE_DB}"
+    "-Dmapreduce.job.tags=hive-repl-distcp-${HIVE_DB_NAME}"
     ${DISTCP_MAPREDUCE_OPTS}
     ${DISTCP_OPTS}
     "${REPL_ROOT_DIR_SRC}"
@@ -474,7 +506,7 @@ ${HDFS_TOKEN_EXCLUDE_PROP}
   # Add bootstrap-specific properties to destination JDBC URL
   DST_JDBC_URL_BOOTSTRAP="${DST_JDBC_URL};hive.repl.copyfile.use.distcp=false;hive.repl.copyfile.max.retries=50"
 
-  LOAD_CMD="REPL LOAD ${HIVE_DB} INTO ${HIVE_DB} WITH(
+  LOAD_CMD="REPL LOAD ${HIVE_DB_NAME} INTO ${HIVE_DB_NAME} WITH(
 ${HDFS_TOKEN_EXCLUDE_PROP}
 'hive.repl.rootdir'='${REPL_ROOT_DIR_DST}',
 'hive.repl.include.external.tables'='true',
@@ -503,7 +535,7 @@ ${HDFS_TOKEN_EXCLUDE_PROP}
   echo "[6/${TOTAL_STEPS}] Validating replication status on destination..."
   echo ""
 
-  beeline -u "${DST_JDBC_URL}" -e "REPL STATUS ${HIVE_DB};"
+  beeline -u "${DST_JDBC_URL}" -e "REPL STATUS ${HIVE_DB_NAME};"
   echo ""
 
   # Bootstrap completed successfully — clear the error trap
@@ -526,7 +558,10 @@ echo "$SEP"
 echo " Hive Cluster Replication Completed"
 echo "$SEP"
 echo ""
-echo "Database     : $HIVE_DB"
+echo "Database     : $HIVE_DB_NAME"
+if [[ -n "$HIVE_TABLE_PATTERN" ]]; then
+  echo "Tables       : $HIVE_TABLE_PATTERN"
+fi
 echo "Mode         : $([ "$BOOTSTRAP" = "true" ] && echo "Bootstrap + Incremental" || echo "Incremental Only")"
 echo "Source       : $SRC_NAMESERVICE"
 echo "Destination  : $DST_NAMESERVICE"
