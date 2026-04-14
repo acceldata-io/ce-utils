@@ -4,8 +4,23 @@ Deploy an Acceldata ODP cluster on pre-built infrastructure using a static Ansib
 
 ![Installation Steps](docs/install-steps.svg)
 
-> **Prerequisites:** All cluster nodes must be reachable via SSH and have RHEL 8 or RHEL 9 (or compatible) installed.
+---
 
+## Table of Contents
+
+- [1. Workstation Setup](#1-workstation-setup)
+- [2. Set the Inventory](#2-set-the-inventory)
+- [3. Configure Vault Secrets](#3-configure-vault-secrets)
+- [4. Configure Cluster Variables](#4-configure-cluster-variables)
+- [5. Deploy the Cluster](#5-deploy-the-cluster)
+- [6. Multiple Clusters (Optional)](#6-multiple-clusters-optional)
+- [7. Post-Deployment](#7-post-deployment)
+- [Pre-Deployment Checklist](#pre-deployment-checklist)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+> **Prerequisites:** All cluster nodes must be reachable via SSH and have RHEL 8 or RHEL 9 (or compatible) installed.
 
 ## 1. Workstation Setup
 
@@ -54,7 +69,6 @@ ansible-galaxy collection download -r requirements.yml -p ./collections-tarballs
 ansible-galaxy collection install ./collections-tarballs/*.tar.gz -p ./collections
 ```
 
-
 ## 2. Set the Inventory
 
 Edit `inventory/static` to define your cluster nodes:
@@ -77,7 +91,7 @@ Each inventory group name must match the `host_group` names in your blueprint co
 ### Inventory variables
 
 | Variable | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `ansible_host` | DNS name or IP of the node |
 | `ansible_user` | SSH user with sudo privileges |
 | `ansible_ssh_private_key_file` | Path to SSH private key |
@@ -90,7 +104,6 @@ Each inventory group name must match the `host_group` names in your blueprint co
 ansible -i inventory/static all --list-hosts
 ansible -i inventory/static all -m ping
 ```
-
 
 ## 3. Configure Vault Secrets
 
@@ -139,7 +152,7 @@ ansible-vault rekey vault.yml
 **Vault variables:**
 
 | Variable | Purpose |
-|----------|---------|
+| ---------- | --------- |
 | `vault_ambari_admin_password` | Ambari admin UI password |
 | `vault_ambari_admin_default_password` | Ambari default password (for change flow) |
 | `vault_default_password` | Base password for Ranger, Knox, NiFi, Kerberos |
@@ -149,7 +162,6 @@ ansible-vault rekey vault.yml
 | `vault_rangeradmin_db_password` | Ranger Admin database password |
 | `vault_rangerkms_db_password` | Ranger KMS database password |
 
-
 ## 4. Configure Cluster Variables
 
 Edit `playbooks/group_vars/all` to set the cluster configuration.
@@ -157,7 +169,7 @@ Edit `playbooks/group_vars/all` to set the cluster configuration.
 ### Cluster identity
 
 | Variable | Description | Example |
-|----------|-------------|---------|
+| ---------- | ------------- | --------- |
 | `cluster_name` | Cluster name | `'odp'` |
 | `ambari_version` | Ambari version (4-part) | `'3.0.0.0-101'` |
 | `odp_version` | ODP version (4-part) | `'3.3.6.3'` |
@@ -168,7 +180,7 @@ Edit `playbooks/group_vars/all` to set the cluster configuration.
 ### Repository URLs (auto-constructed, override for local mirrors)
 
 | Variable | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `ambari_repo_url` | Ambari RPM repository URL |
 | `odp_repo_url` | ODP stack repository URL |
 | `odp_utils_repo_url` | ODP utilities repository URL |
@@ -176,7 +188,7 @@ Edit `playbooks/group_vars/all` to set the cluster configuration.
 ### General options
 
 | Variable | Description | Default |
-|----------|-------------|---------|
+| ---------- | ------------- | --------- |
 | `external_dns` | Use existing DNS (`true`) or populate `/etc/hosts` (`false`) | `true` |
 | `disable_firewall` | Disable local firewall service | `true` |
 | `disable_selinux` | Disable SELinux on all nodes | `true` |
@@ -189,7 +201,7 @@ Edit `playbooks/group_vars/all` to set the cluster configuration.
 By default, the playbook installs OpenJDK on all nodes (`java: 'openjdk'`). Set `openjdk_package` and `java_home` to match your required JDK version.
 
 | Variable | Description | Default |
-|----------|-------------|---------|
+| ---------- | ------------- | --------- |
 | `java` | `'openjdk'` (install), `'custom'` (pre-installed), or `'embedded'` (Ambari managed) | `'openjdk'` |
 | `openjdk_package` | JDK package to install (when `java: 'openjdk'`) | `'java-17-openjdk-devel'` |
 | `java_home` | Path to JAVA_HOME (must match the installed JDK) | `'/usr/lib/jvm/java-17-openjdk'` |
@@ -197,7 +209,7 @@ By default, the playbook installs OpenJDK on all nodes (`java: 'openjdk'`). Set 
 **Available JDK packages (RHEL 8/9):**
 
 | JDK Version | `openjdk_package`       | `java_home`                    |
-|-------------|-------------------------|--------------------------------|
+| ------------- | ------------------------- | -------------------------------- |
 | JDK 17      | `java-17-openjdk-devel` | `/usr/lib/jvm/java-17-openjdk` |
 | JDK 11      | `java-11-openjdk-devel` | `/usr/lib/jvm/java-11-openjdk` |
 
@@ -210,7 +222,7 @@ By default, the playbook installs OpenJDK on all nodes (`java: 'openjdk'`). Set 
 > All databases, users, and privileges must be pre-created before running the playbooks.
 
 | Variable | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `database` | `'postgres'`, `'mysql'`, or `'mariadb'` |
 | `jdbc_driver_path` | Path to JDBC driver JAR on Ambari server node (must already exist) |
 | `database_options.external_hostname` | Database server hostname or IP |
@@ -252,7 +264,7 @@ jdbc_driver_path: '/usr/share/java/postgresql-jdbc.jar'
 The following databases must be pre-created with corresponding users and privileges:
 
 | Service | DB name variable | Username variable | Password (in vault) |
-|---------|-----------------|-------------------|---------------------|
+| --------- | ----------------- | ------------------- | --------------------- |
 | Ambari | `ambari_db_name` | `ambari_db_username` | `vault_ambari_db_password` |
 | Hive | `hive_db_name` | `hive_db_username` | `vault_hive_db_password` |
 | Oozie | `oozie_db_name` | `oozie_db_username` | `vault_oozie_db_password` |
@@ -264,7 +276,7 @@ The following databases must be pre-created with corresponding users and privile
 ### Kerberos (optional)
 
 | Variable | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `security` | `'none'` or `'active-directory'` |
 | `security_options.external_hostname` | KDC / Active Directory hostname |
 | `security_options.realm` | Kerberos realm (e.g., `'EXAMPLE.COM'`) |
@@ -277,7 +289,7 @@ The following databases must be pre-created with corresponding users and privile
 ### Ranger
 
 | Variable | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `ranger_options.enable_plugins` | Enable Ranger plugins for all services (`true`/`false`) |
 | `ranger_security_options.ranger_admin_password` | Ranger admin password (defaults to `{{ default_password }}`) |
 | `ranger_security_options.ranger_keyadmin_password` | Ranger key admin password (defaults to `{{ default_password }}`) |
@@ -286,13 +298,13 @@ The following databases must be pre-created with corresponding users and privile
 ### Knox
 
 | Variable | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `knox_security_options.master_secret` | Knox gateway master secret (defaults to `{{ default_password }}`) |
 
 ### NiFi
 
 | Variable | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `nifi_security_options.encrypt_password` | NiFi configuration encryption password (defaults to `{{ default_password }}`) |
 | `nifi_security_options.sensitive_props_key` | NiFi sensitive properties key (defaults to `{{ default_password }}`) |
 
@@ -301,7 +313,7 @@ The following databases must be pre-created with corresponding users and privile
 ### Ambari
 
 | Variable | Description | Default |
-|----------|-------------|---------|
+| ---------- | ------------- | --------- |
 | `ambari_admin_user` | Ambari admin username | `'admin'` |
 | `config_recommendation_strategy` | Blueprint config strategy | `'ALWAYS_APPLY_DONT_OVERRIDE_CUSTOM_VALUES'` |
 | `wait` | Wait for cluster build to complete | `true` |
@@ -312,7 +324,7 @@ The following databases must be pre-created with corresponding users and privile
 ### Blueprint
 
 | Variable | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `blueprint_name` | Name stored in Ambari |
 | `blueprint_file` | `'blueprint_dynamic.j2'` (generated) or path to static JSON |
 | `blueprint_dynamic` | Service-to-host-group mapping (see `group_vars/all` for examples) |
@@ -322,12 +334,11 @@ The following databases must be pre-created with corresponding users and privile
 Override data and log directories. See `playbooks/roles/ambari_blueprint/defaults/main.yml` for all available path variables.
 
 | Variable | Description | Default |
-|----------|-------------|---------|
+| ---------- | ------------- | --------- |
 | `base_log_dir` | Base log directory | `'/var/log'` |
 | `base_tmp_dir` | Base temp directory | `'/tmp'` |
 | `postgres_port` | PostgreSQL port | `5432` |
 | `mysql_port` | MySQL/MariaDB port | `3306` |
-
 
 ## 5. Deploy the Cluster
 
@@ -384,7 +395,6 @@ ansible-playbook playbooks/configure_ambari.yml
 ansible-playbook playbooks/apply_blueprint.yml
 ```
 
-
 ## 6. Multiple Clusters (Optional)
 
 To manage multiple clusters from the same project:
@@ -409,6 +419,35 @@ vi playbooks/group_vars/my_cluster
 bash install_cluster.sh -i inventory/my_cluster
 ```
 
+## 7. Post-Deployment
+
+After a successful deployment, the cluster is fully operational.
+
+### Access the Ambari UI
+
+Open `http://<ambari-server-hostname>:8080` in your browser and log in with:
+
+- **Username:** `admin`
+- **Password:** the value of `vault_ambari_admin_password` from `vault.yml`
+
+### Verify cluster health
+
+In the Ambari UI, check that:
+
+- All services show a green status
+- All hosts are registered and heartbeating
+- No alerts are active
+
+### Common post-deployment tasks
+
+| Task | How |
+| ---- | --- |
+| Start a stopped service | Ambari UI > Service > Actions > Start |
+| Add worker nodes | Add hosts to `[odp-workers]` in `inventory/static`, re-run Phase 1 and Phase 2, then add hosts via Ambari UI |
+| Change Ambari admin password | Ambari UI > admin dropdown > Manage Ambari > Change Password |
+| Enable Kerberos after initial deploy | Set `security: 'active-directory'` in `group_vars/all`, configure `security_options`, then enable via Ambari UI wizard |
+| Check cluster logs | SSH to node, check `/var/log/ambari-server/` or `/var/log/ambari-agent/` |
+| Re-run playbooks safely | All phases are idempotent — re-run any phase without side effects |
 
 ## Pre-Deployment Checklist
 
@@ -454,3 +493,60 @@ Verify all items before running `install_cluster.sh`:
 - [ ] `repo_base_url` reachable from all nodes (`curl -s <repo_base_url>`)
 - [ ] `database` type and `jdbc_driver_path` match the installed driver
 - [ ] Vault passwords updated from defaults (`ansible-vault edit vault.yml`)
+
+## Troubleshooting
+
+### Phase 1 — Prepare Nodes
+
+| Problem | Solution |
+| ------- | -------- |
+| Package install fails | Check `repo_base_url` is reachable from nodes. For air-gapped installs, verify local mirror is configured |
+| Java validation fails | Confirm `java_home` path exists. Run `ls -d /usr/lib/jvm/java-*` on the node to find the correct path |
+| NTP check fails | Ensure `chronyd` is installed and the time source is reachable |
+
+### Phase 2 — Install Ambari
+
+| Problem | Solution |
+| ------- | -------- |
+| Ambari repo not found | Check `ambari_repo_url` is reachable. Verify the `.repo` file was created under `/etc/yum.repos.d/` |
+| JDBC driver missing | Download the driver JAR to `/usr/share/java/` on the Ambari server node before running Phase 2 |
+| DB schema load fails | Verify database exists, user has correct grants, and password in `vault.yml` matches |
+| `ambari-server setup` fails | Check `/var/log/ambari-server/ambari-server.log` for details |
+
+### Phase 3 — Configure Ambari
+
+| Problem | Solution |
+| ------- | -------- |
+| VDF upload fails (HTTP 500) | Ambari server may not be fully started. Wait 30 seconds and retry |
+| Admin password change fails | Verify `vault_ambari_admin_default_password` matches the current Ambari default (`admin`) |
+| Agent registration timeout | Check `/var/log/ambari-agent/ambari-agent.log` on each node. Verify hostname resolution and firewall rules |
+
+### Phase 4 — Apply Blueprint
+
+| Problem | Solution |
+| ------- | -------- |
+| Blueprint validation error | Run `ansible-playbook playbooks/check_dynamic_blueprint.yml` to validate before deploying |
+| Cluster creation times out | Increase `wait_timeout` in `group_vars/all`. Check Ambari UI > Background Operations for stuck tasks |
+| Service fails to start | Check service-specific logs in `/var/log/<service>/` on the relevant node. Common causes: port conflicts, insufficient memory |
+| `PLACEHOLDER` in variables | Search `group_vars/all` for `PLACEHOLDER` and replace with actual values |
+
+### General
+
+```bash
+# Check Ambari server status
+ssh <ambari-server> 'ambari-server status'
+
+# View Ambari server log
+ssh <ambari-server> 'tail -100 /var/log/ambari-server/ambari-server.log'
+
+# View Ambari agent log on a node
+ssh <node> 'tail -100 /var/log/ambari-agent/ambari-agent.log'
+
+# Re-run a specific phase after fixing an issue
+bash prepare_nodes.sh    # Phase 1
+bash install_ambari.sh   # Phase 2
+bash configure_ambari.sh # Phase 3
+bash apply_blueprint.sh  # Phase 4
+```
+
+> All playbooks are idempotent. After fixing an issue, re-run the failed phase — completed tasks are skipped automatically.

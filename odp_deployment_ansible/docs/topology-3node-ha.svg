@@ -41,7 +41,8 @@
   <text x="186" y="245" text-anchor="middle" fill="#6a1b9a" font-size="8" font-weight="600">ZOOKEEPER</text>
   <rect x="28" y="256" width="208" height="18" rx="9" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="0.8"/>
   <text x="132" y="269" text-anchor="middle" fill="#6a1b9a" font-size="8" font-weight="600">INFRA SOLR + TIMELINE + HISTORY</text>
-  <text x="130" y="298" text-anchor="middle" fill="#bdbdbd" font-size="8">+ All clients</text>
+  <text x="130" y="290" text-anchor="middle" fill="#bdbdbd" font-size="7">Clients: ZK, HDFS, YARN, MR2, Solr,</text>
+  <text x="130" y="302" text-anchor="middle" fill="#bdbdbd" font-size="7">Hive, Tez, HBase, Oozie, Sqoop, Kafka</text>
 
   <!-- Node 2 -->
   <rect x="256" y="78" width="228" height="244" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.5" filter="url(#ds)"/>
@@ -66,7 +67,8 @@
   <text x="312" y="221" text-anchor="middle" font-size="8" font-weight="600"><tspan fill="#e65100">HBASE MASTER</tspan><tspan fill="#c62828" font-size="6"> HA</tspan></text>
   <rect x="376" y="208" width="100" height="18" rx="9" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="0.8"/>
   <text x="426" y="221" text-anchor="middle" fill="#6a1b9a" font-size="8" font-weight="600">ZOOKEEPER</text>
-  <text x="370" y="262" text-anchor="middle" fill="#bdbdbd" font-size="8">+ All clients</text>
+  <text x="370" y="254" text-anchor="middle" fill="#bdbdbd" font-size="7">Clients: ZK, HDFS, YARN, MR2, Solr,</text>
+  <text x="370" y="266" text-anchor="middle" fill="#bdbdbd" font-size="7">Hive, Tez, HBase, Oozie, Sqoop, Kafka</text>
 
   <!-- Node 3 -->
   <rect x="496" y="78" width="228" height="244" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.5" filter="url(#ds)"/>
@@ -87,7 +89,8 @@
   <text x="558" y="197" text-anchor="middle" fill="#e65100" font-size="8" font-weight="600">OOZIE</text>
   <rect x="616" y="184" width="100" height="18" rx="9" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="0.8"/>
   <text x="666" y="197" text-anchor="middle" fill="#6a1b9a" font-size="8" font-weight="600">ZOOKEEPER</text>
-  <text x="610" y="238" text-anchor="middle" fill="#bdbdbd" font-size="8">+ All clients</text>
+  <text x="610" y="230" text-anchor="middle" fill="#bdbdbd" font-size="7">Clients: ZK, HDFS, YARN, MR2, Solr,</text>
+  <text x="610" y="242" text-anchor="middle" fill="#bdbdbd" font-size="7">Hive, Tez, HBase, Oozie, Sqoop, Kafka</text>
 
   <!-- NameNode HA connector (through gap between nodes) -->
   <line x1="234" y1="145" x2="270" y2="145" stroke="#c62828" stroke-width="1.5" stroke-dasharray="4,3"/>

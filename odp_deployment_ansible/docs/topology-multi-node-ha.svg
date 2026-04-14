@@ -50,7 +50,8 @@
   <rect x="28" y="246" width="188" height="18" rx="9" fill="#e3f2fd" stroke="#1565c0" stroke-width="0.8"/>
   <text x="122" y="259" text-anchor="middle" fill="#0d47a1" font-size="8" font-weight="600">TIMELINE + HISTORY + REG. DNS</text>
 
-  <text x="122" y="284" text-anchor="middle" fill="#bdbdbd" font-size="8">+ All clients</text>
+  <text x="122" y="278" text-anchor="middle" fill="#bdbdbd" font-size="7">Clients: ZK, HDFS, YARN, MR2, Solr,</text>
+  <text x="122" y="290" text-anchor="middle" fill="#bdbdbd" font-size="7">Hive, Tez, HBase, Oozie, Sqoop, Kafka</text>
 
   <!-- =================== Node 2: odp-master02 =================== -->
   <rect x="234" y="78" width="200" height="246" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.5" filter="url(#ds)"/>
@@ -79,7 +80,8 @@
   <rect x="336" y="200" width="92" height="18" rx="9" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="0.8"/>
   <text x="382" y="213" text-anchor="middle" fill="#6a1b9a" font-size="8" font-weight="600">ZOOKEEPER</text>
 
-  <text x="334" y="246" text-anchor="middle" fill="#bdbdbd" font-size="8">+ All clients</text>
+  <text x="334" y="240" text-anchor="middle" fill="#bdbdbd" font-size="7">Clients: ZK, HDFS, YARN, MR2, Solr,</text>
+  <text x="334" y="252" text-anchor="middle" fill="#bdbdbd" font-size="7">Hive, Tez, HBase, Oozie, Sqoop, Kafka</text>
 
   <!-- =================== Node 3: odp-master03 =================== -->
   <rect x="446" y="78" width="200" height="246" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.5" filter="url(#ds)"/>
@@ -98,7 +100,8 @@
   <rect x="548" y="156" width="92" height="18" rx="9" fill="#fff3e0" stroke="#ef6c00" stroke-width="0.8"/>
   <text x="594" y="169" text-anchor="middle" fill="#e65100" font-size="8" font-weight="600">OOZIE</text>
 
-  <text x="546" y="198" text-anchor="middle" fill="#bdbdbd" font-size="8">+ All clients</text>
+  <text x="546" y="192" text-anchor="middle" fill="#bdbdbd" font-size="7">Clients: ZK, HDFS, YARN, MR2, Solr,</text>
+  <text x="546" y="204" text-anchor="middle" fill="#bdbdbd" font-size="7">Hive, Tez, HBase, Oozie, Sqoop, Kafka</text>
 
   <!-- =================== Workers: odp-workers (×N) =================== -->
   <!-- Stacking effect — suggests multiple identical nodes -->
@@ -123,7 +126,8 @@
   <rect x="664" y="156" width="92" height="18" rx="9" fill="#fff3e0" stroke="#ef6c00" stroke-width="0.8"/>
   <text x="710" y="169" text-anchor="middle" fill="#e65100" font-size="8" font-weight="600">HBASE RS</text>
 
-  <text x="758" y="198" text-anchor="middle" fill="#bdbdbd" font-size="8">+ All clients</text>
+  <text x="758" y="192" text-anchor="middle" fill="#bdbdbd" font-size="7">Clients: ZK, HDFS, YARN, MR2, Solr,</text>
+  <text x="758" y="204" text-anchor="middle" fill="#bdbdbd" font-size="7">Hive, Tez, HBase, Oozie, Sqoop, Kafka</text>
 
   <text x="758" y="224" text-anchor="middle" fill="#78909c" font-size="8.5">Add 1 to 500+ hosts in</text>
   <text x="758" y="238" text-anchor="middle" fill="#78909c" font-size="8.5">[odp-workers] inventory group.</text>

@@ -80,8 +80,6 @@ bash configure_ambari.sh
 bash apply_blueprint.sh
 ```
 
-![Role Dependencies](docs/role-dependencies.svg)
-
 ## Blueprint Topologies
 
 Three reference topologies are included. Copy the desired layout to `group_vars/all`:
@@ -91,8 +89,6 @@ cp playbooks/group_vars/all_3_node_ha playbooks/group_vars/all
 ```
 
 ### 1-Node All-in-One
-
-![1-Node Topology](docs/topology-1node.svg)
 
 | File | Layout | Use case |
 | ---- | ------ | -------- |
@@ -137,14 +133,122 @@ ansible-vault encrypt vault.yml
 
 | Category | Services |
 | -------- | -------- |
-| **Core** | HDFS, YARN + MapReduce2, ZooKeeper |
-| **Data** | Hive, HBase, Oozie, Kafka |
-| **Security** | Ranger, Ranger KMS, Knox, Kerberos (AD) |
-| **Search** | Infra Solr |
-| **Streaming** | Spark, NiFi, NiFi Registry |
+| **Core** | HDFS, YARN + MapReduce2, ZooKeeper, Tez |
+| **Data** | Hive, HBase, Oozie, Kafka, Sqoop |
+| **Security** | Ranger, Ranger KMS, Knox, Kerberos (AD), Infra Solr (Ranger audit) |
 | **HA** | NameNode, ResourceManager, HBase, Ranger KMS |
 
 Services are assigned to host groups in `blueprint_dynamic` (inside `group_vars/all`). The Jinja2 template automatically generates the correct Ambari Blueprint JSON.
+
+### Services Available via MPack
+
+The following services are **not included by default** and must be added via [Ambari Management Packs](https://docs.acceldata.io/odp/documentation/odp-working-with-ambari-management-packs) before they can be deployed.
+
+See the [MPacks repository listing](https://docs.acceldata.io/odp/documentation/ambari-repositories1#mpacks-link) for download links and version compatibility.
+
+#### MPack Service Components
+
+| Category | Server / Master Components | Client Components |
+| -------- | -------------------------- | ----------------- |
+| **Streaming** | `KAFKA3_BROKER`, `FLINK_JOBHISTORYSERVER`, `NIFI_MASTER`, `NIFI_REGISTRY_MASTER`, `REGISTRY_SERVER` | `FLINK_CLIENT` |
+| **Compute** | `SPARK3_JOBHISTORYSERVER`, `SPARK3_THRIFTSERVER`, `LIVY3_SERVER`, `SPARK2_JOBHISTORYSERVER`, `IMPALA_DAEMON`, `IMPALA_STATE_STORE`, `IMPALA_CATALOG_SERVICE`, `TRINO_COORDINATOR`, `TRINO_WORKER` | `SPARK3_CLIENT`, `SPARK2_CLIENT` |
+| **Storage** | `OZONE_MANAGER`, `OZONE_DATANODE`, `OZONE_STORAGE_CONTAINER_MANAGER`, `OZONE_S3_GATEWAY`, `OZONE_RECON`, `KUDU_MASTER`, `KUDU_TSERVER`, `HTTPFS_GATEWAY` | `OZONE_CLIENT` |
+| **Analytics** | `PINOT_CONTROLLER`, `PINOT_SERVER`, `PINOT_BROKER`, `PINOT_MINION`, `CLICKHOUSE_SERVER`, `CLICKHOUSE_WEBSERVER`, `CLICKHOUSE_KEEPER` | `CLICKHOUSE_CLIENT` |
+| **ML / Notebooks** | `MLFLOW_SERVER`, `JUPYTERHUB`, `ZEPPELIN_MASTER` | — |
+| **Workflow** | `AIRFLOW_SCHEDULER`, `AIRFLOW_WEBSERVER`, `AIRFLOW_WORKER` | — |
+| **UI** | `HUE_SERVER` | — |
+
+#### Adding an MPack Service
+
+After installing the management pack on the Ambari server, three files need changes:
+
+**1. `playbooks/group_vars/all`** — add component names to `blueprint_dynamic`:
+
+```yaml
+blueprint_dynamic:
+  - host_group: "odp-master01"
+    clients: ['...existing...', 'SPARK3_CLIENT']   # add client
+    services:
+      - ...existing...
+      - SPARK3_JOBHISTORYSERVER                     # add server component
+```
+
+**2. `playbooks/set_variables.yml`** — add helper variable tracking for the new service.
+
+`set_variables.yml` builds host lists that `blueprint_dynamic.j2` uses for HA wiring, Ranger audit targets, and cross-service references. Currently tracked:
+
+| Helper Variable | Populated When Service Present |
+| --------------- | ------------------------------ |
+| `namenode_groups` | `NAMENODE` |
+| `resourcemanager_groups` | `RESOURCEMANAGER` |
+| `zookeeper_groups` / `zookeeper_hosts` | `ZOOKEEPER_SERVER` |
+| `hiveserver_hosts` | `HIVE_SERVER`, `HIVE_METASTORE`, `SPARK2_JOBHISTORYSERVER` |
+| `oozie_hosts` | `OOZIE_SERVER` |
+| `kafka_groups` / `kafka_hosts` | `KAFKA_BROKER` |
+| `rangeradmin_groups` / `rangeradmin_hosts` | `RANGER_ADMIN`, `RANGER_USERSYNC` |
+| `rangerkms_hosts` | `RANGER_KMS_SERVER` |
+| `journalnode_groups` | `JOURNALNODE` |
+| `zkfc_groups` | `ZKFC` |
+
+MPack services that need new helper variables (follow the same pattern):
+
+| New Helper Variable | Service | Why Needed |
+| ------------------- | ------- | ---------- |
+| `spark3_hosts` | `SPARK3_JOBHISTORYSERVER` | Spark3 log dir, Livy3 config |
+| `nifi_hosts` | `NIFI_MASTER` | NiFi security config, registry URL |
+| `impala_hosts` | `IMPALA_STATE_STORE` | Statestore / catalog cross-refs |
+| `ozone_hosts` | `OZONE_MANAGER` | Ozone HA wiring, S3 gateway config |
+| `kafka3_hosts` | `KAFKA3_BROKER` | Kafka3 ZK / Ranger audit config |
+| `trino_hosts` | `TRINO_COORDINATOR` | Coordinator discovery URL |
+| `clickhouse_hosts` | `CLICKHOUSE_KEEPER` | Keeper quorum config |
+| `pinot_hosts` | `PINOT_CONTROLLER` | Controller discovery, ZK config |
+
+**3. `playbooks/roles/ambari_blueprint/templates/blueprint_dynamic.j2`** — add configuration blocks.
+
+The blueprint template uses `{% if 'SERVICE' in blueprint_all_services %}` guards. Currently handled:
+
+| Existing Config Blocks | Services |
+| ---------------------- | -------- |
+| Kerberos | `kerberos-env`, `krb5-conf` |
+| Ranger | `admin-properties`, `ranger-admin-site`, `ranger-env`, all audit plugins (HDFS, Hive, YARN, HBase, Knox, Kafka) |
+| Ranger KMS | `kms-properties`, `dbks-site`, `kms-env`, `kms-site`, `ranger-kms-audit` |
+| HDFS | `hadoop-env`, `hdfs-site`, `core-site` (includes HA wiring) |
+| YARN | `yarn-env`, `yarn-site`, `yarn-hbase-env`, `yarn-hbase-site` (includes RM HA) |
+| Hive | `hive-site`, `hiveserver2-site`, `hive-env` |
+| HBase | `hbase-site`, `hbase-env` |
+| Oozie | `oozie-site`, `oozie-env` |
+| Tez | `tez-site`, `tez-env` |
+| MapReduce | `mapred-site`, `mapred-env` |
+| Sqoop | `sqoop-env` |
+| Kafka | `kafka-env`, `kafka-broker` |
+| ZooKeeper | `zookeeper-env`, `zoo.cfg` |
+| Knox | `knox-env` |
+| Infra Solr | `infra-solr-env`, `infra-solr-client-log4j` |
+| Spark / Spark2 | `spark-env`, `spark2-env`, `livy-env`, `livy2-env` |
+| Zeppelin | `zeppelin-env` |
+| Solr (user) | `solr-config-env` |
+
+MPack services that need new config blocks (add using the same `{% if %}` guard pattern):
+
+| New Config Blocks Needed | Guard Condition |
+| ------------------------ | --------------- |
+| `spark3-env`, `livy3-env`, `spark3-thrift-sparkconf` | `SPARK3_JOBHISTORYSERVER in blueprint_all_services` |
+| `nifi-env`, `nifi-properties`, `nifi-registry-env` | `NIFI_MASTER in blueprint_all_services` |
+| `flink-env` | `FLINK_JOBHISTORYSERVER in blueprint_all_services` |
+| `kafka3-broker`, `kafka3-env` | `KAFKA3_BROKER in blueprint_all_services` |
+| `impala-env`, `impala-catalog`, `impala-statestore` | `IMPALA_STATE_STORE in blueprint_all_services` |
+| `trino-config`, `trino-env` | `TRINO_COORDINATOR in blueprint_all_services` |
+| `ozone-env`, `ozone-site`, `ozone-recon`, `ozone-scm` | `OZONE_MANAGER in blueprint_all_services` |
+| `kudu-env`, `kudu-site` | `KUDU_MASTER in blueprint_all_services` |
+| `airflow-env`, `airflow-core-site` | `AIRFLOW_SCHEDULER in blueprint_all_services` |
+| `hue-env`, `hue-ini` | `HUE_SERVER in blueprint_all_services` |
+| `clickhouse-env`, `clickhouse-config` | `CLICKHOUSE_SERVER in blueprint_all_services` |
+| `pinot-env`, `pinot-controller`, `pinot-broker` | `PINOT_CONTROLLER in blueprint_all_services` |
+| `mlflow-env` | `MLFLOW_SERVER in blueprint_all_services` |
+| `jupyterhub-env` | `JUPYTERHUB in blueprint_all_services` |
+| `registry-env`, `registry-common` | `REGISTRY_SERVER in blueprint_all_services` |
+| `zeppelin-env` | `ZEPPELIN_MASTER in blueprint_all_services` (already exists) |
+| Ranger audit plugins | `ranger-spark3-audit`, `ranger-nifi-audit`, `ranger-ozone-audit`, etc. |
 
 ## Project Structure
 
@@ -224,6 +328,8 @@ These playbooks are designed for enterprise environments and follow security bes
 | **Database** | External MariaDB, MySQL, or PostgreSQL — pre-created |
 | **Network** | SSH access from workstation to all cluster nodes |
 | **Java** | OpenJDK 17 (default) or OpenJDK 11 |
+
+For detailed OS, JDK, and database compatibility see the [ODP Support Matrix](https://docs.acceldata.io/odp/support-matrix).
 
 ## Troubleshooting
 

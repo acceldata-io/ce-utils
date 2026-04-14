@@ -162,7 +162,7 @@ blueprint_name: '{{ cluster_name }}_blueprint'
 blueprint_file: 'blueprint_dynamic.j2'
 blueprint_dynamic:
   - host_group: "odp-master01"
-    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT']
+    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT', 'SQOOP', 'KAFKA_BROKER']
     services:
       - ZOOKEEPER_SERVER
       - NAMENODE
