@@ -1,0 +1,40 @@
+######################################################
+##
+## Multi-node HA inventory
+## Use with: playbooks/group_vars/all_multi_node_ha
+##
+## 3 dedicated master nodes + N worker nodes
+## Workers run DataNode, NodeManager, HBase RegionServer + all clients
+##
+## SCALING:
+##   Add or remove hosts under [odp-workers] to match your cluster size.
+##   All workers receive the same services — no blueprint changes needed.
+##   Tested with clusters from 4 nodes (3 masters + 1 worker) to 500+ nodes.
+##
+## Replace HOSTNAME values with actual FQDNs or IPs.
+## Adjust ansible_user and ansible_ssh_private_key_file to match your environment.
+##
+######################################################
+
+# --- Master nodes (fixed — do not add more than 3) ---
+
+[odp-master01]
+master01 ansible_host=MASTER-HOSTNAME-1 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+
+[odp-master02]
+master02 ansible_host=MASTER-HOSTNAME-2 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+
+[odp-master03]
+master03 ansible_host=MASTER-HOSTNAME-3 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+
+# --- Worker nodes (add as many as needed) ---
+
+[odp-workers]
+worker01 ansible_host=WORKER-HOSTNAME-1 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+worker02 ansible_host=WORKER-HOSTNAME-2 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+worker03 ansible_host=WORKER-HOSTNAME-3 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+# worker04 ansible_host=WORKER-HOSTNAME-4 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+# worker05 ansible_host=WORKER-HOSTNAME-5 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+# ...
+# worker50 ansible_host=WORKER-HOSTNAME-50 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+# worker100 ansible_host=WORKER-HOSTNAME-100 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"

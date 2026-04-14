@@ -1,0 +1,157 @@
+---
+- name: Retrieve version definition from Ambari
+  when: ambari_version is version('2.6', '>=')
+  block:
+    - name: Get the VersionDefinition id from Ambari (Ambari >= 2.6)
+      ansible.builtin.uri:
+        url: "http://{{ ansible_fqdn }}:{{ ambari_server_port }}/api/v1/version_definitions?VersionDefinition/release/version={{ odp_version }}"
+        method: GET
+        force_basic_auth: true
+        user: "{{ ambari_admin_user }}"
+        password: "{{ ambari_admin_password }}"
+        headers: '{"X-Requested-By":"ambari"}'
+        status_code: 200,201,202
+        return_content: true
+      no_log: true
+      register: ambari_blueprint_version_definition
+      retries: 3
+      delay: 5
+      until: ambari_blueprint_version_definition.status != -1
+
+    - name: Fail if could not get a VersionDefinition from Ambari
+      ansible.builtin.fail:
+        msg: "Could not get the VersionDefinition from Ambari. The following is the received information from Ambari: {{ ambari_blueprint_version_definition }}"
+      when: (ambari_blueprint_version_definition.content | from_yaml)['items'] | length == 0
+
+    - name: Set the VersionDefinition id (Ambari >= 2.6)
+      ansible.builtin.set_fact:
+        ambari_blueprint_vdf_id: "{{ (ambari_blueprint_version_definition.content | from_yaml)['items'][0]['VersionDefinition']['id'] }}"
+
+- name: Check if cluster already exists - {{ cluster_name }}
+  ansible.builtin.uri:
+    url: "http://{{ ansible_fqdn }}:{{ ambari_server_port }}/api/v1/clusters/{{ cluster_name }}"
+    method: GET
+    force_basic_auth: true
+    user: "{{ ambari_admin_user }}"
+    password: "{{ ambari_admin_password }}"
+    headers: '{"X-Requested-By":"ambari"}'
+    status_code: 200,201,202,404
+  no_log: true
+  register: ambari_blueprint_cluster_check
+  retries: 3
+  delay: 5
+  until: ambari_blueprint_cluster_check.status != -1
+
+- name: Fail if cluster already exists - {{ cluster_name }}
+  ansible.builtin.fail:
+    msg: Cluster {{ cluster_name }} already exists!
+  when: ambari_blueprint_cluster_check.status != 404
+
+- name: Generate the cluster dynamic blueprint
+  ansible.builtin.set_fact:
+    ambari_blueprint_cluster_blueprint: "{{ lookup('template', blueprint_file, convert_data=False) }}"
+  when: blueprint_file == 'blueprint_dynamic.j2'
+
+- name: Generate the cluster static blueprint
+  ansible.builtin.set_fact:
+    ambari_blueprint_cluster_blueprint: "{{ lookup('file', blueprint_file, convert_data=False) }}"
+  when: blueprint_file != 'blueprint_dynamic.j2'
+
+- name: Print the cluster blueprint
+  ansible.builtin.debug:
+    var: ambari_blueprint_cluster_blueprint
+    verbosity: 1
+
+- name: Generate the cluster creation template
+  ansible.builtin.set_fact:
+    ambari_blueprint_cluster_template: "{{ lookup('template', cluster_template_file, convert_data=False) }}"
+
+- name: Print the cluster creation template
+  ansible.builtin.debug:
+    var: ambari_blueprint_cluster_template
+    verbosity: 1
+
+- name: Delete existing blueprint - {{ blueprint_name }}
+  ansible.builtin.uri:
+    url: "http://{{ ansible_fqdn }}:{{ ambari_server_port }}/api/v1/blueprints/{{ blueprint_name }}"
+    method: DELETE
+    force_basic_auth: true
+    user: "{{ ambari_admin_user }}"
+    password: "{{ ambari_admin_password }}"
+    headers: '{"X-Requested-By":"ambari"}'
+    status_code: 200,201,202,404
+    return_content: false
+  no_log: true
+  register: ambari_blueprint_delete_result
+  retries: 3
+  delay: 5
+  until: ambari_blueprint_delete_result.status != -1
+  when: ambari_blueprint_cluster_check.status == 404
+
+- name: Upload blueprint to Ambari server - {{ blueprint_name }}
+  ansible.builtin.uri:
+    url: "http://{{ ansible_fqdn }}:{{ ambari_server_port }}/api/v1/blueprints/{{ blueprint_name }}"
+    method: POST
+    force_basic_auth: true
+    user: "{{ ambari_admin_user }}"
+    password: "{{ ambari_admin_password }}"
+    headers: '{"X-Requested-By":"ambari"}'
+    body: " {{ ambari_blueprint_cluster_blueprint }}"
+    body_format: raw
+    status_code: 200,201,202,409
+    timeout: 60
+    return_content: false
+  no_log: true
+  register: ambari_blueprint_upload_result
+  retries: 3
+  delay: 5
+  until: ambari_blueprint_upload_result.status != -1
+
+- name: Launch the create cluster request
+  ansible.builtin.uri:
+    url: "http://{{ ansible_fqdn }}:{{ ambari_server_port }}/api/v1/clusters/{{ cluster_name }}"
+    method: POST
+    force_basic_auth: true
+    user: "{{ ambari_admin_user }}"
+    password: "{{ ambari_admin_password }}"
+    headers: '{"X-Requested-By":"ambari"}'
+    body: " {{ ambari_blueprint_cluster_template }}"
+    body_format: raw
+    status_code: 200,201,202
+    timeout: 120
+    return_content: true
+  no_log: true
+  register: ambari_blueprint_cluster_create_task
+  retries: 3
+  delay: 5
+  until: ambari_blueprint_cluster_create_task.status != -1
+
+- name: Wait for the cluster to be built
+  ansible.builtin.uri:
+    url: "{{ (ambari_blueprint_cluster_create_task.content | from_json).href }}"
+    force_basic_auth: true
+    user: "{{ ambari_admin_user }}"
+    password: "{{ ambari_admin_password }}"
+    headers: '{"X-Requested-By":"ambari", "Content-Type":"application/json"}'
+    status_code: 200,201,202
+    return_content: true
+  no_log: true
+  register: ambari_blueprint_cluster_check_task
+  until: >-
+    (((ambari_blueprint_cluster_check_task.content | from_json).Requests.request_status == 'COMPLETED' and
+    (ambari_blueprint_cluster_check_task.content | from_json).Requests.completed_task_count | int > 0) or
+    (ambari_blueprint_cluster_check_task.content | from_json).Requests.request_status == 'FAILED' or
+    (ambari_blueprint_cluster_check_task.content | from_json).Requests.request_status == 'TIMEDOUT' or
+    (ambari_blueprint_cluster_check_task.content | from_json).Requests.request_status == 'ABORTED')
+  retries: "{{ wait_timeout // 10 }}"
+  delay: 10
+  when: wait and ambari_blueprint_cluster_create_task is defined and ambari_blueprint_cluster_create_task
+
+- name: Fail if the cluster create task is in an error state
+  ansible.builtin.fail:
+    msg: >-
+      Failed to build the {{ cluster_name }} cluster.
+      Task Status is {{ (ambari_blueprint_cluster_check_task.content | from_json).Requests.request_status }}.
+  when: wait and ((ambari_blueprint_cluster_check_task.content | from_json).Requests.request_status == 'FAILED' or
+         (ambari_blueprint_cluster_check_task.content | from_json).Requests.request_status == 'TIMEDOUT' or
+         (ambari_blueprint_cluster_check_task.content | from_json).Requests.request_status == 'ABORTED')

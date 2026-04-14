@@ -1,0 +1,21 @@
+---
+- name: Import set_variables playbook
+  import_playbook: "set_variables.yml"
+
+- name: Apply the ambari-agent role to the hadoop-cluster group
+  hosts: hadoop-cluster
+  any_errors_fatal: true
+  become: true
+  vars_files:
+    - ../vault.yml
+  roles:
+    - ambari_agent
+
+- name: Apply the ambari-server role to the ambari-server group
+  hosts: ambari-server
+  any_errors_fatal: true
+  become: true
+  vars_files:
+    - ../vault.yml
+  roles:
+    - ambari_server

@@ -1,0 +1,17 @@
+---
+- name: Install OpenJDK package
+  ansible.builtin.package:
+    name: "{{ openjdk_package }}"
+    state: present
+  when: java == "openjdk"
+
+- name: Validate JAVA_HOME path exists on all nodes
+  ansible.builtin.stat:
+    path: "{{ java_home }}"
+  register: common_java_home_check
+  when: java == "custom" or java == "openjdk"
+
+- name: Fail if JAVA_HOME path does not exist
+  ansible.builtin.fail:
+    msg: "JAVA_HOME path '{{ java_home }}' does not exist on {{ inventory_hostname }}. Ensure JDK is installed or update java_home variable."
+  when: (java == "custom" or java == "openjdk") and not common_java_home_check.stat.exists

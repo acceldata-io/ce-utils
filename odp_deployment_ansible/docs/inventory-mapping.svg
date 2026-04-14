@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 300" role="img" aria-labelledby="invmap-title invmap-desc" font-family="-apple-system, Segoe UI, Roboto, sans-serif">
+  <title id="invmap-title">Inventory-to-Blueprint Mapping</title>
+  <desc id="invmap-desc">Shows how each Ansible inventory group (odp-master01, odp-master02, odp-master03) maps to a blueprint host_group with its assigned Hadoop services. Group names in inventory must match host_group names in the blueprint.</desc>
+  <defs>
+    <filter id="ds" x="-3%" y="-3%" width="106%" height="112%"><feDropShadow dx="0" dy="1" stdDeviation="2" flood-opacity="0.08"/></filter>
+    <marker id="a" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#1565c0"/></marker>
+  </defs>
+  <rect width="780" height="300" fill="#f8f9fa" rx="10"/>
+  <text x="390" y="24" text-anchor="middle" fill="#1a237e" font-size="14" font-weight="700">Inventory-to-Blueprint Mapping</text>
+  <text x="390" y="40" text-anchor="middle" fill="#78909c" font-size="10">Each inventory group maps to a blueprint host_group with its assigned services</text>
+
+  <!-- LEFT: Inventory -->
+  <text x="30" y="68" fill="#455a64" font-size="10" font-weight="700" letter-spacing="0.5">INVENTORY (inventory/static)</text>
+
+  <rect x="20" y="78" width="220" height="56" rx="8" fill="#fff" stroke="#546e7a" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="34" y="100" fill="#37474f" font-size="11" font-weight="700">[odp-master01]</text>
+  <text x="34" y="122" fill="#78909c" font-size="9">master01 ansible_host=10.0.1.10</text>
+
+  <rect x="20" y="144" width="220" height="56" rx="8" fill="#fff" stroke="#546e7a" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="34" y="166" fill="#37474f" font-size="11" font-weight="700">[odp-master02]</text>
+  <text x="34" y="188" fill="#78909c" font-size="9">master02 ansible_host=10.0.1.11</text>
+
+  <rect x="20" y="210" width="220" height="56" rx="8" fill="#fff" stroke="#546e7a" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="34" y="232" fill="#37474f" font-size="11" font-weight="700">[odp-master03]</text>
+  <text x="34" y="254" fill="#78909c" font-size="9">master03 ansible_host=10.0.1.12</text>
+
+  <!-- Arrows -->
+  <line x1="240" y1="106" x2="310" y2="106" stroke="#1565c0" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="240" y1="172" x2="310" y2="172" stroke="#1565c0" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="240" y1="238" x2="310" y2="238" stroke="#1565c0" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <text x="275" y="100" text-anchor="middle" fill="#1565c0" font-size="7" font-weight="600">maps to</text>
+  <text x="275" y="166" text-anchor="middle" fill="#1565c0" font-size="7" font-weight="600">maps to</text>
+  <text x="275" y="232" text-anchor="middle" fill="#1565c0" font-size="7" font-weight="600">maps to</text>
+
+  <!-- RIGHT: Blueprint host_groups -->
+  <text x="320" y="68" fill="#455a64" font-size="10" font-weight="700" letter-spacing="0.5">BLUEPRINT (group_vars/all → blueprint_dynamic)</text>
+
+  <rect x="314" y="78" width="450" height="56" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.5" filter="url(#ds)"/>
+  <rect x="314" y="78" width="5" height="56" rx="2" fill="#1565c0"/>
+  <text x="332" y="97" fill="#0d47a1" font-size="11" font-weight="700">host_group: odp-master01</text>
+  <text x="332" y="115" fill="#546e7a" font-size="8.5">AMBARI_SERVER, NAMENODE, ZKFC, RESOURCEMANAGER, RANGER, KNOX</text>
+  <text x="332" y="128" fill="#9e9e9e" font-size="8">JOURNALNODE, INFRA_SOLR, HBASE_MASTER, TIMELINE, HISTORY</text>
+
+  <rect x="314" y="144" width="450" height="56" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.5" filter="url(#ds)"/>
+  <rect x="314" y="144" width="5" height="56" rx="2" fill="#1565c0"/>
+  <text x="332" y="163" fill="#0d47a1" font-size="11" font-weight="700">host_group: odp-master02</text>
+  <text x="332" y="181" fill="#546e7a" font-size="8.5">NAMENODE, ZKFC, JOURNALNODE, RESOURCEMANAGER</text>
+  <text x="332" y="194" fill="#9e9e9e" font-size="8">HIVE_SERVER, HIVE_METASTORE, HBASE_MASTER</text>
+
+  <rect x="314" y="210" width="450" height="56" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.5" filter="url(#ds)"/>
+  <rect x="314" y="210" width="5" height="56" rx="2" fill="#1565c0"/>
+  <text x="332" y="229" fill="#0d47a1" font-size="11" font-weight="700">host_group: odp-master03</text>
+  <text x="332" y="247" fill="#546e7a" font-size="8.5">JOURNALNODE, DATANODE, NODEMANAGER, HBASE_RS, OOZIE</text>
+  <text x="332" y="260" fill="#9e9e9e" font-size="8">ZOOKEEPER_SERVER (on all 3 nodes)</text>
+
+  <!-- Footer -->
+  <rect x="20" y="278" width="744" height="16" rx="4" fill="#e8eaf6"/>
+  <text x="390" y="290" text-anchor="middle" fill="#3949ab" font-size="8.5" font-weight="600">Group names in inventory MUST match host_group names in blueprint_dynamic — this is how Ansible maps nodes to services</text>
+</svg>

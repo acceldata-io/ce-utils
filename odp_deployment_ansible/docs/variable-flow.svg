@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 320" role="img" aria-labelledby="varflow-title varflow-desc" font-family="-apple-system, Segoe UI, Roboto, sans-serif">
+  <title id="varflow-title">Variable and Secrets Flow</title>
+  <desc id="varflow-desc">How encrypted vault secrets flow through group_vars/all into Ansible role tasks, and how the default_password cascades to seven service passwords including Ranger, Knox, NiFi, and Kerberos.</desc>
+  <defs>
+    <filter id="ds" x="-3%" y="-3%" width="106%" height="112%"><feDropShadow dx="0" dy="1" stdDeviation="2" flood-opacity="0.08"/></filter>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#546e7a"/></marker>
+    <marker id="arrRed" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#c62828"/></marker>
+  </defs>
+  <rect width="680" height="320" fill="#f8f9fa" rx="10"/>
+  <text x="340" y="24" text-anchor="middle" fill="#1a237e" font-size="14" font-weight="700">Variable &amp; Secrets Flow</text>
+
+  <!-- vault.yml -->
+  <rect x="20" y="50" width="180" height="80" rx="8" fill="#fff" stroke="#c62828" stroke-width="2" filter="url(#ds)"/>
+  <rect x="20" y="50" width="6" height="80" rx="3" fill="#c62828"/>
+  <text x="42" y="72" fill="#c62828" font-size="12" font-weight="700">vault.yml</text>
+  <text x="42" y="88" fill="#757575" font-size="9">vault_ambari_admin_password</text>
+  <text x="42" y="101" fill="#757575" font-size="9">vault_default_password</text>
+  <text x="42" y="114" fill="#757575" font-size="9">vault_*_db_password (x5)</text>
+
+  <!-- Arrow vault → group_vars -->
+  <line x1="200" y1="90" x2="250" y2="90" stroke="#c62828" stroke-width="1.5" marker-end="url(#arrRed)"/>
+
+  <!-- group_vars/all -->
+  <rect x="254" y="44" width="200" height="94" rx="8" fill="#fff" stroke="#689f38" stroke-width="2" filter="url(#ds)"/>
+  <rect x="254" y="44" width="6" height="94" rx="3" fill="#689f38"/>
+  <text x="276" y="66" fill="#33691e" font-size="12" font-weight="700">group_vars/all</text>
+  <text x="276" y="84" fill="#757575" font-size="9">ambari_admin_password: {{ vault_... }}</text>
+  <text x="276" y="97" fill="#757575" font-size="9">default_password: {{ vault_... }}</text>
+  <text x="276" y="110" fill="#757575" font-size="9">database_options, security, ...</text>
+  <text x="276" y="126" fill="#757575" font-size="9">blueprint_dynamic, versions</text>
+
+  <!-- Arrow group_vars → roles -->
+  <line x1="454" y1="90" x2="484" y2="90" stroke="#546e7a" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Roles -->
+  <rect x="488" y="44" width="172" height="94" rx="8" fill="#fff" stroke="#1565c0" stroke-width="2" filter="url(#ds)"/>
+  <rect x="488" y="44" width="6" height="94" rx="3" fill="#1565c0"/>
+  <text x="510" y="66" fill="#0d47a1" font-size="12" font-weight="700">Role Tasks</text>
+  <text x="510" y="84" fill="#757575" font-size="9">ambari-server setup -s ...</text>
+  <text x="510" y="97" fill="#757575" font-size="9">Ambari API basic auth</text>
+  <text x="510" y="110" fill="#757575" font-size="9">DB schema load</text>
+  <text x="510" y="126" fill="#757575" font-size="9">Blueprint JSON body</text>
+
+  <!-- Chain: default_password → services -->
+  <text x="340" y="172" text-anchor="middle" fill="#455a64" font-size="11" font-weight="600">Password Chain: default_password</text>
+
+  <rect x="20" y="186" width="130" height="32" rx="6" fill="#fce4ec" stroke="#c62828" stroke-width="1"/>
+  <text x="85" y="206" text-anchor="middle" fill="#b71c1c" font-size="9" font-weight="600">vault_default_password</text>
+
+  <line x1="150" y1="202" x2="172" y2="202" stroke="#c62828" stroke-width="1.2" marker-end="url(#arrRed)"/>
+
+  <rect x="176" y="186" width="110" height="32" rx="6" fill="#fff3e0" stroke="#ef6c00" stroke-width="1"/>
+  <text x="231" y="206" text-anchor="middle" fill="#e65100" font-size="9" font-weight="600">default_password</text>
+
+  <line x1="286" y1="202" x2="306" y2="192" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="286" y1="202" x2="306" y2="202" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="286" y1="202" x2="306" y2="212" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+
+  <rect x="310" y="180" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="392" y="193" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">ranger_admin_password</text>
+  <rect x="310" y="202" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="392" y="215" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">kms_master_key_password</text>
+  <rect x="310" y="224" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="392" y="237" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">knox master_secret</text>
+
+  <rect x="490" y="180" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="572" y="193" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">nifi encrypt_password</text>
+  <rect x="490" y="202" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="572" y="215" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">nifi sensitive_props_key</text>
+  <rect x="490" y="224" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="572" y="237" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">kerberos admin_password</text>
+
+  <line x1="474" y1="192" x2="490" y2="192" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="474" y1="212" x2="490" y2="212" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="474" y1="234" x2="490" y2="234" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+
+  <!-- Footer note -->
+  <rect x="20" y="264" width="640" height="40" rx="6" fill="#e8eaf6" stroke="#c5cae9" stroke-width="1"/>
+  <text x="340" y="282" text-anchor="middle" fill="#283593" font-size="10" font-weight="600">One vault secret (vault_default_password) cascades to 7 service passwords automatically</text>
+  <text x="340" y="296" text-anchor="middle" fill="#5c6bc0" font-size="9">Change it once in vault.yml — all services pick it up. No need to edit individual service configs.</text>
+</svg>

@@ -1,0 +1,128 @@
+---
+- name: Load variables
+  ansible.builtin.include_vars: "{{ lookup('ansible.builtin.first_found', common_vars_params) }}"
+  vars:
+    common_vars_params:
+      files:
+        - "{{ ansible_os_family | lower }}-{{ ansible_distribution | lower }}-{{ ansible_distribution_major_version }}.yml"
+        - "{{ ansible_os_family | lower }}-{{ ansible_distribution | lower }}-{{ ansible_distribution_version }}.yml"
+        - "{{ ansible_os_family | lower }}-{{ ansible_distribution | lower }}.yml"
+        - "{{ ansible_os_family | lower }}-{{ ansible_distribution_major_version }}.yml"
+        - "{{ ansible_os_family | lower }}.yml"
+        - defaults.yml
+      paths:
+        - ../common/vars
+
+- name: Install required packages (only if missing)
+  ansible.builtin.package:
+    name: "{{ common_packages }}"
+    state: present
+
+- name: Install Python DB libraries for Ansible modules
+  ansible.builtin.pip:
+    name: "{{ common_pip_packages }}"
+    executable: "{{ common_pip_executable | default('pip3') }}"
+    state: present
+  when: common_pip_packages is defined and common_pip_packages | length > 0
+
+- name: Install Java
+  ansible.builtin.include_tasks: java.yml
+  when: java != "embedded"
+
+- name: Check if chronyd service exists
+  ansible.builtin.service_facts:
+
+- name: Make sure chronyd is started and enabled (if installed)
+  ansible.builtin.service:
+    name: chronyd
+    state: started
+    enabled: true
+  register: common_chronyd_result
+  when: "'chronyd.service' in ansible_facts.services"
+  failed_when: >-
+    common_chronyd_result is failed and
+    'Could not find' not in (common_chronyd_result.msg | default(''))
+
+- name: Add mappings to /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^{{ hostvars[item]['ansible_default_ipv4']['address'] }}.*"  # noqa: yaml[line-length]
+    line: "{{ hostvars[item]['ansible_default_ipv4']['address'] }} {{ hostvars[item]['ansible_fqdn'] | default(hostvars[item]['ansible_nodename']) }}"  # noqa: yaml[line-length]
+    insertafter: "^127..*$"
+    state: present
+    mode: '0644'
+  loop: "{{ groups['hadoop-cluster'] | sort(reverse=True) }}"
+  when: not external_dns
+
+- name: Disable firewall service
+  when: disable_firewall and common_firewall_service_name is defined
+  block:
+    - name: Stop the firewall service
+      ansible.builtin.service:
+        name: "{{ common_firewall_service_name }}"
+        state: stopped
+      register: common_firewall_stop_result
+      failed_when: >-
+        common_firewall_stop_result is failed and
+        'Could not find' not in (common_firewall_stop_result.msg | default(''))
+
+    - name: Disable the firewall service
+      ansible.builtin.service:
+        name: "{{ common_firewall_service_name }}"
+        enabled: false
+      register: common_firewall_disable_result
+      failed_when: >-
+        common_firewall_disable_result is failed and
+        'Could not find' not in (common_firewall_disable_result.msg | default(''))
+
+- name: Disable selinux
+  ansible.posix.selinux:
+    state: disabled
+  when: disable_selinux | default(false) | bool
+
+- name: Read current THP enabled state
+  ansible.builtin.slurp:
+    src: /sys/kernel/mm/transparent_hugepage/enabled
+  register: common_thp_enabled_current
+  when: disable_thp | default(false) | bool
+
+- name: Disable Transparent Huge Pages (enabled)
+  ansible.builtin.shell:
+    cmd: echo never > /sys/kernel/mm/transparent_hugepage/enabled
+  changed_when: "'[never]' not in (common_thp_enabled_current.content | b64decode)"
+  when: >-
+    disable_thp | default(false) | bool and
+    '[never]' not in (common_thp_enabled_current.content | b64decode)
+
+- name: Read current THP defrag state
+  ansible.builtin.slurp:
+    src: /sys/kernel/mm/transparent_hugepage/defrag
+  register: common_thp_defrag_current
+  when: disable_thp | default(false) | bool
+
+- name: Disable Transparent Huge Pages (defrag)
+  ansible.builtin.shell:
+    cmd: echo never > /sys/kernel/mm/transparent_hugepage/defrag
+  changed_when: "'[never]' not in (common_thp_defrag_current.content | b64decode)"
+  when: >-
+    disable_thp | default(false) | bool and
+    '[never]' not in (common_thp_defrag_current.content | b64decode)
+
+- name: Persist THP disable across reboots
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/disable-thp.conf
+    content: |
+      w /sys/kernel/mm/transparent_hugepage/enabled - - - - never
+      w /sys/kernel/mm/transparent_hugepage/defrag - - - - never
+    mode: '0644'
+    owner: root
+    group: root
+  when: disable_thp | default(false) | bool
+
+- name: Set timezone - {{ timezone }}
+  community.general.timezone:
+    name: "{{ timezone }}"
+  when: set_timezone | default(false) | bool
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers

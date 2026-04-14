@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 280" role="img" aria-labelledby="db-title db-desc" font-family="-apple-system, Segoe UI, Roboto, sans-serif">
+  <title id="db-title">External Database Prerequisites</title>
+  <desc id="db-desc">Five databases (ambari, hive, oozie, ranger, rangerkms) must be pre-created on a MariaDB, MySQL, or PostgreSQL server before running the ODP deployment playbooks. Each requires specific grants and passwords stored in vault.yml.</desc>
+  <defs>
+    <filter id="ds" x="-3%" y="-3%" width="106%" height="112%"><feDropShadow dx="0" dy="1" stdDeviation="2" flood-opacity="0.08"/></filter>
+    <marker id="a" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#546e7a"/></marker>
+  </defs>
+  <rect width="760" height="280" fill="#f8f9fa" rx="10"/>
+  <text x="380" y="22" text-anchor="middle" fill="#1a237e" font-size="13" font-weight="700">External Database — Prerequisites</text>
+  <text x="380" y="38" text-anchor="middle" fill="#78909c" font-size="9">Must be pre-created BEFORE running the playbooks</text>
+
+  <!-- DB Server -->
+  <rect x="16" y="52" width="160" height="130" rx="10" fill="#fff" stroke="#ef6c00" stroke-width="2" filter="url(#ds)"/>
+  <rect x="16" y="52" width="160" height="28" rx="10" fill="#ef6c00"/>
+  <rect x="16" y="68" width="160" height="12" fill="#ef6c00"/>
+  <text x="96" y="70" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">Database Server</text>
+  <text x="96" y="100" text-anchor="middle" fill="#e65100" font-size="10" font-weight="600">MariaDB / MySQL</text>
+  <text x="96" y="116" text-anchor="middle" fill="#e65100" font-size="10" font-weight="600">or PostgreSQL</text>
+  <text x="96" y="140" text-anchor="middle" fill="#78909c" font-size="9">Port: 3306 / 5432</text>
+  <text x="96" y="158" text-anchor="middle" fill="#78909c" font-size="9">+ JDBC driver on</text>
+  <text x="96" y="172" text-anchor="middle" fill="#78909c" font-size="9">Ambari server node</text>
+
+  <!-- Arrows from DB server to each database -->
+  <line x1="176" y1="80" x2="210" y2="69" stroke="#546e7a" stroke-width="1.2" marker-end="url(#a)"/>
+  <line x1="176" y1="100" x2="210" y2="107" stroke="#546e7a" stroke-width="1.2" marker-end="url(#a)"/>
+  <line x1="176" y1="120" x2="210" y2="145" stroke="#546e7a" stroke-width="1.2" marker-end="url(#a)"/>
+  <line x1="176" y1="144" x2="210" y2="183" stroke="#546e7a" stroke-width="1.2" marker-end="url(#a)"/>
+  <line x1="176" y1="168" x2="210" y2="221" stroke="#546e7a" stroke-width="1.2" marker-end="url(#a)"/>
+
+  <!-- 5 databases (single column) -->
+  <rect x="214" y="52" width="150" height="34" rx="6" fill="#fff" stroke="#1565c0" stroke-width="1.2" filter="url(#ds)"/>
+  <rect x="214" y="52" width="4" height="34" rx="2" fill="#1565c0"/>
+  <text x="228" y="67" fill="#0d47a1" font-size="10" font-weight="700">ambari</text>
+  <text x="228" y="80" fill="#78909c" font-size="8">user: ambari</text>
+
+  <rect x="214" y="90" width="150" height="34" rx="6" fill="#fff" stroke="#1565c0" stroke-width="1.2" filter="url(#ds)"/>
+  <rect x="214" y="90" width="4" height="34" rx="2" fill="#43a047"/>
+  <text x="228" y="105" fill="#2e7d32" font-size="10" font-weight="700">hive</text>
+  <text x="228" y="118" fill="#78909c" font-size="8">user: hive</text>
+
+  <rect x="214" y="128" width="150" height="34" rx="6" fill="#fff" stroke="#1565c0" stroke-width="1.2" filter="url(#ds)"/>
+  <rect x="214" y="128" width="4" height="34" rx="2" fill="#ef6c00"/>
+  <text x="228" y="143" fill="#e65100" font-size="10" font-weight="700">oozie</text>
+  <text x="228" y="156" fill="#78909c" font-size="8">user: oozie</text>
+
+  <rect x="214" y="166" width="150" height="34" rx="6" fill="#fff" stroke="#1565c0" stroke-width="1.2" filter="url(#ds)"/>
+  <rect x="214" y="166" width="4" height="34" rx="2" fill="#c62828"/>
+  <text x="228" y="181" fill="#b71c1c" font-size="10" font-weight="700">ranger (admin)</text>
+  <text x="228" y="194" fill="#78909c" font-size="8">user: ranger</text>
+
+  <rect x="214" y="204" width="150" height="34" rx="6" fill="#fff" stroke="#1565c0" stroke-width="1.2" filter="url(#ds)"/>
+  <rect x="214" y="204" width="4" height="34" rx="2" fill="#7b1fa2"/>
+  <text x="228" y="219" fill="#6a1b9a" font-size="10" font-weight="700">rangerkms</text>
+  <text x="228" y="232" fill="#78909c" font-size="8">user: rangerkms</text>
+
+  <!-- Required grants box -->
+  <rect x="396" y="52" width="348" height="202" rx="8" fill="#fff3e0" stroke="#ef6c00" stroke-width="1" filter="url(#ds)"/>
+  <text x="570" y="74" text-anchor="middle" fill="#e65100" font-size="10" font-weight="700">Required Grants</text>
+  <line x1="408" y1="80" x2="732" y2="80" stroke="#ffe0b2" stroke-width="1"/>
+  <text x="408" y="100" fill="#546e7a" font-size="9">ALL PRIVILEGES on each database</text>
+  <text x="408" y="118" fill="#546e7a" font-size="9">GRANT OPTION for Ranger</text>
+  <text x="408" y="136" fill="#546e7a" font-size="9">CREATE / ALTER / DROP tables</text>
+  <text x="408" y="154" fill="#546e7a" font-size="9">INSERT / UPDATE / DELETE / SELECT</text>
+  <line x1="408" y1="168" x2="732" y2="168" stroke="#ffe0b2" stroke-width="1"/>
+  <text x="408" y="188" fill="#e65100" font-size="9" font-weight="600">Connection Setup</text>
+  <text x="408" y="206" fill="#546e7a" font-size="9">Passwords stored in vault.yml</text>
+  <text x="408" y="224" fill="#546e7a" font-size="9">JDBC driver placed on Ambari server node</text>
+  <text x="408" y="242" fill="#546e7a" font-size="9">Configured via database_options in group_vars/all</text>
+</svg>

@@ -1,0 +1,230 @@
+---
+###########################
+## cluster configuration ##
+###########################
+
+cluster_name: 'odp'
+
+ambari_version: '3.0.0.0-101'                                 # must be the 4-part full version number
+
+odp_version: '3.3.6.3'                                    # must be the 4-part full version number
+odp_build_number: '101'
+odp_version_full: "{{ odp_version }}-{{ odp_build_number }}"  # derived to prevent drift
+
+##############################
+## repository configuration ##
+##############################
+
+repo_base_url: 'https://mirror.odp.acceldata.dev'                        # base mirror URL — override to use a local mirror
+
+# repo URLs are auto-constructed using repo_base_url + version + RHEL version
+# override individual URLs below for fine-grained control (e.g. via Ansible Tower extra vars)
+ambari_repo_url: "{{ repo_base_url }}/v2/ambari/python3/jdk17/{{ ambari_version }}/releases/rhel{{ ansible_distribution_major_version }}/"
+odp_repo_url: "{{ repo_base_url }}/v2/odp/python3/jdk17/{{ odp_version_full }}/releases/rhel{{ ansible_distribution_major_version }}/"
+odp_utils_repo_url: "{{ repo_base_url }}/v2/odp-utils/rhel{{ ansible_distribution_major_version }}/"
+odp_gpl_repo_url: "{{ repo_base_url }}/v2/odp/python3/jdk17/{{ odp_version_full }}/releases/rhel{{ ansible_distribution_major_version }}/"
+
+
+###########################
+## general configuration ##
+###########################
+
+external_dns: true                                         # set to yes to use the existing DNS (when no, it will update the /etc/hosts file)
+disable_firewall: true                                       # disable the local firewall service (iptables, firewalld, ufw)
+disable_selinux: true                                        # disable SELinux on all nodes
+disable_thp: true                                            # disable Transparent Huge Pages on all nodes
+set_timezone: false                                          # set to false to skip timezone configuration
+timezone: UTC                                             # only used when set_timezone is yes
+
+
+########################
+## java configuration ##
+########################
+
+java: 'openjdk'                                          # 'openjdk' (install via package manager), 'custom' (pre-installed JDK), or 'embedded' (Ambari managed)
+
+# JDK package to install when java is 'openjdk'
+# Common options:
+#   JDK 17: java-17-openjdk-devel   (JAVA_HOME: /usr/lib/jvm/java-17-openjdk)
+#   JDK 11: java-11-openjdk-devel   (JAVA_HOME: /usr/lib/jvm/java-11-openjdk)
+openjdk_package: 'java-17-openjdk-devel'
+
+# JAVA_HOME path — must match the installed JDK version
+# Update this if you change openjdk_package or use java: 'custom'
+java_home: '/usr/lib/jvm/java-17-openjdk'
+
+
+###############################################
+## external database configuration           ##
+###############################################
+# databases, users, and privileges must be pre-created by the customer before running this playbook
+
+database: 'mariadb'                                      # the database type in use: 'postgres', 'mysql' or 'mariadb'
+jdbc_driver_path: '/usr/share/java/mysql-connector-java.jar'  # path to JDBC driver on Ambari server node (must already be present)
+database_options:
+  external_hostname: 'EXTERNAL-DB-HOSTNAME'              # hostname or IP of the external database server
+  ambari_db_name: 'ambari'
+  ambari_db_username: 'ambari'
+  ambari_db_password: "{{ vault_ambari_db_password }}"
+  hive_db_name: 'hive'
+  hive_db_username: 'hive'
+  hive_db_password: "{{ vault_hive_db_password }}"
+  oozie_db_name: 'oozie'
+  oozie_db_username: 'oozie'
+  oozie_db_password: "{{ vault_oozie_db_password }}"
+  rangeradmin_db_name: 'ranger'
+  rangeradmin_db_username: 'ranger'
+  rangeradmin_db_password: "{{ vault_rangeradmin_db_password }}"
+  rangerkms_db_name: 'rangerkms'
+  rangerkms_db_username: 'rangerkms'
+  rangerkms_db_password: "{{ vault_rangerkms_db_password }}"
+
+
+#####################################
+## kerberos security configuration ##
+#####################################
+# Kerberos is configured manually via Ambari after cluster setup
+# Customers typically use their own Active Directory or external KDC
+
+security: 'none'                                          # can be set to 'none' or 'active-directory'
+security_options:
+  external_hostname: ''                                   # hostname/IP of the external KDC or Active Directory
+  realm: 'EXAMPLE.COM'
+  admin_principal: 'admin'                                # the Kerberos principal that has the permissions to create new users (don't append the realm)
+  admin_password: "{{ default_password }}"
+  ldap_url: 'ldaps://ad.example.com:636'                  # only used when security is set to 'active-directory'
+  container_dn: 'OU=hadoop,DC=example,DC=com'             # only used when security is set to 'active-directory'
+  http_authentication: false                                # set to yes to enable HTTP authentication (SPNEGO)
+  manage_krb5_conf: false                                   # set to no if using FreeIPA/IdM
+
+
+##########################
+## ranger configuration ##
+##########################
+
+ranger_options:
+  enable_plugins: true
+
+ranger_security_options:
+  ranger_admin_password: "{{ default_password }}"
+  ranger_keyadmin_password: "{{ default_password }}"
+  kms_master_key_password: "{{ default_password }}"
+
+
+##################################
+## other security configuration ##
+##################################
+
+ambari_admin_password: "{{ vault_ambari_admin_password }}"
+default_password: "{{ vault_default_password }}"
+
+knox_security_options:
+  master_secret: "{{ default_password }}"
+
+nifi_security_options:
+  encrypt_password: "{{ default_password }}"
+  sensitive_props_key: "{{ default_password }}"
+
+
+##########################
+## ambari configuration ##
+##########################
+
+ambari_admin_user: 'admin'
+ambari_admin_default_password: "{{ vault_ambari_admin_default_password }}"
+config_recommendation_strategy: 'ALWAYS_APPLY_DONT_OVERRIDE_CUSTOM_VALUES'
+
+wait: true
+wait_timeout: 7200                                          # 2 hours — large clusters (50+ nodes) need more time for agent registration and service install
+accept_gpl: false
+
+ambari_server_port: 8080                                    # Ambari Server web UI / API port
+cluster_template_file: 'cluster_template.j2'
+
+
+###########################
+## folders configuration ##
+###########################
+
+base_log_dir: '/var/log'
+base_tmp_dir: '/tmp'
+postgres_port: 5432
+mysql_port: 3306
+
+
+#########################################################################
+## blueprint configuration                                             ##
+## Multi-node HA setup (3 masters + N workers)                         ##
+##                                                                     ##
+## odp-master01: Ambari + NameNode (active) + RM + Ranger + Knox       ##
+## odp-master02: NameNode (standby) + RM + Hive + HBase Master        ##
+## odp-master03: HBase Master + Oozie (dedicated master)               ##
+## odp-workers:  DataNode + NodeManager + RegionServer + clients       ##
+##                                                                     ##
+## HA: NameNode, ResourceManager, HBase Master                         ##
+## ZooKeeper on all 3 master nodes (quorum of 3)                       ##
+## JournalNode on all 3 master nodes                                   ##
+##                                                                     ##
+## SCALING: Add as many hosts as needed to the [odp-workers] inventory ##
+## group — all workers receive the same services automatically.        ##
+## Works with 1 worker or 500+ workers; no blueprint changes needed.   ##
+#########################################################################
+
+blueprint_name: '{{ cluster_name }}_blueprint'
+blueprint_file: 'blueprint_dynamic.j2'
+blueprint_dynamic:
+  - host_group: "odp-master01"
+    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT']
+    services:
+      - ZOOKEEPER_SERVER
+      - NAMENODE
+      - ZKFC
+      - JOURNALNODE
+      - RESOURCEMANAGER
+      - APP_TIMELINE_SERVER
+      - YARN_REGISTRY_DNS
+      - TIMELINE_READER
+      - HISTORYSERVER
+      - AMBARI_SERVER
+      - INFRA_SOLR
+      - KNOX_GATEWAY
+      - RANGER_ADMIN
+      - RANGER_USERSYNC
+      - RANGER_KMS_SERVER
+
+  - host_group: "odp-master02"
+    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT']
+    services:
+      - ZOOKEEPER_SERVER
+      - NAMENODE
+      - ZKFC
+      - JOURNALNODE
+      - RESOURCEMANAGER
+      - HIVE_SERVER
+      - HIVE_METASTORE
+      - HBASE_MASTER
+
+  - host_group: "odp-master03"
+    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT']
+    services:
+      - ZOOKEEPER_SERVER
+      - JOURNALNODE
+      - HBASE_MASTER
+      - OOZIE_SERVER
+
+  - host_group: "odp-workers"
+    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT']
+    services:
+      - DATANODE
+      - NODEMANAGER
+      - HBASE_REGIONSERVER
+
+
+############################
+## helper variables ##
+############################
+
+odp_minor_version: "{{ odp_version | regex_replace('.[0-9]+.[0-9]+[0-9_-]*$', '') }}"
+odp_major_version: "{{ odp_minor_version.split('.').0 }}"
+utils_version: "{{ '1.1.0.20' if odp_minor_version is version('2.5', '<') else ('1.1.0.21' if odp_version is version('2.6.4', '<') else '1.1.0.22') }}"  # noqa: yaml[line-length]
+hdfs_ha_name: "{{ cluster_name | regex_replace('_', '-') }}"

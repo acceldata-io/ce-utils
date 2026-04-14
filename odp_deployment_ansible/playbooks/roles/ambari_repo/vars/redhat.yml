@@ -1,0 +1,3 @@
+---
+# ambari_repo_url is defined in group_vars/all and auto-constructed from repo_base_url
+# this file is kept for role compatibility — override ambari_repo_url in group_vars/all or via extra vars

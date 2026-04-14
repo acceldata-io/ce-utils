@@ -1,0 +1,16 @@
+---
+- name: Import prepare_nodes playbook
+  import_playbook: "prepare_nodes.yml"
+  tags: prepare_nodes
+
+- name: Import install_ambari playbook
+  import_playbook: "install_ambari.yml"
+  tags: ambari
+
+- name: Import configure_ambari playbook
+  import_playbook: "configure_ambari.yml"
+  tags: ambari,blueprint
+
+- name: Import apply_blueprint playbook
+  import_playbook: "apply_blueprint.yml"
+  tags: blueprint

@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 180" role="img" aria-labelledby="phases-title phases-desc" font-family="-apple-system, Segoe UI, Roboto, sans-serif">
+  <title id="phases-title">ODP Deployment Phases</title>
+  <desc id="phases-desc">Four sequential deployment phases: Prepare (OS packages, Java, NTP, firewall), Install (Ambari repo, agent, server, DB schema), Configure (VDF upload, repo URLs, admin password, agent registration), and Deploy (blueprint generation, API upload, cluster creation, polling).</desc>
+  <defs>
+    <filter id="ds" x="-3%" y="-3%" width="106%" height="112%"><feDropShadow dx="0" dy="1" stdDeviation="2" flood-opacity="0.08"/></filter>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#90a4ae"/></marker>
+  </defs>
+  <rect width="860" height="180" fill="#f8f9fa" rx="10"/>
+
+  <!-- Phase 1 -->
+  <rect x="20" y="20" width="185" height="140" rx="10" fill="#fff" stroke="#43a047" stroke-width="2" filter="url(#ds)"/>
+  <circle cx="50" cy="44" r="16" fill="#43a047"/>
+  <text x="50" y="49" text-anchor="middle" fill="#fff" font-size="14" font-weight="700">1</text>
+  <text x="76" y="48" fill="#2e7d32" font-size="13" font-weight="700">Prepare</text>
+  <line x1="28" y1="60" x2="197" y2="60" stroke="#c8e6c9" stroke-width="1"/>
+  <text x="34" y="78" fill="#546e7a" font-size="9">Install OS packages</text>
+  <text x="34" y="93" fill="#546e7a" font-size="9">Validate Java (JAVA_HOME)</text>
+  <text x="34" y="108" fill="#546e7a" font-size="9">NTP, /etc/hosts, firewall</text>
+  <text x="34" y="123" fill="#546e7a" font-size="9">SELinux, THP</text>
+  <text x="105" y="150" text-anchor="middle" fill="#a5d6a7" font-size="8" font-weight="600">All nodes</text>
+
+  <line x1="205" y1="90" x2="228" y2="90" stroke="#90a4ae" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Phase 2 -->
+  <rect x="232" y="20" width="185" height="140" rx="10" fill="#fff" stroke="#1565c0" stroke-width="2" filter="url(#ds)"/>
+  <circle cx="262" cy="44" r="16" fill="#1565c0"/>
+  <text x="262" y="49" text-anchor="middle" fill="#fff" font-size="14" font-weight="700">2</text>
+  <text x="288" y="48" fill="#0d47a1" font-size="13" font-weight="700">Install</text>
+  <line x1="240" y1="60" x2="409" y2="60" stroke="#bbdefb" stroke-width="1"/>
+  <text x="246" y="78" fill="#546e7a" font-size="9">Add Ambari YUM repo</text>
+  <text x="246" y="93" fill="#546e7a" font-size="9">Install ambari-agent (all)</text>
+  <text x="246" y="108" fill="#546e7a" font-size="9">Install ambari-server</text>
+  <text x="246" y="123" fill="#546e7a" font-size="9">Load DB schema, JDBC</text>
+  <text x="325" y="150" text-anchor="middle" fill="#90caf9" font-size="8" font-weight="600">All nodes + Ambari server</text>
+
+  <line x1="417" y1="90" x2="440" y2="90" stroke="#90a4ae" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Phase 3 -->
+  <rect x="444" y="20" width="185" height="140" rx="10" fill="#fff" stroke="#ef6c00" stroke-width="2" filter="url(#ds)"/>
+  <circle cx="474" cy="44" r="16" fill="#ef6c00"/>
+  <text x="474" y="49" text-anchor="middle" fill="#fff" font-size="14" font-weight="700">3</text>
+  <text x="500" y="48" fill="#e65100" font-size="13" font-weight="700">Configure</text>
+  <line x1="452" y1="60" x2="621" y2="60" stroke="#ffe0b2" stroke-width="1"/>
+  <text x="458" y="78" fill="#546e7a" font-size="9">Upload VDF to Ambari</text>
+  <text x="458" y="93" fill="#546e7a" font-size="9">Set repo URLs</text>
+  <text x="458" y="108" fill="#546e7a" font-size="9">Change admin password</text>
+  <text x="458" y="123" fill="#546e7a" font-size="9">Wait for agent registration</text>
+  <text x="537" y="150" text-anchor="middle" fill="#ffcc80" font-size="8" font-weight="600">Ambari server only</text>
+
+  <line x1="629" y1="90" x2="652" y2="90" stroke="#90a4ae" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Phase 4 -->
+  <rect x="656" y="20" width="185" height="140" rx="10" fill="#fff" stroke="#7b1fa2" stroke-width="2" filter="url(#ds)"/>
+  <circle cx="686" cy="44" r="16" fill="#7b1fa2"/>
+  <text x="686" y="49" text-anchor="middle" fill="#fff" font-size="14" font-weight="700">4</text>
+  <text x="712" y="48" fill="#6a1b9a" font-size="13" font-weight="700">Deploy</text>
+  <line x1="664" y1="60" x2="833" y2="60" stroke="#e1bee7" stroke-width="1"/>
+  <text x="670" y="78" fill="#546e7a" font-size="9">Generate blueprint (J2)</text>
+  <text x="670" y="93" fill="#546e7a" font-size="9">Upload to Ambari API</text>
+  <text x="670" y="108" fill="#546e7a" font-size="9">Create cluster</text>
+  <text x="670" y="123" fill="#546e7a" font-size="9">Poll until complete</text>
+  <text x="749" y="150" text-anchor="middle" fill="#ce93d8" font-size="8" font-weight="600">Ambari server only</text>
+</svg>

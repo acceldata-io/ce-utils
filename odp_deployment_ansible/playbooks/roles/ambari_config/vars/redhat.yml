@@ -1,0 +1,2 @@
+---
+ambari_config_baseurl_os_family: "redhat{{ ansible_distribution_major_version }}"

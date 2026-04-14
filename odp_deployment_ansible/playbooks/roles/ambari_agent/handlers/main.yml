@@ -1,0 +1,9 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart ambari-agent
+  ansible.builtin.service:
+    name: ambari-agent
+    state: restarted

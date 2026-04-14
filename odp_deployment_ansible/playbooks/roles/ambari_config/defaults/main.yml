@@ -1,0 +1,13 @@
+---
+
+### Repository URLs — these are fallback defaults
+### Primary definitions are in group_vars/all (odp_repo_url, odp_utils_repo_url)
+
+# Map new variable names to legacy names used in templates/tasks
+ambari_config_odp_main_repo_url: "{{ odp_repo_url }}"
+ambari_config_gpl_repo_url: "{{ odp_gpl_repo_url }}"
+ambari_config_utils_repo_url: "{{ odp_utils_repo_url }}"
+
+# Ambari API targets
+ambari_config_main_os_target: "operating_systems/{{ ambari_config_baseurl_os_family }}"
+ambari_config_utils_os_target: "operating_systems/{{ ambari_config_baseurl_os_family }}/repositories/ODP-UTILS-{{ utils_version }}"

@@ -1,0 +1,21 @@
+---
+common_packages:
+  - openssh-clients         # scp required by Ambari
+  - curl                    # curl required by Ambari
+  - unzip                   # unzip required by Ambari
+  - tar                     # tar required by Ambari
+  - wget                    # wget required by Ambari
+  - openssl                 # openssl required by Ambari
+  - openssl-devel           # openssl-devel recommended for Ranger KMS
+  - libtirpc-devel
+  - python3.11
+  - python3.11-pip
+
+# Python DB libraries for Ansible modules (community.mysql / community.postgresql)
+common_pip_packages:
+  - PyMySQL                  # required by community.mysql (MySQL/MariaDB)
+  - psycopg2-binary          # required by community.postgresql (PostgreSQL)
+
+common_pip_executable: pip3.11
+
+common_firewall_service_name: firewalld

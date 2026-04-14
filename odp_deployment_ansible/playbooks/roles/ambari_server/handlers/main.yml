@@ -1,0 +1,21 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart ambari-agent
+  ansible.builtin.service:
+    name: ambari-agent
+    state: restarted
+
+- name: Restart ambari-server
+  ansible.builtin.service:
+    name: ambari-server
+    state: restarted
+  notify: Wait for Ambari Server to start listening
+
+- name: Wait for Ambari Server to start listening
+  ansible.builtin.wait_for:
+    port: "{{ ambari_server_port | default(8080) }}"
+    host: localhost
+    delay: 1

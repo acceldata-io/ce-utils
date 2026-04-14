@@ -1,0 +1,45 @@
+---
+- name: Install the ambari-agent package
+  ansible.builtin.package:
+    name: ambari-agent
+    state: present
+  notify: Reload systemd
+
+- name: Set the Ambari Server in the agent configuration
+  ansible.builtin.lineinfile:
+    path: /etc/ambari-agent/conf/ambari-agent.ini
+    regexp: "^hostname="
+    line: "hostname={{ hostvars[groups['ambari-server'] | first]['ansible_fqdn'] }}"
+    state: present
+  notify: Restart ambari-agent
+
+- name: Configure the Ambari Agents to use TLS 1.2
+  community.general.ini_file:
+    path: /etc/ambari-agent/conf/ambari-agent.ini
+    create: false
+    section: "security"
+    option: "force_https_protocol"
+    value: "PROTOCOL_TLSv1_2"
+    state: present
+    mode: '0644'
+  notify: Restart ambari-agent
+
+- name: Update ambari-agent log dir
+  community.general.ini_file:
+    path: /etc/ambari-agent/conf/ambari-agent.ini
+    create: false
+    section: "agent"
+    option: "logdir"
+    value: "{{ base_log_dir }}/ambari-agent"
+    state: present
+    mode: '0644'
+  notify: Restart ambari-agent
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Make sure the ambari-agent service is started and enabled
+  ansible.builtin.service:
+    name: ambari-agent
+    state: started
+    enabled: true

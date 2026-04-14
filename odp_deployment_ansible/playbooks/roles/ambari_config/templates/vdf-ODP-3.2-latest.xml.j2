@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<repository-version xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="version_definition.xsd">
+  <release>
+{% include 'vdf-ODP-part-release.j2' %}
+  </release>
+  <manifest>
+    <service id="HDFS-311" name="HDFS" version="3.2.3"/>
+    <service id="YARN-311" name="YARN" version="3.2.3"/>
+    <service id="MAPREDUCE2-311" name="MAPREDUCE2" version="3.2.3"/>
+    <service id="STORM-121" name="STORM" version="1.2.1"/>
+    <service id="PIG-0160" name="PIG" version="0.16.0"/>
+    <service id="TEZ-091" name="TEZ" version="0.10.1"/>
+    <service id="HIVE-310" name="HIVE" version="3.1.3"/>
+    <service id="OOZIE-431" name="OOZIE" version="4.3.1"/>
+    <service id="KAFKA-200" name="KAFKA" version="2.0.0"/>
+    <service id="HBASE-202" name="HBASE" version="2.4.11"/>
+    <service id="KNOX-100" name="KNOX" version="1.0.0"/>
+    <service id="RANGER-120" name="RANGER" version="2.1.0"/>
+    <service id="RANGER_KMS-120" name="RANGER_KMS" version="2.1.0"/>
+    <service id="ZOOKEEPER-346" name="ZOOKEEPER" version="3.5.10"/>
+    <service id="SQOOP-147" name="SQOOP" version="1.4.7"/>
+    <service id="ZEPPELIN-080" name="ZEPPELIN" version="0.8.0"/>
+    <service id="SPARK2-232" name="SPARK2" version="2.4.8"/>
+  </manifest>
+  <available-services/>
+  <repository-info>
+{% include 'vdf-ODP-part-repository-info.j2' %}
+  </repository-info>
+</repository-version>

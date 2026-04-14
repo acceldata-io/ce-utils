@@ -1,0 +1,118 @@
+---
+- name: Install the ambari-server package
+  ansible.builtin.package:
+    name: ambari-server
+    state: present
+  notify: Reload systemd
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Validate JDBC driver exists
+  ansible.builtin.stat:
+    path: "{{ jdbc_driver_path }}"
+  register: ambari_server_jdbc_check
+
+- name: Fail if JDBC driver not found
+  ansible.builtin.fail:
+    msg: "JDBC driver not found at '{{ jdbc_driver_path }}'. Ensure the driver is installed on the Ambari server node."
+  when: not ambari_server_jdbc_check.stat.exists
+
+- name: Load Ambari schema into PostgreSQL
+  when: database == "postgres"
+  block:
+    - name: Load the Ambari Server schema (postgres)
+      no_log: true
+      community.postgresql.postgresql_db:
+        name: "{{ database_options.ambari_db_name }}"
+        maintenance_db: "{{ database_options.ambari_db_name }}"
+        login_host: "{{ database_options.external_hostname }}"
+        login_port: "{{ postgres_port }}"
+        login_user: "{{ database_options.ambari_db_username }}"
+        login_password: "{{ database_options.ambari_db_password }}"
+        state: restore
+        target: /var/lib/ambari-server/resources/Ambari-DDL-Postgres-CREATE.sql
+
+- name: Load Ambari schema into MySQL or MariaDB
+  when: database == "mysql" or database == "mariadb"
+  block:
+    - name: Load the Ambari Server schema (mysql/mariadb)
+      no_log: true
+      community.mysql.mysql_db:
+        name: "{{ database_options.ambari_db_name }}"
+        login_host: "{{ database_options.external_hostname }}"
+        login_port: "{{ mysql_port }}"
+        login_user: "{{ database_options.ambari_db_username }}"
+        login_password: "{{ database_options.ambari_db_password }}"
+        state: import
+        target: /var/lib/ambari-server/resources/Ambari-DDL-MySQL-CREATE.sql
+      register: ambari_server_import_results
+      failed_when: >-
+        ambari_server_import_results is failed and
+        ambari_server_import_results.msg is not search("Table .* already exists")
+
+- name: Configure the Ambari JDBC driver
+  ansible.builtin.command: >-
+    /usr/sbin/ambari-server setup
+    --jdbc-db={{ database | regex_replace('mariadb', 'mysql') }}
+    --jdbc-driver={{ jdbc_driver_path }}
+  changed_when: false
+  notify: Restart ambari-server
+
+- name: Set the Ambari Server database setup options
+  no_log: true
+  ansible.builtin.set_fact:
+    ambari_server_database_options: >-
+      --database={{ database | regex_replace('mariadb', 'mysql') }}
+      --databasehost={{ database_options.external_hostname | default(ansible_fqdn, true) }}
+      --databaseport={{ lookup('vars', database | regex_replace('mariadb', 'mysql') + '_port') }}
+      --databasename={{ database_options.ambari_db_name }}
+      --databaseusername={{ database_options.ambari_db_username }}
+      --databasepassword={{ database_options.ambari_db_password }}
+  when: database != "embedded"
+
+- name: Set the Ambari Server Java setup option
+  ansible.builtin.set_fact:
+    ambari_server_java_options: >-
+      -j {{ java_home }}
+      {% if 'java-17' in java_home %}
+      --ambari-java-home {{ java_home }}
+      --stack-java-home {{ java_home }}
+      {% endif %}
+  when: java == "openjdk" or java == "custom"
+
+- name: Run Ambari Server setup
+  no_log: true
+  ansible.builtin.command:
+    cmd: >-
+      /usr/sbin/ambari-server setup -s
+      {{ ambari_server_java_options | default("") }}
+      {{ ambari_server_database_options | default("") }}
+  changed_when: false
+  notify: Restart ambari-server
+
+- name: Update ambari-server log dir
+  ansible.builtin.lineinfile:
+    path: /etc/ambari-server/conf/log4j.properties
+    regexp: '^ambari.log.dir='
+    line: 'ambari.log.dir={{ base_log_dir }}/ambari-server'
+    mode: '0644'
+  notify: Restart ambari-server
+
+- name: Increase the Ambari Server startup timeout
+  ansible.builtin.lineinfile:
+    path: /etc/ambari-server/conf/ambari.properties
+    regexp: '^server.startup.web.timeout='
+    line: 'server.startup.web.timeout=120'
+    state: present
+    mode: '0600'
+  notify: Restart ambari-server
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Make sure the ambari-server service is started and enabled
+  ansible.builtin.service:
+    name: ambari-server
+    state: started
+    enabled: true

@@ -1,0 +1,14 @@
+---
+- name: Import set_variables playbook
+  import_playbook: "set_variables.yml"
+  tags: always
+
+- name: Apply the common role to the hadoop-cluster group
+  hosts: hadoop-cluster
+  any_errors_fatal: true
+  become: true
+  vars_files:
+    - ../vault.yml
+  roles:
+    - common
+  tags: common

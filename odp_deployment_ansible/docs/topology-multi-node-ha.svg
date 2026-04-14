@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 370" role="img" aria-labelledby="multi-title multi-desc" font-family="-apple-system, Segoe UI, Roboto, sans-serif">
+  <title id="multi-title">Multi-Node HA Topology</title>
+  <desc id="multi-desc">Production cluster layout with three dedicated HA master nodes (NameNode HA, ResourceManager HA, HBase Master HA, ZooKeeper quorum) and a scalable pool of N worker nodes running DataNode, NodeManager, and HBase RegionServer.</desc>
+  <defs>
+    <filter id="ds" x="-3%" y="-3%" width="106%" height="112%"><feDropShadow dx="0" dy="1" stdDeviation="2" flood-opacity="0.1"/></filter>
+  </defs>
+
+  <rect width="880" height="370" fill="#f8f9fa" rx="10"/>
+
+  <!-- Title -->
+  <text x="440" y="24" text-anchor="middle" fill="#1a237e" font-size="14" font-weight="700">Multi-Node HA Topology</text>
+  <text x="440" y="40" text-anchor="middle" fill="#78909c" font-size="10">group_vars/all_multi_node_ha  |  3 Masters + N Workers  |  NameNode HA + ResourceManager HA + HBase HA</text>
+
+  <!-- HA badge -->
+  <rect x="378" y="50" width="124" height="18" rx="9" fill="#c62828"/>
+  <text x="440" y="63" text-anchor="middle" fill="#fff" font-size="9" font-weight="700">HIGH AVAILABILITY</text>
+
+  <!-- =================== Node 1: odp-master01 =================== -->
+  <rect x="22" y="78" width="200" height="246" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.5" filter="url(#ds)"/>
+  <rect x="22" y="78" width="200" height="28" rx="8" fill="#1565c0"/>
+  <rect x="22" y="94" width="200" height="12" fill="#1565c0"/>
+  <text x="122" y="96" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">odp-master01</text>
+  <text x="122" y="124" text-anchor="middle" fill="#455a64" font-size="9" font-weight="600">Ambari + Active NameNode</text>
+
+  <rect x="28" y="134" width="92" height="18" rx="9" fill="#e8f5e9" stroke="#43a047" stroke-width="0.8"/>
+  <text x="74" y="147" text-anchor="middle" fill="#2e7d32" font-size="8" font-weight="600">AMBARI</text>
+  <rect x="124" y="134" width="92" height="18" rx="9" fill="#e3f2fd" stroke="#1565c0" stroke-width="0.8"/>
+  <text x="170" y="147" text-anchor="middle" fill="#0d47a1" font-size="8" font-weight="600">NAMENODE</text>
+
+  <rect x="28" y="156" width="92" height="18" rx="9" fill="#e3f2fd" stroke="#1565c0" stroke-width="0.8"/>
+  <text x="74" y="169" text-anchor="middle" fill="#0d47a1" font-size="8" font-weight="600">ZKFC</text>
+  <rect x="124" y="156" width="92" height="18" rx="9" fill="#e3f2fd" stroke="#1565c0" stroke-width="0.8"/>
+  <text x="170" y="169" text-anchor="middle" fill="#0d47a1" font-size="8" font-weight="600">JOURNALNODE</text>
+
+  <rect x="28" y="178" width="92" height="18" rx="9" fill="#e3f2fd" stroke="#1565c0" stroke-width="0.8"/>
+  <text x="74" y="191" text-anchor="middle" font-size="8" font-weight="600"><tspan fill="#0d47a1">RESOURCEMGR</tspan><tspan fill="#c62828" font-size="6"> HA</tspan></text>
+  <rect x="124" y="178" width="92" height="18" rx="9" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="0.8"/>
+  <text x="170" y="191" text-anchor="middle" fill="#6a1b9a" font-size="8" font-weight="600">ZOOKEEPER</text>
+
+  <rect x="28" y="200" width="92" height="18" rx="9" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="0.8"/>
+  <text x="74" y="213" text-anchor="middle" fill="#6a1b9a" font-size="8" font-weight="600">INFRA SOLR</text>
+  <rect x="124" y="200" width="92" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="170" y="213" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">KNOX</text>
+
+  <rect x="28" y="222" width="92" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="74" y="235" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">RANGER</text>
+  <rect x="124" y="222" width="92" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="170" y="235" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">RANGER KMS</text>
+
+  <rect x="28" y="246" width="188" height="18" rx="9" fill="#e3f2fd" stroke="#1565c0" stroke-width="0.8"/>
+  <text x="122" y="259" text-anchor="middle" fill="#0d47a1" font-size="8" font-weight="600">TIMELINE + HISTORY + REG. DNS</text>
+
+  <text x="122" y="284" text-anchor="middle" fill="#bdbdbd" font-size="8">+ All clients</text>
+
+  <!-- =================== Node 2: odp-master02 =================== -->
+  <rect x="234" y="78" width="200" height="246" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.5" filter="url(#ds)"/>
+  <rect x="234" y="78" width="200" height="28" rx="8" fill="#1565c0"/>
+  <rect x="234" y="94" width="200" height="12" fill="#1565c0"/>
+  <text x="334" y="96" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">odp-master02</text>
+  <text x="334" y="124" text-anchor="middle" fill="#455a64" font-size="9" font-weight="600">Standby NameNode + Hive</text>
+
+  <rect x="240" y="134" width="92" height="18" rx="9" fill="#e3f2fd" stroke="#1565c0" stroke-width="0.8"/>
+  <text x="286" y="147" text-anchor="middle" fill="#0d47a1" font-size="8" font-weight="600">NAMENODE</text>
+  <rect x="336" y="134" width="92" height="18" rx="9" fill="#e3f2fd" stroke="#1565c0" stroke-width="0.8"/>
+  <text x="382" y="147" text-anchor="middle" fill="#0d47a1" font-size="8" font-weight="600">ZKFC</text>
+
+  <rect x="240" y="156" width="92" height="18" rx="9" fill="#e3f2fd" stroke="#1565c0" stroke-width="0.8"/>
+  <text x="286" y="169" text-anchor="middle" fill="#0d47a1" font-size="8" font-weight="600">JOURNALNODE</text>
+  <rect x="336" y="156" width="92" height="18" rx="9" fill="#e3f2fd" stroke="#1565c0" stroke-width="0.8"/>
+  <text x="382" y="169" text-anchor="middle" font-size="8" font-weight="600"><tspan fill="#0d47a1">RESOURCEMGR</tspan><tspan fill="#c62828" font-size="6"> HA</tspan></text>
+
+  <rect x="240" y="178" width="92" height="18" rx="9" fill="#fff3e0" stroke="#ef6c00" stroke-width="0.8"/>
+  <text x="286" y="191" text-anchor="middle" fill="#e65100" font-size="8" font-weight="600">HIVE SERVER</text>
+  <rect x="336" y="178" width="92" height="18" rx="9" fill="#fff3e0" stroke="#ef6c00" stroke-width="0.8"/>
+  <text x="382" y="191" text-anchor="middle" fill="#e65100" font-size="8" font-weight="600">METASTORE</text>
+
+  <rect x="240" y="200" width="92" height="18" rx="9" fill="#fff3e0" stroke="#ef6c00" stroke-width="0.8"/>
+  <text x="286" y="213" text-anchor="middle" font-size="8" font-weight="600"><tspan fill="#e65100">HBASE MASTER</tspan><tspan fill="#c62828" font-size="6"> HA</tspan></text>
+  <rect x="336" y="200" width="92" height="18" rx="9" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="0.8"/>
+  <text x="382" y="213" text-anchor="middle" fill="#6a1b9a" font-size="8" font-weight="600">ZOOKEEPER</text>
+
+  <text x="334" y="246" text-anchor="middle" fill="#bdbdbd" font-size="8">+ All clients</text>
+
+  <!-- =================== Node 3: odp-master03 =================== -->
+  <rect x="446" y="78" width="200" height="246" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.5" filter="url(#ds)"/>
+  <rect x="446" y="78" width="200" height="28" rx="8" fill="#1565c0"/>
+  <rect x="446" y="94" width="200" height="12" fill="#1565c0"/>
+  <text x="546" y="96" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">odp-master03</text>
+  <text x="546" y="124" text-anchor="middle" fill="#455a64" font-size="9" font-weight="600">Dedicated Master</text>
+
+  <rect x="452" y="134" width="92" height="18" rx="9" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="0.8"/>
+  <text x="498" y="147" text-anchor="middle" fill="#6a1b9a" font-size="8" font-weight="600">ZOOKEEPER</text>
+  <rect x="548" y="134" width="92" height="18" rx="9" fill="#e3f2fd" stroke="#1565c0" stroke-width="0.8"/>
+  <text x="594" y="147" text-anchor="middle" fill="#0d47a1" font-size="8" font-weight="600">JOURNALNODE</text>
+
+  <rect x="452" y="156" width="92" height="18" rx="9" fill="#fff3e0" stroke="#ef6c00" stroke-width="0.8"/>
+  <text x="498" y="169" text-anchor="middle" font-size="8" font-weight="600"><tspan fill="#e65100">HBASE MASTER</tspan><tspan fill="#c62828" font-size="6"> HA</tspan></text>
+  <rect x="548" y="156" width="92" height="18" rx="9" fill="#fff3e0" stroke="#ef6c00" stroke-width="0.8"/>
+  <text x="594" y="169" text-anchor="middle" fill="#e65100" font-size="8" font-weight="600">OOZIE</text>
+
+  <text x="546" y="198" text-anchor="middle" fill="#bdbdbd" font-size="8">+ All clients</text>
+
+  <!-- =================== Workers: odp-workers (×N) =================== -->
+  <!-- Stacking effect — suggests multiple identical nodes -->
+  <rect x="666" y="86" width="200" height="246" rx="8" fill="#e0e0e0" stroke="#b0bec5" stroke-width="1"/>
+  <rect x="662" y="82" width="200" height="246" rx="8" fill="#eeeeee" stroke="#bdbdbd" stroke-width="1"/>
+  <!-- Main worker card -->
+  <rect x="658" y="78" width="200" height="246" rx="8" fill="#fff" stroke="#00897b" stroke-width="1.5" filter="url(#ds)"/>
+  <rect x="658" y="78" width="200" height="28" rx="8" fill="#00897b"/>
+  <rect x="658" y="94" width="200" height="12" fill="#00897b"/>
+  <text x="742" y="96" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">odp-workers</text>
+  <!-- ×N badge -->
+  <rect x="816" y="83" width="34" height="16" rx="8" fill="#b2dfdb"/>
+  <text x="833" y="94" text-anchor="middle" fill="#004d40" font-size="9" font-weight="700">×N</text>
+
+  <text x="758" y="124" text-anchor="middle" fill="#455a64" font-size="9" font-weight="600">Data + Compute</text>
+
+  <rect x="664" y="134" width="92" height="18" rx="9" fill="#e0f2f1" stroke="#00897b" stroke-width="0.8"/>
+  <text x="710" y="147" text-anchor="middle" fill="#00695c" font-size="8" font-weight="600">DATANODE</text>
+  <rect x="760" y="134" width="92" height="18" rx="9" fill="#e0f2f1" stroke="#00897b" stroke-width="0.8"/>
+  <text x="806" y="147" text-anchor="middle" fill="#00695c" font-size="8" font-weight="600">NODEMANAGER</text>
+
+  <rect x="664" y="156" width="92" height="18" rx="9" fill="#fff3e0" stroke="#ef6c00" stroke-width="0.8"/>
+  <text x="710" y="169" text-anchor="middle" fill="#e65100" font-size="8" font-weight="600">HBASE RS</text>
+
+  <text x="758" y="198" text-anchor="middle" fill="#bdbdbd" font-size="8">+ All clients</text>
+
+  <text x="758" y="224" text-anchor="middle" fill="#78909c" font-size="8.5">Add 1 to 500+ hosts in</text>
+  <text x="758" y="238" text-anchor="middle" fill="#78909c" font-size="8.5">[odp-workers] inventory group.</text>
+  <text x="758" y="254" text-anchor="middle" fill="#78909c" font-size="8.5">No blueprint changes needed.</text>
+
+  <!-- =================== HA indicators =================== -->
+  <!-- NameNode HA connector (gap between master01 and master02) -->
+  <line x1="220" y1="143" x2="236" y2="143" stroke="#c62828" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="228" y="138" text-anchor="middle" fill="#c62828" font-size="7" font-weight="700">HA</text>
+
+  <!-- =================== Footer =================== -->
+  <rect x="22" y="340" width="844" height="22" rx="4" fill="#e8eaf6"/>
+  <text x="444" y="355" text-anchor="middle" fill="#3949ab" font-size="8.5" font-weight="600">ZooKeeper quorum (3 masters)  ·  JournalNode quorum (3 masters)  ·  Workers share one blueprint host_group — scale by adding inventory hosts</text>
+</svg>

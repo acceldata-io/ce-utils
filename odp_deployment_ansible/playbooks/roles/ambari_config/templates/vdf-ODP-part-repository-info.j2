@@ -1,0 +1,23 @@
+    <os family="{{ ambari_config_baseurl_os_family }}">
+      <package-version>{{ odp_version|replace('-','_') }}_*</package-version>
+      <repo>
+        <baseurl>{{ ambari_config_odp_main_repo_url }}</baseurl>
+        <repoid>ODP-{{ odp_minor_version }}</repoid>
+        <reponame>ODP</reponame>
+        <unique>true</unique>
+      </repo>
+      <repo>
+        <baseurl>{{ ambari_config_utils_repo_url }}</baseurl>
+        <repoid>ODP-UTILS-{{ utils_version }}</repoid>
+        <reponame>ODP-UTILS</reponame>
+        <unique>false</unique>
+      </repo>
+{% if odp_version is version('2.6.4.0', '>=') %}
+      <repo>
+        <baseurl>{{ ambari_config_gpl_repo_url }}</baseurl>
+        <repoid>ODP-{{ odp_minor_version }}-GPL</repoid>
+        <reponame>ODP-GPL</reponame>
+        <unique>false</unique>
+      </repo>
+{% endif %}
+    </os>

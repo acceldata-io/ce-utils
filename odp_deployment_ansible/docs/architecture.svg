@@ -1,0 +1,207 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 780" role="img" aria-labelledby="arch-title arch-desc" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <title id="arch-title">ODP Deployment Ansible Architecture</title>
+  <desc id="arch-desc">Execution flow from install_cluster.sh through four playbooks (prepare_nodes, install_ambari, configure_ambari, apply_blueprint) to Ansible roles, configuration sources, and cluster targets via the Ambari REST API.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#546e7a"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#1565c0"/>
+    </marker>
+    <marker id="arrowTeal" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#00897b"/>
+    </marker>
+    <filter id="ds" x="-3%" y="-3%" width="106%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.1"/>
+    </filter>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8f9fa"/>
+      <stop offset="100%" stop-color="#eceff1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Canvas -->
+  <rect width="960" height="780" fill="url(#bgGrad)" rx="12"/>
+
+  <!-- Title bar -->
+  <rect x="0" y="0" width="960" height="56" rx="12" fill="#1a237e"/>
+  <rect x="0" y="44" width="960" height="12" fill="#1a237e"/>
+  <text x="480" y="32" text-anchor="middle" fill="#fff" font-size="20" font-weight="700" letter-spacing="0.5">ODP Deployment Ansible</text>
+  <text x="480" y="48" text-anchor="middle" fill="#7986cb" font-size="11">Execution Flow &amp; Architecture</text>
+
+  <!-- ========== LEFT COLUMN: Orchestration ========== -->
+
+  <!-- Phase label -->
+  <text x="30" y="88" fill="#455a64" font-size="11" font-weight="700" text-transform="uppercase" letter-spacing="1">ORCHESTRATION</text>
+  <line x1="30" y1="94" x2="200" y2="94" stroke="#b0bec5" stroke-width="1"/>
+
+  <!-- install_cluster.sh -->
+  <rect x="30" y="108" width="190" height="44" rx="8" fill="#fff" stroke="#ff6f00" stroke-width="2" filter="url(#ds)"/>
+  <text x="52" y="126" fill="#e65100" font-size="9" font-weight="700">ENTRY POINT</text>
+  <text x="125" y="142" text-anchor="middle" fill="#333" font-size="12" font-weight="600">install_cluster.sh</text>
+
+  <!-- Vertical connector -->
+  <line x1="125" y1="152" x2="125" y2="176" stroke="#546e7a" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 4 Playbooks -->
+  <rect x="30" y="180" width="190" height="40" rx="7" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5" filter="url(#ds)"/>
+  <circle cx="48" cy="200" r="10" fill="#43a047"/><text x="48" y="204" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">1</text>
+  <text x="135" y="204" text-anchor="middle" fill="#1b5e20" font-size="11" font-weight="600">prepare_nodes.yml</text>
+
+  <line x1="125" y1="220" x2="125" y2="232" stroke="#546e7a" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <rect x="30" y="236" width="190" height="40" rx="7" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5" filter="url(#ds)"/>
+  <circle cx="48" cy="256" r="10" fill="#43a047"/><text x="48" y="260" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">2</text>
+  <text x="135" y="260" text-anchor="middle" fill="#1b5e20" font-size="11" font-weight="600">install_ambari.yml</text>
+
+  <line x1="125" y1="276" x2="125" y2="288" stroke="#546e7a" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <rect x="30" y="292" width="190" height="40" rx="7" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5" filter="url(#ds)"/>
+  <circle cx="48" cy="312" r="10" fill="#43a047"/><text x="48" y="316" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">3</text>
+  <text x="135" y="316" text-anchor="middle" fill="#1b5e20" font-size="11" font-weight="600">configure_ambari.yml</text>
+
+  <line x1="125" y1="332" x2="125" y2="344" stroke="#546e7a" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <rect x="30" y="348" width="190" height="40" rx="7" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5" filter="url(#ds)"/>
+  <circle cx="48" cy="368" r="10" fill="#43a047"/><text x="48" y="372" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">4</text>
+  <text x="135" y="372" text-anchor="middle" fill="#1b5e20" font-size="11" font-weight="600">apply_blueprint.yml</text>
+
+  <!-- set_variables.yml (shared) -->
+  <rect x="30" y="410" width="190" height="36" rx="7" fill="#fce4ec" stroke="#c62828" stroke-width="1.2" filter="url(#ds)"/>
+  <text x="125" y="425" text-anchor="middle" fill="#b71c1c" font-size="10" font-weight="600">set_variables.yml</text>
+  <text x="125" y="438" text-anchor="middle" fill="#c62828" font-size="8">imported by every playbook</text>
+
+  <!-- Dashed lines from playbooks to set_variables -->
+  <line x1="60" y1="388" x2="60" y2="410" stroke="#c62828" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="90" y1="388" x2="90" y2="410" stroke="#c62828" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="155" y1="388" x2="155" y2="410" stroke="#c62828" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="185" y1="388" x2="185" y2="410" stroke="#c62828" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <!-- ========== CENTER COLUMN: Roles ========== -->
+
+  <text x="290" y="88" fill="#455a64" font-size="11" font-weight="700" letter-spacing="1">ROLES</text>
+  <line x1="290" y1="94" x2="660" y2="94" stroke="#b0bec5" stroke-width="1"/>
+
+  <!-- common -->
+  <rect x="280" y="180" width="380" height="52" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.8" filter="url(#ds)"/>
+  <rect x="280" y="180" width="6" height="52" rx="3" fill="#1565c0"/>
+  <text x="302" y="202" fill="#0d47a1" font-size="13" font-weight="700">common</text>
+  <text x="302" y="222" fill="#546e7a" font-size="10">OS packages, Java, NTP, /etc/hosts, firewall, SELinux, THP</text>
+  <line x1="220" y1="200" x2="280" y2="200" stroke="#546e7a" stroke-width="1.3" marker-end="url(#arrowBlue)"/>
+
+  <!-- ambari_agent -->
+  <rect x="280" y="248" width="380" height="52" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.8" filter="url(#ds)"/>
+  <rect x="280" y="248" width="6" height="52" rx="3" fill="#1565c0"/>
+  <text x="302" y="270" fill="#0d47a1" font-size="13" font-weight="700">ambari_agent</text>
+  <text x="302" y="290" fill="#546e7a" font-size="10">Install agent, TLS 1.2, server hostname, log dir</text>
+  <line x1="220" y1="256" x2="280" y2="268" stroke="#546e7a" stroke-width="1.3" marker-end="url(#arrowBlue)"/>
+
+  <!-- ambari_server -->
+  <rect x="280" y="316" width="380" height="52" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.8" filter="url(#ds)"/>
+  <rect x="280" y="316" width="6" height="52" rx="3" fill="#1565c0"/>
+  <text x="302" y="338" fill="#0d47a1" font-size="13" font-weight="700">ambari_server</text>
+  <text x="302" y="358" fill="#546e7a" font-size="10">Install server, DB schema, JDBC driver, ambari-server setup</text>
+  <line x1="220" y1="256" x2="280" y2="336" stroke="#546e7a" stroke-width="1.3" marker-end="url(#arrowBlue)"/>
+
+  <!-- ambari_repo (dependency pill) -->
+  <rect x="580" y="268" width="80" height="80" rx="6" fill="#f3e5f5" stroke="#8e24aa" stroke-width="1" filter="url(#ds)"/>
+  <text x="620" y="298" text-anchor="middle" fill="#6a1b9a" font-size="10" font-weight="600">ambari</text>
+  <text x="620" y="312" text-anchor="middle" fill="#6a1b9a" font-size="10" font-weight="600">_repo</text>
+  <text x="620" y="336" text-anchor="middle" fill="#9e9e9e" font-size="8">dependency</text>
+  <!-- dependency arrows -->
+  <line x1="560" y1="280" x2="580" y2="295" stroke="#8e24aa" stroke-width="1" stroke-dasharray="4,3"/>
+  <line x1="560" y1="346" x2="580" y2="320" stroke="#8e24aa" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <!-- ambari_config -->
+  <rect x="280" y="384" width="380" height="52" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.8" filter="url(#ds)"/>
+  <rect x="280" y="384" width="6" height="52" rx="3" fill="#1565c0"/>
+  <text x="302" y="406" fill="#0d47a1" font-size="13" font-weight="700">ambari_config</text>
+  <text x="302" y="426" fill="#546e7a" font-size="10">VDF upload, repo URLs, admin password, agent registration</text>
+  <line x1="220" y1="312" x2="280" y2="404" stroke="#546e7a" stroke-width="1.3" marker-end="url(#arrowBlue)"/>
+
+  <!-- ambari_blueprint -->
+  <rect x="280" y="452" width="380" height="52" rx="8" fill="#fff" stroke="#1565c0" stroke-width="1.8" filter="url(#ds)"/>
+  <rect x="280" y="452" width="6" height="52" rx="3" fill="#1565c0"/>
+  <text x="302" y="474" fill="#0d47a1" font-size="13" font-weight="700">ambari_blueprint</text>
+  <text x="302" y="494" fill="#546e7a" font-size="10">Generate blueprint, upload via API, create cluster, poll status</text>
+  <line x1="220" y1="368" x2="280" y2="472" stroke="#546e7a" stroke-width="1.3" marker-end="url(#arrowBlue)"/>
+
+  <!-- ========== RIGHT COLUMN: Configuration ========== -->
+
+  <text x="720" y="88" fill="#455a64" font-size="11" font-weight="700" letter-spacing="1">CONFIGURATION</text>
+  <line x1="720" y1="94" x2="930" y2="94" stroke="#b0bec5" stroke-width="1"/>
+
+  <!-- vault.yml -->
+  <rect x="710" y="108" width="220" height="48" rx="8" fill="#fff" stroke="#d32f2f" stroke-width="1.5" filter="url(#ds)"/>
+  <rect x="724" y="120" width="18" height="18" rx="4" fill="#d32f2f"/>
+  <text x="733" y="133" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">V</text>
+  <text x="755" y="131" fill="#c62828" font-size="12" font-weight="700">vault.yml</text>
+  <text x="755" y="146" fill="#757575" font-size="9">Encrypted passwords &amp; secrets</text>
+
+  <!-- group_vars/all -->
+  <rect x="710" y="172" width="220" height="48" rx="8" fill="#fff" stroke="#689f38" stroke-width="1.5" filter="url(#ds)"/>
+  <rect x="724" y="184" width="18" height="18" rx="4" fill="#689f38"/>
+  <text x="733" y="197" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">G</text>
+  <text x="755" y="195" fill="#33691e" font-size="12" font-weight="700">group_vars/all</text>
+  <text x="755" y="210" fill="#757575" font-size="9">Cluster config, versions, blueprint</text>
+
+  <!-- Templates -->
+  <rect x="710" y="390" width="220" height="108" rx="8" fill="#fff" stroke="#f9a825" stroke-width="1.5" filter="url(#ds)"/>
+  <rect x="724" y="402" width="18" height="18" rx="4" fill="#f9a825"/>
+  <text x="733" y="415" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">T</text>
+  <text x="755" y="413" fill="#f57f17" font-size="12" font-weight="700">Templates</text>
+  <text x="730" y="436" fill="#616161" font-size="10">blueprint_dynamic.j2</text>
+  <text x="730" y="454" fill="#616161" font-size="10">cluster_template.j2</text>
+  <text x="730" y="472" fill="#616161" font-size="10">vdf-ODP-3.x-latest.xml.j2</text>
+  <text x="730" y="490" fill="#616161" font-size="10">repo_version_template.json.j2</text>
+
+  <!-- Arrow from blueprint role to templates -->
+  <line x1="660" y1="478" x2="710" y2="460" stroke="#f9a825" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+
+  <!-- ========== BOTTOM: Targets ========== -->
+
+  <text x="290" y="538" fill="#455a64" font-size="11" font-weight="700" letter-spacing="1">TARGETS</text>
+  <line x1="290" y1="544" x2="660" y2="544" stroke="#b0bec5" stroke-width="1"/>
+
+  <!-- Ambari REST API -->
+  <rect x="280" y="556" width="380" height="46" rx="8" fill="#e0f2f1" stroke="#00897b" stroke-width="2" filter="url(#ds)"/>
+  <text x="470" y="576" text-anchor="middle" fill="#004d40" font-size="14" font-weight="700">Ambari REST API</text>
+  <text x="470" y="594" text-anchor="middle" fill="#00695c" font-size="10">http://ambari-server:8080/api/v1</text>
+  <line x1="470" y1="504" x2="470" y2="556" stroke="#00897b" stroke-width="1.5" marker-end="url(#arrowTeal)"/>
+
+  <!-- Cluster Nodes -->
+  <rect x="100" y="628" width="760" height="64" rx="10" fill="#fff" stroke="#546e7a" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="480" y="652" text-anchor="middle" fill="#263238" font-size="14" font-weight="700">Cluster Nodes</text>
+  <text x="480" y="672" text-anchor="middle" fill="#78909c" font-size="11">hadoop-cluster inventory group</text>
+
+  <!-- Node icons -->
+  <rect x="180" y="682" width="100" height="28" rx="5" fill="#eceff1" stroke="#90a4ae" stroke-width="1"/>
+  <text x="230" y="700" text-anchor="middle" fill="#455a64" font-size="9" font-weight="600">odp-master01</text>
+
+  <rect x="310" y="682" width="100" height="28" rx="5" fill="#eceff1" stroke="#90a4ae" stroke-width="1"/>
+  <text x="360" y="700" text-anchor="middle" fill="#455a64" font-size="9" font-weight="600">odp-master02</text>
+
+  <rect x="440" y="682" width="100" height="28" rx="5" fill="#eceff1" stroke="#90a4ae" stroke-width="1"/>
+  <text x="490" y="700" text-anchor="middle" fill="#455a64" font-size="9" font-weight="600">odp-master03</text>
+
+  <rect x="570" y="682" width="100" height="28" rx="5" fill="#eceff1" stroke="#90a4ae" stroke-width="1"/>
+  <text x="620" y="700" text-anchor="middle" fill="#455a64" font-size="9" font-weight="600">worker-01 ...</text>
+
+  <!-- Arrow from API to nodes -->
+  <line x1="470" y1="602" x2="470" y2="628" stroke="#546e7a" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ========== Legend ========== -->
+  <rect x="100" y="732" width="760" height="34" rx="6" fill="#fff" stroke="#e0e0e0" stroke-width="1"/>
+  <line x1="110" y1="749" x2="140" y2="749" stroke="#546e7a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="148" y="753" fill="#666" font-size="9">Execution flow</text>
+  <line x1="250" y1="749" x2="280" y2="749" stroke="#8e24aa" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="288" y="753" fill="#666" font-size="9">Role dependency</text>
+  <line x1="410" y1="749" x2="440" y2="749" stroke="#c62828" stroke-width="1" stroke-dasharray="3,3"/>
+  <text x="448" y="753" fill="#666" font-size="9">Shared import</text>
+  <rect x="550" y="742" width="14" height="14" rx="3" fill="#d32f2f"/>
+  <text x="570" y="753" fill="#666" font-size="9">Vault (encrypted)</text>
+  <rect x="660" y="742" width="14" height="14" rx="3" fill="#689f38"/>
+  <text x="680" y="753" fill="#666" font-size="9">Variables</text>
+  <rect x="750" y="742" width="14" height="14" rx="3" fill="#f9a825"/>
+  <text x="770" y="753" fill="#666" font-size="9">Templates</text>
+</svg>

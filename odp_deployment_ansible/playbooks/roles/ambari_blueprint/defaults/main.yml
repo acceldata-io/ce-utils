@@ -1,0 +1,47 @@
+---
+#################################
+## dynamic blueprint variables ##
+#################################
+ambari_blueprint_registry_dns_bind_port: "53"
+
+
+########################
+## path configuration ##
+########################
+# Services base dirs
+ambari_blueprint_hadoop_base_dir: "/hadoop"
+ambari_blueprint_hdfs_data_base_dir: "/hadoop"
+ambari_blueprint_kafka_log_base_dir: "/kafka-logs"
+ambari_blueprint_nifi_repositories_base_dir: "/var/lib/nifi"
+ambari_blueprint_ranger_audit_hdfs_filespool_base_dir: "{{ base_log_dir }}"
+ambari_blueprint_ranger_audit_solr_filespool_base_dir: "{{ base_log_dir }}"
+
+# HDFS main dirs
+ambari_blueprint_hdfs_dfs_namenode_checkpoint_dir: "{{ ambari_blueprint_hadoop_base_dir }}/hdfs/namesecondary"
+ambari_blueprint_hdfs_dfs_namenode_name_dir: "{{ ambari_blueprint_hadoop_base_dir }}/hdfs/namenode"
+ambari_blueprint_hdfs_dfs_journalnode_edits_dir: "{{ ambari_blueprint_hadoop_base_dir }}/hdfs/journalnode"
+ambari_blueprint_hdfs_dfs_datanode_data_dir: "{{ ambari_blueprint_hdfs_data_base_dir }}/hdfs/data"
+
+# YARN main dirs
+ambari_blueprint_yarn_nodemanager_local_dirs: "{{ ambari_blueprint_hadoop_base_dir }}/yarn/local"
+ambari_blueprint_yarn_nodemanager_log_dirs: "{{ ambari_blueprint_hadoop_base_dir }}/yarn/log"
+ambari_blueprint_yarn_timeline_leveldb_dir: "{{ ambari_blueprint_hadoop_base_dir }}/yarn/timeline"
+
+# NiFi main dirs
+ambari_blueprint_nifi_internal_dir: "/var/lib/nifi"
+ambari_blueprint_nifi_database_dir: "{{ ambari_blueprint_nifi_internal_dir }}/database_repository"
+ambari_blueprint_nifi_content_repository_dir: "{{ ambari_blueprint_nifi_repositories_base_dir }}/content_repository"
+ambari_blueprint_nifi_flowfile_repository_dir: "{{ ambari_blueprint_nifi_repositories_base_dir }}/flowfile_repository"
+ambari_blueprint_nifi_provenance_repository_dir: "{{ ambari_blueprint_nifi_repositories_base_dir }}/provenance_repository"
+
+## NiFi-Registry main dirs
+ambari_blueprint_nifi_registry_internal_dir: "/var/lib/nifi-registry"
+ambari_blueprint_nifi_registry_database_dir: "{{ ambari_blueprint_nifi_registry_internal_dir }}/database"
+
+# Other dirs
+ambari_blueprint_zookeeper_data_dir: "{{ ambari_blueprint_hadoop_base_dir }}/zookeeper"
+ambari_blueprint_oozie_data_dir: "{{ ambari_blueprint_hadoop_base_dir }}/oozie/data"
+ambari_blueprint_infra_solr_datadir: "{{ ambari_blueprint_hadoop_base_dir }}/ambari-infra-solr/data"
+ambari_blueprint_heap_dump_location: "{{ base_tmp_dir }}"
+ambari_blueprint_nfs_file_dump_dir: "{{ base_tmp_dir }}/.hdfs-nfs"
+ambari_blueprint_hive_downloaded_resources_dir: "{{ base_tmp_dir }}/hive/${hive.session.id}_resources"
