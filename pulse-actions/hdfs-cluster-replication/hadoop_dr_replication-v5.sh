@@ -4,8 +4,11 @@
 # Copyright (c) 2025 Acceldata Inc. All rights reserved.
 #
 # Description:
-#   This script automates continuous data replication between a primary and a
-#   DR Hadoop cluster using HDFS snapshots and incremental DistCp transfers.
+#   Pull-based HDFS disaster recovery replication script.
+#   This script runs on the TARGET/DR cluster and pulls data from the SOURCE
+#   (production) cluster using HDFS snapshots and incremental DistCp transfers.
+#   YARN MapReduce jobs run on the target cluster only, keeping the source
+#   cluster free from replication workload.
 #
 # Usage:
 #   ./hadoop_dr_replication.sh \
@@ -22,7 +25,9 @@
 #     "<AUTO_FULL_DISTCP>"     \
 #     "<ROLLBACK_ON_FAILURE>"  \
 #     "<DIR_BOOTSTRAP_MODE>"   \
-#     "<KERBEROS_ENABLED>"
+#     "<KERBEROS_ENABLED>"     \
+#     "<DISTCP_FILTER_ENABLED>" \
+#     "<DISTCP_FILTER_FILE>"
 #
 # Positional arguments (order matters):
 #   1) SOURCE_NN_HOST:PORT  - Source HDFS NameNode URI (example: prod-namenode-1.example.com:8020)
@@ -47,6 +52,14 @@
 #                              Values: "yes" (Kerberos enabled) or "no" (Kerberos disabled / sudo mode)
 #                              This script does NOT auto-detect Kerberos.
 #                              Must be provided via CLI argument or KERBEROS_ENABLED env var.
+#   15) DISTCP_FILTER_ENABLED - Enable DistCp path exclusion filter (optional, default: "no")
+#                              Values: "yes" or "no"
+#                              When "yes", DistCp uses -filters flag to exclude paths matching
+#                              regex patterns in the filter file.
+#   16) DISTCP_FILTER_FILE   - Path to local filter file with regex patterns (optional)
+#                              Default: /etc/hadoop-dr/exclude-paths.txt
+#                              One Java regex per line. Only used when DISTCP_FILTER_ENABLED="yes".
+#                              Example content: .*dir4/sub2.*
 #
 # Notes:
 #   - AUTO_FULL_DISTCP controls whether full DistCp runs automatically on initial run.
@@ -97,7 +110,20 @@
 #     "default" \
 #     "/var/log/hadoop-dr-replicate.log" \
 #     "no" "no" "yes" \
-#     "no"
+#     "no" \
+#     "no" ""
+#
+#   With path exclusion filter enabled:
+#   ./hadoop_dr_replication.sh \
+#     "prod-namenode-1.example.com:8020" \
+#     "dr-namenode-1.example.com:8020" \
+#     "/data/warehouse,/data/analytics" \
+#     "dr_snap" 3 "hdfs" "hdfs" "-strategy dynamic -direct -update -pugptx" \
+#     "default" \
+#     "/var/log/hadoop-dr-replicate.log" \
+#     "no" "no" "yes" \
+#     "no" \
+#     "yes" "/etc/hadoop-dr/exclude-paths.txt"
 #
 # Purpose & properties:
 #   - Idempotent and safe for repeated runs.
@@ -147,24 +173,41 @@
 #              - After rollback, retry DistCp once
 #   Stage 5: Completion and logging
 #
-# Operator checklist (before running):
+# Replication mode: PULL-BASED
+#   This script is designed to run on the TARGET/DR cluster.
+#   YARN DistCp jobs are submitted to the target cluster's ResourceManager.
+#   The source (production) cluster is not burdened with replication compute.
+#
+# Operator checklist (before running on TARGET/DR cluster):
 #   1. Ensure the DistCp user has superuser privileges on both clusters.
-#   2. Verify network connectivity and Kerberos tickets (if applicable).
-#   3. Run the script with the correct arguments (see Usage).
-#   4. If the script creates baseline snapshots:
+#   2. Verify network connectivity from TARGET to SOURCE cluster:
+#        - NameNode RPC port (8020 or custom)
+#        - DataNode data transfer ports (50010/50020 or custom)
+#        - NameNode Web UI port (50070/9870) for JMX health checks
+#   3. Ensure source cluster NameService is resolvable from target:
+#        - Add source NameService config to target's hdfs-site.xml
+#        - Validate: hdfs dfs -fs hdfs://<source-ns> -ls /
+#   4. Ensure YARN queue (YARN_QUEUE arg) exists on the TARGET cluster.
+#   5. Verify Kerberos cross-realm trust or shared realm (if applicable).
+#   6. Run the script with the correct arguments (see Usage).
+#   7. If the script creates baseline snapshots:
 #        - If AUTO_FULL_DISTCP="yes": Script will automatically run full DistCp.
 #          Monitor logs as this can take significant time for large datasets.
 #        - If AUTO_FULL_DISTCP="no" (default): Run the full DistCp commands
 #          printed by the script for each directory, then re-run the script.
-#   5. Monitor the log file specified (10th positional argument: LOG_PATH).
+#   8. Monitor the log file specified (10th positional argument: LOG_PATH).
 #
 # Pre-requisites:
+#   • This script must run on the TARGET/DR cluster (pull-based replication).
 #   • The DistCp/HDFS user must be superuser (or in superusergroup) on both clusters.
 #   • Snapshot capability supported by HDFS and allowed for target directories.
-#   • Network connectivity and Kerberos credentials must be in place for HDFS and JMX.
+#   • Network connectivity from target to source cluster (NameNode RPC, DataNode, JMX).
+#   • Source cluster NameService must be configured in target's hdfs-site.xml.
+#   • Kerberos credentials must be valid for both clusters (if Kerberos enabled).
+#   • YARN queue for DistCp jobs must exist on the target cluster.
 #
 # -----------------------------------------------------------------------------
-# ./hadoop_dr_replication.sh "prod-namenode-1.example.com:8020" "dr-namenode-1.example.com:8020" "/data/warehouse,/data/analytics" "dr_snap" 3 "hdfs" "hdfs" "-update -pugpx" "default" "/var/log/hadoop-dr-replicate.log" "no" "no" "yes" "no"
+# ./hadoop_dr_replication.sh "prod-namenode-1.example.com:8020" "dr-namenode-1.example.com:8020" "/data/warehouse,/data/analytics" "dr_snap" 3 "hdfs" "hdfs" "-update -pugpx" "default" "/var/log/hadoop-dr-replicate.log" "no" "no" "yes" "no" "no" ""
 #
 
 set -euo pipefail
@@ -233,7 +276,7 @@ SOURCE_DIRS_RAW="${3:-/demo/oldfiles}"
 SNAP_PREFIX="${4:-dr_snap}"
 SNAP_RETAIN="${5:-3}"
 HDFS_USER="${6:-hdfs}"
-DISTCP_USER="${7:-hdfs}"
+DISTCP_USER="${7:-$HDFS_USER}"
 COPY_OPTS="${8:--strategy dynamic -direct -update -pugptx -skipcrccheck}"
 YARN_QUEUE="${9:-default}"
 LOG="${10:-/var/log/hadoop-dr-replicate.log}"
@@ -250,6 +293,12 @@ DIR_BOOTSTRAP_MODE_ARG="${13:-}"
 # Default is "no" to ensure safe sudo-based execution unless explicitly enabled
 ###############################################################################
 KERBEROS_ENABLED_ARG="${14:-${KERBEROS_ENABLED:-no}}"
+
+###############################################################################
+# DistCp path exclusion filter (priority: CLI args 15-16 -> env var -> default)
+###############################################################################
+DISTCP_FILTER_ENABLED_ARG="${15:-}"
+DISTCP_FILTER_FILE_ARG="${16:-}"
 
 #
 # ROLLBACK_ON_FAILURE for DR Cluster is a safeguard for handling the common snapshot-modified error
@@ -641,7 +690,7 @@ check_prerequisites() {
 # Cleanup temporary files on exit (silent unless in debug mode)
 cleanup_temp_files() {
     local cleaned=0
-    for f in "${TEMP_FILES[@]}"; do
+    for f in ${TEMP_FILES[@]+"${TEMP_FILES[@]}"}; do
         if [[ -f "$f" ]]; then
             rm -f "$f" 2>/dev/null && cleaned=$((cleaned + 1)) || true
         fi
@@ -657,27 +706,33 @@ write_state_file() {
     local state_file="$1"
     local content="$2"
     local tmp_file="${state_file}.tmp.$$"
-    echo "$content" >"$tmp_file" && mv "$tmp_file" "$state_file" || {
+    if echo "$content" >"$tmp_file" && mv "$tmp_file" "$state_file"; then
+        : # success
+    else
         log "[ERROR] Failed to write state file $state_file"
         rm -f "$tmp_file" 2>/dev/null || true
         return 1
-    }
+    fi
 }
 
 # Cleanup old snapshots on a cluster (reduces code duplication)
+# Only removes snapshots matching the current SNAP_PREFIX to avoid deleting
+# snapshots from other replication directions (e.g., forward vs failover)
 cleanup_old_snapshots() {
     local cluster="$1"
     local d="$2"
     local cluster_name="$3"
     local snap_retain="$4"
-    
-    log "[DEBUG] Cleaning old snapshots on $cluster_name cluster for $d"
+    local snap_prefix="$5"
+
+    log "[DEBUG] Cleaning old snapshots on $cluster_name cluster for $d (prefix: ${snap_prefix})"
     mapfile -t snaps < <(
         run_as_hdfs hdfs dfs -fs "hdfs://$cluster" -ls "$d/.snapshot" 2>/dev/null |
-            awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' || true
+            awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' |
+            grep "^${snap_prefix}_" || true
     )
     total_snaps=${#snaps[@]}
-    log "[DEBUG] Found $total_snaps snapshots on $cluster_name for $d"
+    log "[DEBUG] Found $total_snaps snapshots matching prefix '${snap_prefix}' on $cluster_name for $d"
     if ((total_snaps > snap_retain)); then
         local count_to_remove=$((total_snaps - snap_retain))
         log "[DEBUG] Removing $count_to_remove old snapshots from $cluster_name for $d"
@@ -721,6 +776,14 @@ backup_and_create_new_log() {
         fi
     fi
     
+    # Ensure log directory exists
+    local log_dir
+    log_dir="$(dirname "$log_file")"
+    mkdir -p "$log_dir" 2>/dev/null || {
+        echo "[ERROR] Could not create log directory: $log_dir" >&2
+        return 1
+    }
+
     # Create new log file (will be written to after output redirection)
     touch "$log_file" 2>/dev/null || {
         echo "[ERROR] Could not create log file: $log_file" >&2
@@ -777,13 +840,56 @@ enable_debug_if_needed() {
     fi
 }
 
+###############################################################################
+# DistCp path exclusion filter: "yes" or "no" (default: "no")
+#
+# When enabled, DistCp will use the -filters flag to exclude paths matching
+# regex patterns defined in the filter file. This reduces data volume and
+# improves replication SLA by skipping unwanted subdirectories.
+#
+# To enable:
+#   1. Set DISTCP_FILTER_ENABLED="yes" via CLI arg 15, environment variable, or below
+#   2. Set DISTCP_FILTER_FILE to the local path of the filter file via CLI arg 16,
+#      environment variable, or below
+#   3. Ensure the filter file exists and contains one Java regex pattern per line
+#
+# Priority: 1) CLI argument (15th/16th arg), 2) Environment variable, 3) Default value
+#
+# Filter file format (one regex per line, matched against full relative path):
+#   .*dir4/sub2.*
+#   .*\.tmp$
+#   .*/staging/.*
+#
+# Example: To exclude /new03/dir4/sub2 when replicating /new03:
+#   echo '.*dir4/sub2.*' > /etc/hadoop-dr/exclude-paths.txt
+#
+# NOTE: The filter file must be a LOCAL file on the node running the script
+#       (not an HDFS path). It is passed to DistCp's -filters option.
+# NOTE: Filters apply to both full DistCp (Stage 3) and incremental (Stage 4).
+# NOTE: Rollback DistCp (ROLLBACK_ON_FAILURE) does NOT use filters, as rollback
+#       must restore the complete snapshot state.
+###############################################################################
+if [[ -n "$DISTCP_FILTER_ENABLED_ARG" ]]; then
+    DISTCP_FILTER_ENABLED="$DISTCP_FILTER_ENABLED_ARG"
+else
+    DISTCP_FILTER_ENABLED="${DISTCP_FILTER_ENABLED:-no}"
+fi
+if [[ -n "$DISTCP_FILTER_FILE_ARG" ]]; then
+    DISTCP_FILTER_FILE="$DISTCP_FILTER_FILE_ARG"
+else
+    DISTCP_FILTER_FILE="${DISTCP_FILTER_FILE:-/etc/hadoop-dr/exclude-paths.txt}"
+fi
+
+# Build filter opts (validated later in main() after output redirection)
+DISTCP_FILTER_OPTS=""
+
 # Enable verbose DistCp debug logging (yes/no)
 DISTCP_DEBUG="${DISTCP_DEBUG:-no}"
 DISTCP_DEBUG_OPTS=""
 
 # Build DistCp options with YARN queue and application tags
 YARN_QUEUE_OPTS="-Dmapred.job.queue.name=${YARN_QUEUE}"
-YARN_APP_TAGS="-Dmapreduce.job.tags=pulse-dr-replication,src:${SOURCE_CLUSTER},dst:${DEST_CLUSTER}"
+YARN_APP_TAGS="-Dmapreduce.job.tags=pulse-dr-replication,mode:pull,src:${SOURCE_CLUSTER},dst:${DEST_CLUSTER}"
 DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_DEBUG_OPTS"
 
 
@@ -982,6 +1088,7 @@ rollback_once_for_failure() {
     log "[ROLLBACK] Running DistCp rollback: hadoop distcp $DISTCP_FULL_OPTS $DISTCP_ROLLBACK_OPTS $src_snap_path $dst_live_path"
     # Rollback DistCp stderr goes through global redirection (exec 2>&1), no need to tee to LOG again
     local rollback_distcp_success=false
+    # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
     if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_ROLLBACK_OPTS "$src_snap_path" "$dst_live_path"; then
         rollback_distcp_success=true
     fi
@@ -1066,13 +1173,10 @@ main() {
         exit 2
     fi
     
-    # Setup cleanup trap for temporary files
-    trap cleanup_temp_files EXIT INT TERM
-    
     # Backup existing log file and create new one for this execution (before redirecting output)
     backup_and_create_new_log "$LOG"
-    
-    # Trap for failure summary on exit if script failed
+
+    # Trap for failure summary on exit and temporary file cleanup
     trap '[[ "$SCRIPT_FAILED" == "yes" ]] && print_failure_summary; cleanup_temp_files' EXIT INT TERM
 
     # Check prerequisites (required commands) - must be after log setup
@@ -1083,6 +1187,34 @@ main() {
 
     # Re-enable debug logging if requested via environment variable
     enable_debug_if_needed
+
+    # Validate and build DistCp filter options
+    case "${DISTCP_FILTER_ENABLED,,}" in
+        yes)
+            if [[ -f "$DISTCP_FILTER_FILE" ]] && [[ -s "$DISTCP_FILTER_FILE" ]]; then
+                DISTCP_FILTER_OPTS="-filters $DISTCP_FILTER_FILE"
+                log "[INFO] DistCp path exclusion filter ENABLED: $DISTCP_FILTER_FILE"
+                log "[INFO] Filter patterns:"
+                while IFS= read -r pattern; do
+                    [[ -z "$pattern" || "$pattern" == \#* ]] && continue
+                    log "[INFO]   - $pattern"
+                done < "$DISTCP_FILTER_FILE"
+            else
+                echo "[ERROR] DISTCP_FILTER_ENABLED=yes but filter file not found or empty: $DISTCP_FILTER_FILE" >&2
+                echo "[ERROR] Create the filter file with regex patterns (one per line) or set DISTCP_FILTER_ENABLED=no" >&2
+                exit 14
+            fi
+            ;;
+        ""|no)
+            DISTCP_FILTER_OPTS=""
+            ;;
+        *)
+            echo "[ERROR] Invalid value for DISTCP_FILTER_ENABLED (arg 15): '${DISTCP_FILTER_ENABLED}'" >&2
+            echo "[ERROR] Accepted values: 'yes' or 'no'" >&2
+            echo "[ERROR] If you intended to pass a filter file path, use arg 16 for the path and set arg 15 to 'yes'" >&2
+            exit 15
+            ;;
+    esac
 
     # Extract hostnames without ports for JMX checks
     source_host="${SOURCE_CLUSTER%%:*}"
@@ -1102,6 +1234,7 @@ main() {
     echo "Log File            : $LOG"
     echo "Source Cluster      : $SOURCE_CLUSTER"
     echo "Destination Cluster : $DEST_CLUSTER"
+    echo "Replication Mode    : PULL (YARN jobs run on target/DR cluster)"
     echo "Directories         : ${SOURCE_DIRS[*]}"
     if [[ "$KERBEROS_ENABLED" == "yes" ]]; then
         echo "Kerberos            : ENABLED"
@@ -1125,7 +1258,14 @@ main() {
     echo "  Arg 12 (ROLLBACK_ON_FAILURE) : $ROLLBACK_ON_FAILURE"
     echo "  Arg 13 (DIR_BOOTSTRAP_MODE)  : $DIR_BOOTSTRAP_MODE"
     echo "  Arg 14 (KERBEROS_ENABLED)    : $KERBEROS_ENABLED"
+    echo "  Arg 15 (DISTCP_FILTER)       : $DISTCP_FILTER_ENABLED"
+    echo "  Arg 16 (FILTER_FILE)         : $DISTCP_FILTER_FILE"
     echo "  YARN App Tags                : $YARN_APP_TAGS"
+    if [[ "${DISTCP_FILTER_ENABLED,,}" == "yes" ]]; then
+        echo "  DistCp Filter                : ENABLED ($DISTCP_FILTER_FILE)"
+    else
+        echo "  DistCp Filter                : DISABLED"
+    fi
     echo "════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════"
     echo ""
 
@@ -1151,17 +1291,17 @@ main() {
         log "[INFO] DESTINATION cluster appears to be HA-enabled (NameService: $DEST_CLUSTER)"
     fi
     
-    # Configure DistCp MapReduce options for destination cluster
-    # Exclude destination from token renewal to avoid delegation token issues
-    # This applies to both HA and non-HA destinations to prevent token conflicts
+    # Configure DistCp MapReduce options for pull-based replication
+    # PULL MODE: YARN runs on target/destination cluster.
+    # Exclude SOURCE from token renewal because the target RM cannot renew source delegation tokens.
     DISTCP_MAPREDUCE_OPTS=""
-    DST_NAMESERVICE="${DEST_CLUSTER%%:*}"
-    DISTCP_MAPREDUCE_OPTS="-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${DST_NAMESERVICE}"
-    
-    if [[ "$dest_is_ha" == "true" ]]; then
-        log "[INFO] HA mode detected for destination. Setting MapReduce option to exclude destination from token renewal: $DISTCP_MAPREDUCE_OPTS"
+    SRC_NAMESERVICE="${SOURCE_CLUSTER%%:*}"
+    DISTCP_MAPREDUCE_OPTS="-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${SRC_NAMESERVICE}"
+
+    if [[ "$source_is_ha" == "true" ]]; then
+        log "[INFO] Pull mode: HA source detected. Excluding source ($SRC_NAMESERVICE) from token renewal (YARN runs on target): $DISTCP_MAPREDUCE_OPTS"
     else
-        log "[INFO] Non-HA destination detected. Setting MapReduce option to exclude destination from token renewal: $DISTCP_MAPREDUCE_OPTS"
+        log "[INFO] Pull mode: Non-HA source detected. Excluding source ($SRC_NAMESERVICE) from token renewal (YARN runs on target): $DISTCP_MAPREDUCE_OPTS"
     fi
     
     # Update DISTCP_FULL_OPTS with MapReduce options
@@ -1232,22 +1372,28 @@ main() {
     for d in "${SOURCE_DIRS[@]}"; do
         dir_start_ts=$(date +%s)
         key=$(sanitize "$d")
-        dir_lock="${SNAP_LOCK_DIR}/${key}.lock"
+        dir_lock="${SNAP_LOCK_DIR}/${key}-${SNAP_PREFIX}.lock"
         
         if [[ ! -f "$dir_lock" ]]; then
             log "[DEBUG] Enabling snapshots for directory: $d"
-            log_substage "Enabling on SOURCE: $d"
+            log_substage "Enabling on SOURCE ($SOURCE_CLUSTER): $d"
             log "[DEBUG] Allowing snapshot on source dir: $d"
-            if run_as_hdfs hdfs dfsadmin -fs "hdfs://$SOURCE_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true; then
+            allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$SOURCE_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
+            allow_snap_rc=$?
+            if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
+                [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                 log "[INFO] Snapshot enabled on source directory $d"
+                src_snap_ok=true
             else
+                [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                 echo "[ERROR] FAILED to enable snapshot on SOURCE directory $d"
                 log "[ERROR] Failed to enable snapshot on source directory $d"
                 log "[ERROR] This may indicate permission issues or the directory doesn't exist on source cluster."
+                src_snap_ok=false
             fi
 
             # Check if destination dir exists
-            log_substage "Enabling on DESTINATION: $d"
+            log_substage "Enabling on DESTINATION ($DEST_CLUSTER): $d"
             if ! run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -test -d "$d"; then
                 # auto mode: create dummy dir with source perms/ownership
                 if [[ "$DIR_BOOTSTRAP_MODE" == "yes" ]]; then
@@ -1278,21 +1424,31 @@ main() {
 
             # Now allowSnapshot on destination (whether just created or already exists)
             log "[DEBUG] Allowing snapshot on destination dir: $d"
-            if run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true; then
+            allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
+            allow_snap_rc=$?
+            if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
+                [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                 log "[INFO] Snapshot enabled on destination directory $d"
+                dst_snap_ok=true
             else
+                [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                 echo "[ERROR] FAILED to enable snapshot on DESTINATION directory $d"
                 log "[ERROR] Failed to enable snapshot on destination directory $d"
                 log "[ERROR] This may indicate permission issues or the directory doesn't exist on destination cluster."
+                dst_snap_ok=false
             fi
             
-            : >"$dir_lock"
-            log "[DEBUG] Snapshot capability enabled for directory $d (lock: $dir_lock)"
+            if [[ "$src_snap_ok" == "true" ]] && [[ "$dst_snap_ok" == "true" ]]; then
+                : >"$dir_lock"
+                log "[DEBUG] Snapshot capability enabled for directory $d (lock: $dir_lock)"
+            else
+                log "[WARN] Skipping lock file creation for $d — allowSnapshot failed on one or both clusters (will retry on next run)"
+            fi
         else
             log "[DEBUG] Snapshot capability already enabled for directory $d (lock present: $dir_lock)"
         fi
     done
-        log "[DEBUG] Per-directory snapshot capability check complete for all directories"
+    log "[DEBUG] Per-directory snapshot capability check complete for all directories"
     log_stage_complete "2" "Enable Snapshot Capability (Per-Directory)"
 
     # -----------------------------------------------------------------------------
@@ -1304,14 +1460,14 @@ main() {
     for d in "${SOURCE_DIRS[@]}"; do
         log "[DEBUG] Checking baseline snapshot for directory: $d"
         key=$(sanitize "$d")
-        state="/var/tmp/dr-last-snap-${key}.txt"
+        state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
         if [[ ! -f "$state" ]]; then
             need_init=true
             base="${SNAP_PREFIX}_0"
             local src_snap_created=false
             local dst_snap_created=false
             
-            log_substage "Creating on SOURCE: $d"
+            log_substage "Creating on SOURCE ($SOURCE_CLUSTER): $d"
             log "[INIT] Creating baseline snapshot '$base' on source: $d"
             if run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -createSnapshot "$d" "$base"; then
                 log "[INFO] Baseline snapshot '$base' created on source for $d"
@@ -1323,7 +1479,7 @@ main() {
                 src_snap_created=false
             fi
 
-            log_substage "Creating on DESTINATION: $d"
+            log_substage "Creating on DESTINATION ($DEST_CLUSTER): $d"
             log "[INIT] Creating baseline snapshot '$base' on destination: $d"
             if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$base"; then
                 log "[INFO] Baseline snapshot '$base' created on destination for $d"
@@ -1404,8 +1560,8 @@ main() {
             DISTCP_ALL_OK=true
             for d in "${SOURCE_DIRS[@]}"; do
                 key=$(sanitize "$d")
-                state="/var/tmp/dr-last-snap-${key}.txt"
-                
+                state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
+
                 # Skip directories that don't have state files (baseline creation failed)
                 if [[ ! -f "$state" ]]; then
                     echo ""
@@ -1423,8 +1579,8 @@ main() {
                 
                 src_uri="hdfs://$SOURCE_CLUSTER${d}"
                 dst_uri="hdfs://$DEST_CLUSTER${d}"
-                distcp_cmd="hadoop distcp $DISTCP_FULL_OPTS $COPY_OPTS $src_uri $dst_uri"
-                
+                distcp_cmd="hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS $src_uri $dst_uri"
+
                 echo ""
                 log_cmd "Running Full DistCp for Directory: $d"
                 echo "📁 Directory: $d"
@@ -1436,11 +1592,12 @@ main() {
                 log "[INIT] Running full DistCp for $d: $distcp_cmd"
                 echo "[INFO] Starting full DistCp for $d (this may take a long time for large datasets)..."
                 echo ""
-                
+
                 # Run DistCp with stderr captured for error analysis
                 DISTCP_STDERR_FILE="/tmp/full_distcp_err_$(sanitize "$d")_$$.log"
                 TEMP_FILES+=("$DISTCP_STDERR_FILE")
-                if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $COPY_OPTS "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
+                # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
+                if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
                     echo ""
                     echo "------------------------------------------------------------------------------------------------------------------------------------------"
                     echo "[SUCCESS] Full DistCp completed successfully for $d"
@@ -1486,9 +1643,13 @@ main() {
             log_substage "Re-enabling snapshots on destination directories"
             for d in "${SOURCE_DIRS[@]}"; do
                 log "[DEBUG] Re-enabling snapshot on destination dir: $d"
-                if run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true; then
+                allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
+                allow_snap_rc=$?
+                if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
+                    [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                     log "[INFO] Snapshot re-enabled on destination directory $d"
                 else
+                    [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                     log "[WARN] Failed to re-enable snapshot on destination directory $d (may already be enabled)"
                 fi
             done
@@ -1503,7 +1664,7 @@ main() {
                 log "[DEBUG] Creating post-DistCp baseline snapshot for directory: $d"
                 
                 # Delete the old dr_snap_0 on destination (from before DistCp)
-                if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${base}\$" || true; then
+                if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${base}\$"; then
                     log "[DEBUG] Deleting old baseline snapshot $base on destination (pre-DistCp state)"
                     if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -deleteSnapshot "$d" "$base" 2>/dev/null; then
                         log "[INFO] Deleted old baseline snapshot $base on destination"
@@ -1570,8 +1731,8 @@ main() {
             local has_valid_dirs=false
             for d in "${SOURCE_DIRS[@]}"; do
                 key=$(sanitize "$d")
-                state="/var/tmp/dr-last-snap-${key}.txt"
-                
+                state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
+
                 # Skip directories that don't have state files (baseline creation failed)
                 if [[ ! -f "$state" ]]; then
                     echo "📁 Directory: $d"
@@ -1587,7 +1748,7 @@ main() {
                 has_valid_dirs=true
                 src_uri="hdfs://$SOURCE_CLUSTER${d}"
                 dst_uri="hdfs://$DEST_CLUSTER${d}"
-                distcp_cmd="hadoop distcp $COPY_OPTS $src_uri $dst_uri"
+                distcp_cmd="hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS $src_uri $dst_uri"
                 echo "📁 Directory: $d"
                 echo ""
                 echo "   Run this command to sync baseline snapshots:"
@@ -1642,11 +1803,12 @@ main() {
     ALL_OK=true
     echo "[INFO] Starting incremental synchronization for directories: ${SOURCE_DIRS[*]}"
     for d in "${SOURCE_DIRS[@]}"; do
+        dir_start_ts=$(date +%s)
         echo ""
         log_cmd "Processing Directory: $d"
         log "[DEBUG] Starting incremental sync for directory: $d"
         key=$(sanitize "$d")
-        state="/var/tmp/dr-last-snap-${key}.txt"
+        state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
         last_snap=$(<"$state")
         idx=${last_snap##*_}
         next_snap="${SNAP_PREFIX}_$((idx + 1))"
@@ -1704,8 +1866,8 @@ main() {
             # Use snapshotDiff to check if destination directory differs from snapshot
             # snapshotDiff returns non-zero if there are differences
             # We compare the snapshot to the current directory state (represented by ".")
-            snapshot_diff_output=$(run_as_hdfs hdfs snapshotDiff -fs "hdfs://$DEST_CLUSTER" "$d" "$baseline_snap" "." 2>&1 || true)
-            snapshot_diff_exit_code=$?
+            snapshot_diff_exit_code=0
+            snapshot_diff_output=$(run_as_hdfs hdfs snapshotDiff -fs "hdfs://$DEST_CLUSTER" "$d" "$baseline_snap" "." 2>&1) || snapshot_diff_exit_code=$?
             
             # If snapshotDiff shows differences (exit code != 0) or if it indicates modifications,
             # the destination has been modified since the snapshot was created
@@ -1728,7 +1890,7 @@ main() {
                 echo ""
                 
                 # Delete old baseline snapshot on destination
-                if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${baseline_snap}\$" || true; then
+                if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${baseline_snap}\$"; then
                     log "[DEBUG] Deleting old baseline snapshot $baseline_snap on destination (pre-manual-DistCp state)"
                     if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -deleteSnapshot "$d" "$baseline_snap" 2>/dev/null; then
                         log "[INFO] Deleted old baseline snapshot $baseline_snap on destination"
@@ -1770,7 +1932,7 @@ main() {
         # Remove -update from COPY_OPTS and place it before -diff (required by DistCp)
         # All other options must come before -diff to avoid being treated as source paths
         COPY_OPTS_NO_UPDATE=$(echo "$COPY_OPTS" | sed 's/-update\s*/ /g' | sed 's/\s\+/ /g' | sed 's/^\s*//;s/\s*$//' || echo "$COPY_OPTS")
-        echo "  hadoop distcp $DISTCP_FULL_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
+        echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
         echo "======================"
         echo ""
         echo "[DEBUG MARKER] Starting DistCp execution for $d"
@@ -1779,7 +1941,8 @@ main() {
         # Use tee to write distcp stderr to temp file AND to stderr (which goes through
         # global redirection to LOG and console). Since stderr is redirected to stdout
         # via exec 2>&1, this ensures real-time output without buffering delays.
-        if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
+        # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
+        if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
             DISTCP_SUCCESS=true
         else
             DISTCP_SUCCESS=false
@@ -1838,10 +2001,11 @@ main() {
                         # Use tee to write retry distcp stderr to temp file AND to stderr
                         # Reuse COPY_OPTS_NO_UPDATE from earlier in the function
                         log_cmd "DistCp Retry Command (post-rollback)"
-                        echo "  hadoop distcp $DISTCP_FULL_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
+                        echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
                         echo "======================"
                         echo ""
-                        if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_RETRY_STDERR" >&2); then
+                        # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
+                        if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_RETRY_STDERR" >&2); then
                             DISTCP_RETRY_SUCCESS=true
                         else
                             DISTCP_RETRY_SUCCESS=false
@@ -1879,7 +2043,7 @@ main() {
                             echo ""
                             echo "  --- Option 1: Full DistCp (force full re-sync, no snapshot diff) ---"
                             echo ""
-                            echo "    hadoop distcp $DISTCP_FULL_OPTS $COPY_OPTS $src_uri $dst_uri"
+                            echo "    hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS $src_uri $dst_uri"
                             echo ""
                             echo "    After it completes:"
                             echo "      - Delete the 'next' snapshot from source (if created this run):"
@@ -1914,12 +2078,12 @@ main() {
                         echo "============================================"
                         echo ">>> [ERROR] [STAGE 4] Rollback NOT performed for: $d <<<"
                         echo "============================================"
-                    log "[WARN] [Stage 4] Rollback not performed (marker existed or failure during rollback). Manual intervention required for $d"
-                    METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
-                    dir_end_ts=$(date +%s)
-                    log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
-                    ALL_OK=false
-                    continue
+                        log "[WARN] [Stage 4] Rollback not performed (marker existed or failure during rollback). Manual intervention required for $d"
+                        METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
+                        dir_end_ts=$(date +%s)
+                        log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
+                        ALL_OK=false
+                        continue
                     fi
                 else
                     echo "============================================"
@@ -1970,11 +2134,11 @@ main() {
         log "[METRIC] [STAGE 4] Directory '$d' completed in $((dir_end_ts - dir_start_ts)) seconds"
         echo ""
 
-        # 4g) Cleanup old snapshots on source (retain SNAP_RETAIN most recent)
-        cleanup_old_snapshots "$SOURCE_CLUSTER" "$d" "source" "$SNAP_RETAIN"
+        # 4g) Cleanup old snapshots on source (retain SNAP_RETAIN most recent, matching current prefix only)
+        cleanup_old_snapshots "$SOURCE_CLUSTER" "$d" "source" "$SNAP_RETAIN" "$SNAP_PREFIX"
 
-        # 4h) Cleanup old snapshots on destination (retain SNAP_RETAIN most recent)
-        cleanup_old_snapshots "$DEST_CLUSTER" "$d" "destination" "$SNAP_RETAIN"
+        # 4h) Cleanup old snapshots on destination (retain SNAP_RETAIN most recent, matching current prefix only)
+        cleanup_old_snapshots "$DEST_CLUSTER" "$d" "destination" "$SNAP_RETAIN" "$SNAP_PREFIX"
     done
     
     # Stage 4 completion - only show errors if any occurred
@@ -1987,10 +2151,12 @@ main() {
         echo "=========================================================================================================================================="
         echo ""
     fi
+    log_stage_complete "4" "Incremental Synchronization"
 
     # -----------------------------------------------------------------------------
     # Final Summary and Completion
     # -----------------------------------------------------------------------------
+    log_stage "5" "Completion"
     
     SCRIPT_END_TS=$(date +%s)
     SCRIPT_RUNTIME=$((SCRIPT_END_TS - SCRIPT_START_TS))
@@ -2060,4 +2226,3 @@ main() {
 }
 
 main "$@"
-
