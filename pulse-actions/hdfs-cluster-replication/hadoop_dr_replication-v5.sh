@@ -233,7 +233,7 @@ SOURCE_DIRS_RAW="${3:-/demo/oldfiles}"
 SNAP_PREFIX="${4:-dr_snap}"
 SNAP_RETAIN="${5:-3}"
 HDFS_USER="${6:-hdfs}"
-DISTCP_USER="${7:-$HDFS_USER}"
+DISTCP_USER="${7:-hdfs}"
 COPY_OPTS="${8:--strategy dynamic -direct -update -pugptx -skipcrccheck}"
 YARN_QUEUE="${9:-default}"
 LOG="${10:-/var/log/hadoop-dr-replicate.log}"
@@ -275,7 +275,7 @@ fi
 SOURCE_HTTP_SCHEME="${SOURCE_HTTP_SCHEME:-http}"  # http or https for source cluster
 SOURCE_NN_WEB_PORT="${SOURCE_NN_WEB_PORT:-50070}" # NameNode web UI port for source (commonly 50070 or 9870)
 DEST_HTTP_SCHEME="${DEST_HTTP_SCHEME:-http}"     # http or https for destination cluster
-DEST_NN_WEB_PORT="${DEST_NN_WEB_PORT:-50070}"     # NameNode web UI port for destination (commonly 50070 or 9870)
+DEST_NN_WEB_PORT="${DEST_NN_WEB_PORT:-9870}"     # NameNode web UI port for destination (commonly 50070 or 9870)
 
 # Kerberos credential cache path (KRB5CCNAME)
 # If your Kerberos plugin stores cache at a custom location (e.g., /tmp/krb_*),
@@ -480,37 +480,16 @@ detect_kerberos_enabled() {
     fi
     
     if [[ -d "$pulse_cache_dir" ]]; then
-        local best_cc="" fallback_cc=""
-        # Iterate newest-first (by modification time)
-        while IFS= read -r cc; do
+        for cc in "$pulse_cache_dir"/krb5cc_*; do
             [[ -f "$cc" ]] || continue
 
             if KRB5CCNAME="$cc" klist -s 2>/dev/null; then
-                # Extract the default principal from this cache
-                local cc_principal
-                cc_principal=$(KRB5CCNAME="$cc" klist 2>/dev/null | grep "Default principal:" | awk '{print $3}')
-
-                # Match principal against DISTCP_USER (e.g., "hdfs" matches "hdfs-odp_phoenix@SPACE.COM")
-                if [[ -n "$cc_principal" && "$cc_principal" == ${DISTCP_USER}* ]]; then
-                    best_cc="$cc"
-                    log "[DEBUG] Matched principal '$cc_principal' for DISTCP_USER='$DISTCP_USER' in $cc"
-                    break
-                elif [[ -z "$fallback_cc" ]]; then
-                    # Keep the newest valid cache as fallback in case no principal matches
-                    fallback_cc="$cc"
-                    log "[DEBUG] Valid cache $cc has principal '$cc_principal' (no match for DISTCP_USER='$DISTCP_USER')"
-                fi
+                export KRB5CCNAME="$cc"
+                log "[INFO] Kerberos detected via Pulse cache: $KRB5CCNAME"
+                echo "[INFO] Kerberos detected via Pulse cache: $KRB5CCNAME"
+                return 0
             fi
-        done < <(ls -t "$pulse_cache_dir"/krb5cc_* 2>/dev/null)
-
-        # Prefer principal-matched cache, fall back to newest valid
-        local selected_cc="${best_cc:-$fallback_cc}"
-        if [[ -n "$selected_cc" ]]; then
-            export KRB5CCNAME="$selected_cc"
-            log "[INFO] Kerberos detected via Pulse cache: $KRB5CCNAME"
-            echo "[INFO] Kerberos detected via Pulse cache: $KRB5CCNAME"
-            return 0
-        fi
+        done
         log "[DEBUG] No valid Kerberos cache found in $pulse_cache_dir"
     fi
 
@@ -641,7 +620,7 @@ check_prerequisites() {
 # Cleanup temporary files on exit (silent unless in debug mode)
 cleanup_temp_files() {
     local cleaned=0
-    for f in ${TEMP_FILES[@]+"${TEMP_FILES[@]}"}; do
+    for f in "${TEMP_FILES[@]}"; do
         if [[ -f "$f" ]]; then
             rm -f "$f" 2>/dev/null && cleaned=$((cleaned + 1)) || true
         fi
@@ -665,23 +644,19 @@ write_state_file() {
 }
 
 # Cleanup old snapshots on a cluster (reduces code duplication)
-# Only removes snapshots matching the current SNAP_PREFIX to avoid deleting
-# snapshots from other replication directions (e.g., forward vs failover)
 cleanup_old_snapshots() {
     local cluster="$1"
     local d="$2"
     local cluster_name="$3"
     local snap_retain="$4"
-    local snap_prefix="$5"
-
-    log "[DEBUG] Cleaning old snapshots on $cluster_name cluster for $d (prefix: ${snap_prefix})"
+    
+    log "[DEBUG] Cleaning old snapshots on $cluster_name cluster for $d"
     mapfile -t snaps < <(
         run_as_hdfs hdfs dfs -fs "hdfs://$cluster" -ls "$d/.snapshot" 2>/dev/null |
-            awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' |
-            grep "^${snap_prefix}_" || true
+            awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' || true
     )
     total_snaps=${#snaps[@]}
-    log "[DEBUG] Found $total_snaps snapshots matching prefix '${snap_prefix}' on $cluster_name for $d"
+    log "[DEBUG] Found $total_snaps snapshots on $cluster_name for $d"
     if ((total_snaps > snap_retain)); then
         local count_to_remove=$((total_snaps - snap_retain))
         log "[DEBUG] Removing $count_to_remove old snapshots from $cluster_name for $d"
@@ -785,10 +760,9 @@ enable_debug_if_needed() {
 DISTCP_DEBUG="${DISTCP_DEBUG:-no}"
 DISTCP_DEBUG_OPTS=""
 
-# Build DistCp options with YARN queue and application tags
+# Build DistCp options with YARN queue
 YARN_QUEUE_OPTS="-Dmapred.job.queue.name=${YARN_QUEUE}"
-YARN_APP_TAGS="-Dmapreduce.job.tags=pulse-dr-replication,src:${SOURCE_CLUSTER},dst:${DEST_CLUSTER}"
-DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_DEBUG_OPTS"
+DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $DISTCP_DEBUG_OPTS"
 
 
 # -----------------------------------------------------------------------------
@@ -1129,7 +1103,6 @@ main() {
     echo "  Arg 12 (ROLLBACK_ON_FAILURE) : $ROLLBACK_ON_FAILURE"
     echo "  Arg 13 (DIR_BOOTSTRAP_MODE)  : $DIR_BOOTSTRAP_MODE"
     echo "  Arg 14 (KERBEROS_ENABLED)    : $KERBEROS_ENABLED"
-    echo "  YARN App Tags                : $YARN_APP_TAGS"
     echo "════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════"
     echo ""
 
@@ -1169,7 +1142,7 @@ main() {
     fi
     
     # Update DISTCP_FULL_OPTS with MapReduce options
-    DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS"
+    DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS"
     log "[INFO] Updated DistCp options: $DISTCP_FULL_OPTS"
     
     # -----------------------------------------------------------------------------
@@ -1242,18 +1215,12 @@ main() {
             log "[DEBUG] Enabling snapshots for directory: $d"
             log_substage "Enabling on SOURCE: $d"
             log "[DEBUG] Allowing snapshot on source dir: $d"
-            allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$SOURCE_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
-            allow_snap_rc=${PIPESTATUS[0]}
-            if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
-                [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
+            if run_as_hdfs hdfs dfsadmin -fs "hdfs://$SOURCE_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true; then
                 log "[INFO] Snapshot enabled on source directory $d"
-                src_snap_ok=true
             else
-                [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                 echo "[ERROR] FAILED to enable snapshot on SOURCE directory $d"
                 log "[ERROR] Failed to enable snapshot on source directory $d"
                 log "[ERROR] This may indicate permission issues or the directory doesn't exist on source cluster."
-                src_snap_ok=false
             fi
 
             # Check if destination dir exists
@@ -1288,26 +1255,16 @@ main() {
 
             # Now allowSnapshot on destination (whether just created or already exists)
             log "[DEBUG] Allowing snapshot on destination dir: $d"
-            allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
-            allow_snap_rc=${PIPESTATUS[0]}
-            if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
-                [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
+            if run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true; then
                 log "[INFO] Snapshot enabled on destination directory $d"
-                dst_snap_ok=true
             else
-                [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                 echo "[ERROR] FAILED to enable snapshot on DESTINATION directory $d"
                 log "[ERROR] Failed to enable snapshot on destination directory $d"
                 log "[ERROR] This may indicate permission issues or the directory doesn't exist on destination cluster."
-                dst_snap_ok=false
             fi
             
-            if [[ "$src_snap_ok" == "true" ]] && [[ "$dst_snap_ok" == "true" ]]; then
-                : >"$dir_lock"
-                log "[DEBUG] Snapshot capability enabled for directory $d (lock: $dir_lock)"
-            else
-                log "[WARN] Skipping lock file creation for $d — allowSnapshot failed on one or both clusters (will retry on next run)"
-            fi
+            : >"$dir_lock"
+            log "[DEBUG] Snapshot capability enabled for directory $d (lock: $dir_lock)"
         else
             log "[DEBUG] Snapshot capability already enabled for directory $d (lock present: $dir_lock)"
         fi
@@ -1324,7 +1281,7 @@ main() {
     for d in "${SOURCE_DIRS[@]}"; do
         log "[DEBUG] Checking baseline snapshot for directory: $d"
         key=$(sanitize "$d")
-        state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
+        state="/var/tmp/dr-last-snap-${key}.txt"
         if [[ ! -f "$state" ]]; then
             need_init=true
             base="${SNAP_PREFIX}_0"
@@ -1424,8 +1381,8 @@ main() {
             DISTCP_ALL_OK=true
             for d in "${SOURCE_DIRS[@]}"; do
                 key=$(sanitize "$d")
-                state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
-
+                state="/var/tmp/dr-last-snap-${key}.txt"
+                
                 # Skip directories that don't have state files (baseline creation failed)
                 if [[ ! -f "$state" ]]; then
                     echo ""
@@ -1506,13 +1463,9 @@ main() {
             log_substage "Re-enabling snapshots on destination directories"
             for d in "${SOURCE_DIRS[@]}"; do
                 log "[DEBUG] Re-enabling snapshot on destination dir: $d"
-                allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
-                allow_snap_rc=${PIPESTATUS[0]}
-                if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
-                    [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
+                if run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true; then
                     log "[INFO] Snapshot re-enabled on destination directory $d"
                 else
-                    [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
                     log "[WARN] Failed to re-enable snapshot on destination directory $d (may already be enabled)"
                 fi
             done
@@ -1594,8 +1547,8 @@ main() {
             local has_valid_dirs=false
             for d in "${SOURCE_DIRS[@]}"; do
                 key=$(sanitize "$d")
-                state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
-
+                state="/var/tmp/dr-last-snap-${key}.txt"
+                
                 # Skip directories that don't have state files (baseline creation failed)
                 if [[ ! -f "$state" ]]; then
                     echo "📁 Directory: $d"
@@ -1666,12 +1619,11 @@ main() {
     ALL_OK=true
     echo "[INFO] Starting incremental synchronization for directories: ${SOURCE_DIRS[*]}"
     for d in "${SOURCE_DIRS[@]}"; do
-        dir_start_ts=$(date +%s)
         echo ""
         log_cmd "Processing Directory: $d"
         log "[DEBUG] Starting incremental sync for directory: $d"
         key=$(sanitize "$d")
-        state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
+        state="/var/tmp/dr-last-snap-${key}.txt"
         last_snap=$(<"$state")
         idx=${last_snap##*_}
         next_snap="${SNAP_PREFIX}_$((idx + 1))"
@@ -1729,8 +1681,8 @@ main() {
             # Use snapshotDiff to check if destination directory differs from snapshot
             # snapshotDiff returns non-zero if there are differences
             # We compare the snapshot to the current directory state (represented by ".")
-            snapshot_diff_exit_code=0
-            snapshot_diff_output=$(run_as_hdfs hdfs snapshotDiff -fs "hdfs://$DEST_CLUSTER" "$d" "$baseline_snap" "." 2>&1) || snapshot_diff_exit_code=$?
+            snapshot_diff_output=$(run_as_hdfs hdfs snapshotDiff -fs "hdfs://$DEST_CLUSTER" "$d" "$baseline_snap" "." 2>&1 || true)
+            snapshot_diff_exit_code=$?
             
             # If snapshotDiff shows differences (exit code != 0) or if it indicates modifications,
             # the destination has been modified since the snapshot was created
@@ -1995,11 +1947,11 @@ main() {
         log "[METRIC] [STAGE 4] Directory '$d' completed in $((dir_end_ts - dir_start_ts)) seconds"
         echo ""
 
-        # 4g) Cleanup old snapshots on source (retain SNAP_RETAIN most recent, matching current prefix only)
-        cleanup_old_snapshots "$SOURCE_CLUSTER" "$d" "source" "$SNAP_RETAIN" "$SNAP_PREFIX"
+        # 4g) Cleanup old snapshots on source (retain SNAP_RETAIN most recent)
+        cleanup_old_snapshots "$SOURCE_CLUSTER" "$d" "source" "$SNAP_RETAIN"
 
-        # 4h) Cleanup old snapshots on destination (retain SNAP_RETAIN most recent, matching current prefix only)
-        cleanup_old_snapshots "$DEST_CLUSTER" "$d" "destination" "$SNAP_RETAIN" "$SNAP_PREFIX"
+        # 4h) Cleanup old snapshots on destination (retain SNAP_RETAIN most recent)
+        cleanup_old_snapshots "$DEST_CLUSTER" "$d" "destination" "$SNAP_RETAIN"
     done
     
     # Stage 4 completion - only show errors if any occurred
