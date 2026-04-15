@@ -1212,32 +1212,17 @@ main() {
         exit 2
     fi
     
-    # Backup existing log file and create new one for this execution (before redirecting output)
-    backup_and_create_new_log "$LOG"
+    # -------------------------------------------------------------------------
+    # Validate arguments FIRST (before any system-dependent checks like
+    # check_prerequisites) so that argument errors are reported immediately
+    # regardless of whether hadoop/hdfs/curl are installed.
+    # -------------------------------------------------------------------------
 
-    # Trap for failure summary on exit and temporary file cleanup
-    trap '[[ "$SCRIPT_FAILED" == "yes" ]] && print_failure_summary; cleanup_temp_files' EXIT INT TERM
-
-    # Check prerequisites (required commands) - must be after log setup
-    check_prerequisites
-
-    # Initialize Kerberos detection (must be done early, before output redirection)
-    init_kerberos_detection
-
-    # Re-enable debug logging if requested via environment variable
-    enable_debug_if_needed
-
-    # Validate and build DistCp filter options
+    # Validate DISTCP_FILTER_ENABLED and DISTCP_FILTER_FILE
     case "${DISTCP_FILTER_ENABLED,,}" in
         yes)
             if [[ -f "$DISTCP_FILTER_FILE" ]] && [[ -s "$DISTCP_FILTER_FILE" ]]; then
                 DISTCP_FILTER_OPTS="-filters $DISTCP_FILTER_FILE"
-                log "[INFO] DistCp path exclusion filter ENABLED: $DISTCP_FILTER_FILE"
-                log "[INFO] Filter patterns:"
-                while IFS= read -r pattern; do
-                    [[ -z "$pattern" || "$pattern" == \#* ]] && continue
-                    log "[INFO]   - $pattern"
-                done < "$DISTCP_FILTER_FILE"
             else
                 echo "[ERROR] DISTCP_FILTER_ENABLED=yes but filter file not found or empty: $DISTCP_FILTER_FILE" >&2
                 echo "[ERROR] Create the filter file with regex patterns (one per line) or set DISTCP_FILTER_ENABLED=no" >&2
@@ -1254,6 +1239,43 @@ main() {
             exit 15
             ;;
     esac
+
+    # Validate REPLICATION_MODE
+    case "${REPLICATION_MODE,,}" in
+        ""|pull|push)
+            : # valid
+            ;;
+        *)
+            echo "[ERROR] Invalid value for REPLICATION_MODE (arg 17): '${REPLICATION_MODE}'" >&2
+            echo "[ERROR] Accepted values: 'pull' or 'push'" >&2
+            exit 16
+            ;;
+    esac
+
+    # Backup existing log file and create new one for this execution (before redirecting output)
+    backup_and_create_new_log "$LOG"
+
+    # Trap for failure summary on exit and temporary file cleanup
+    trap '[[ "$SCRIPT_FAILED" == "yes" ]] && print_failure_summary; cleanup_temp_files' EXIT INT TERM
+
+    # Check prerequisites (required commands) - must be after log setup
+    check_prerequisites
+
+    # Initialize Kerberos detection (must be done early, before output redirection)
+    init_kerberos_detection
+
+    # Re-enable debug logging if requested via environment variable
+    enable_debug_if_needed
+
+    # Log filter details (after validation passed above)
+    if [[ "${DISTCP_FILTER_ENABLED,,}" == "yes" ]]; then
+        log "[INFO] DistCp path exclusion filter ENABLED: $DISTCP_FILTER_FILE"
+        log "[INFO] Filter patterns:"
+        while IFS= read -r pattern; do
+            [[ -z "$pattern" || "$pattern" == \#* ]] && continue
+            log "[INFO]   - $pattern"
+        done < "$DISTCP_FILTER_FILE"
+    fi
 
     # Extract hostnames without ports for JMX checks
     source_host="${SOURCE_CLUSTER%%:*}"
