@@ -27,7 +27,8 @@
 #     "<DIR_BOOTSTRAP_MODE>"   \
 #     "<KERBEROS_ENABLED>"     \
 #     "<DISTCP_FILTER_ENABLED>" \
-#     "<DISTCP_FILTER_FILE>"
+#     "<DISTCP_FILTER_FILE>"   \
+#     "<REPLICATION_MODE>"
 #
 # Positional arguments (order matters):
 #   1) SOURCE_NN_HOST:PORT  - Source HDFS NameNode URI (example: prod-namenode-1.example.com:8020)
@@ -60,6 +61,10 @@
 #                              Default: /etc/hadoop-dr/exclude-paths.txt
 #                              One Java regex per line. Only used when DISTCP_FILTER_ENABLED="yes".
 #                              Example content: .*dir4/sub2.*
+#   17) REPLICATION_MODE      - Replication direction mode (optional, default: "pull")
+#                              Values: "pull" or "push"
+#                              "pull" = YARN runs on DR/target cluster, source has no compute overhead
+#                              "push" = YARN runs on source/production cluster
 #
 # Notes:
 #   - AUTO_FULL_DISTCP controls whether full DistCp runs automatically on initial run.
@@ -111,9 +116,10 @@
 #     "/var/log/hadoop-dr-replicate.log" \
 #     "no" "no" "yes" \
 #     "no" \
-#     "no" ""
+#     "no" "" \
+#     "pull"
 #
-#   With path exclusion filter enabled:
+#   With path exclusion filter and push mode:
 #   ./hadoop_dr_replication.sh \
 #     "prod-namenode-1.example.com:8020" \
 #     "dr-namenode-1.example.com:8020" \
@@ -123,7 +129,8 @@
 #     "/var/log/hadoop-dr-replicate.log" \
 #     "no" "no" "yes" \
 #     "no" \
-#     "yes" "/etc/hadoop-dr/exclude-paths.txt"
+#     "yes" "/etc/hadoop-dr/exclude-paths.txt" \
+#     "push"
 #
 # Purpose & properties:
 #   - Idempotent and safe for repeated runs.
@@ -207,7 +214,7 @@
 #   • YARN queue for DistCp jobs must exist on the target cluster.
 #
 # -----------------------------------------------------------------------------
-# ./hadoop_dr_replication.sh "prod-namenode-1.example.com:8020" "dr-namenode-1.example.com:8020" "/data/warehouse,/data/analytics" "dr_snap" 3 "hdfs" "hdfs" "-update -pugpx" "default" "/var/log/hadoop-dr-replicate.log" "no" "no" "yes" "no" "no" ""
+# ./hadoop_dr_replication.sh "prod-namenode-1.example.com:8020" "dr-namenode-1.example.com:8020" "/data/warehouse,/data/analytics" "dr_snap" 3 "hdfs" "hdfs" "-update -pugpx" "default" "/var/log/hadoop-dr-replicate.log" "no" "no" "yes" "no" "no" "" "pull"
 #
 
 set -euo pipefail
@@ -299,6 +306,12 @@ KERBEROS_ENABLED_ARG="${14:-${KERBEROS_ENABLED:-no}}"
 ###############################################################################
 DISTCP_FILTER_ENABLED_ARG="${15:-}"
 DISTCP_FILTER_FILE_ARG="${16:-}"
+
+###############################################################################
+# Replication mode (priority: CLI arg 17 -> env var -> default)
+# Default is "pull" for backward compatibility.
+###############################################################################
+REPLICATION_MODE_ARG="${17:-}"
 
 #
 # ROLLBACK_ON_FAILURE for DR Cluster is a safeguard for handling the common snapshot-modified error
@@ -883,13 +896,39 @@ fi
 # Build filter opts (validated later in main() after output redirection)
 DISTCP_FILTER_OPTS=""
 
+###############################################################################
+# Replication mode: "pull" or "push"
+#
+# Controls where YARN MapReduce jobs run and which cluster's delegation tokens
+# are excluded from renewal.
+#
+# Supported modes:
+#   - "pull" (default):
+#       * Script runs on the TARGET/DR cluster
+#       * YARN jobs run on TARGET/DR cluster
+#       * Source cluster is excluded from token renewal
+#       * Source cluster has zero replication compute overhead
+#   - "push":
+#       * Script runs on the SOURCE/Production cluster
+#       * YARN jobs run on SOURCE/Production cluster
+#       * Destination cluster is excluded from token renewal
+#       * Source cluster bears YARN + DistCp MapReduce overhead
+#
+# Priority: 1) CLI argument (17th arg), 2) Environment variable, 3) Default value
+###############################################################################
+if [[ -n "$REPLICATION_MODE_ARG" ]]; then
+    REPLICATION_MODE="$REPLICATION_MODE_ARG"
+else
+    REPLICATION_MODE="${REPLICATION_MODE:-pull}"
+fi
+
 # Enable verbose DistCp debug logging (yes/no)
 DISTCP_DEBUG="${DISTCP_DEBUG:-no}"
 DISTCP_DEBUG_OPTS=""
 
 # Build DistCp options with YARN queue and application tags
 YARN_QUEUE_OPTS="-Dmapred.job.queue.name=${YARN_QUEUE}"
-YARN_APP_TAGS="-Dmapreduce.job.tags=pulse-dr-replication,mode:pull,src:${SOURCE_CLUSTER},dst:${DEST_CLUSTER}"
+YARN_APP_TAGS="-Dmapreduce.job.tags=pulse-dr-replication,mode:${REPLICATION_MODE},src:${SOURCE_CLUSTER},dst:${DEST_CLUSTER}"
 DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_DEBUG_OPTS"
 
 
@@ -1234,7 +1273,11 @@ main() {
     echo "Log File            : $LOG"
     echo "Source Cluster      : $SOURCE_CLUSTER"
     echo "Destination Cluster : $DEST_CLUSTER"
-    echo "Replication Mode    : PULL (YARN jobs run on target/DR cluster)"
+    if [[ "${REPLICATION_MODE,,}" == "push" ]]; then
+        echo "Replication Mode    : PUSH (YARN jobs run on source/production cluster)"
+    else
+        echo "Replication Mode    : PULL (YARN jobs run on target/DR cluster)"
+    fi
     echo "Directories         : ${SOURCE_DIRS[*]}"
     if [[ "$KERBEROS_ENABLED" == "yes" ]]; then
         echo "Kerberos            : ENABLED"
@@ -1260,6 +1303,7 @@ main() {
     echo "  Arg 14 (KERBEROS_ENABLED)    : $KERBEROS_ENABLED"
     echo "  Arg 15 (DISTCP_FILTER)       : $DISTCP_FILTER_ENABLED"
     echo "  Arg 16 (FILTER_FILE)         : $DISTCP_FILTER_FILE"
+    echo "  Arg 17 (REPLICATION_MODE)    : $REPLICATION_MODE"
     echo "  YARN App Tags                : $YARN_APP_TAGS"
     if [[ "${DISTCP_FILTER_ENABLED,,}" == "yes" ]]; then
         echo "  DistCp Filter                : ENABLED ($DISTCP_FILTER_FILE)"
@@ -1291,18 +1335,34 @@ main() {
         log "[INFO] DESTINATION cluster appears to be HA-enabled (NameService: $DEST_CLUSTER)"
     fi
     
-    # Configure DistCp MapReduce options for pull-based replication
-    # PULL MODE: YARN runs on target/destination cluster.
-    # Exclude SOURCE from token renewal because the target RM cannot renew source delegation tokens.
+    # Configure DistCp MapReduce options based on replication mode
+    # The cluster where YARN does NOT run must be excluded from token renewal,
+    # because the local ResourceManager cannot renew remote delegation tokens.
     DISTCP_MAPREDUCE_OPTS=""
     SRC_NAMESERVICE="${SOURCE_CLUSTER%%:*}"
-    DISTCP_MAPREDUCE_OPTS="-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${SRC_NAMESERVICE}"
+    DST_NAMESERVICE="${DEST_CLUSTER%%:*}"
 
-    if [[ "$source_is_ha" == "true" ]]; then
-        log "[INFO] Pull mode: HA source detected. Excluding source ($SRC_NAMESERVICE) from token renewal (YARN runs on target): $DISTCP_MAPREDUCE_OPTS"
-    else
-        log "[INFO] Pull mode: Non-HA source detected. Excluding source ($SRC_NAMESERVICE) from token renewal (YARN runs on target): $DISTCP_MAPREDUCE_OPTS"
-    fi
+    case "${REPLICATION_MODE,,}" in
+        ""|pull)
+            # PULL MODE (default): YARN runs on target/destination cluster.
+            # Exclude SOURCE from token renewal.
+            REPLICATION_MODE="pull"
+            DISTCP_MAPREDUCE_OPTS="-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${SRC_NAMESERVICE}"
+            log "[INFO] Pull mode: Excluding source ($SRC_NAMESERVICE) from token renewal (YARN runs on target)"
+            ;;
+        push)
+            # PUSH MODE: YARN runs on source/production cluster.
+            # Exclude DESTINATION from token renewal.
+            DISTCP_MAPREDUCE_OPTS="-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${DST_NAMESERVICE}"
+            log "[INFO] Push mode: Excluding destination ($DST_NAMESERVICE) from token renewal (YARN runs on source)"
+            ;;
+        *)
+            echo "[ERROR] Invalid value for REPLICATION_MODE (arg 17): '${REPLICATION_MODE}'" >&2
+            echo "[ERROR] Accepted values: 'pull' or 'push'" >&2
+            exit 16
+            ;;
+    esac
+    log "[INFO] Token renewal exclusion: $DISTCP_MAPREDUCE_OPTS"
     
     # Update DISTCP_FULL_OPTS with MapReduce options
     DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS"
