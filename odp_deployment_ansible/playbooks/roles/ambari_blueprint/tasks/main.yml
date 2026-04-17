@@ -100,8 +100,8 @@
     body_format: raw
     status_code: 200,201,202,409
     timeout: 60
-    return_content: false
-  no_log: true
+    return_content: true
+  no_log: false  # TODO: set back to true after debugging
   register: ambari_blueprint_upload_result
   retries: 3
   delay: 5

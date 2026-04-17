@@ -223,7 +223,7 @@ By default, the playbook installs OpenJDK on all nodes (`java: 'openjdk'`). Set 
 
 | Variable | Description |
 | ---------- | ------------- |
-| `database` | `'postgres'`, `'mysql'`, or `'mariadb'` |
+| `database` | `'postgres'`, `'mysql'`, `'mariadb'`, or `'oracle'` |
 | `jdbc_driver_path` | Path to JDBC driver JAR on Ambari server node (must already exist) |
 | `database_options.external_hostname` | Database server hostname or IP |
 
@@ -259,7 +259,78 @@ database: 'postgres'
 jdbc_driver_path: '/usr/share/java/postgresql-jdbc.jar'
 ```
 
+**Oracle 19c**:
+
+```bash
+# Copy the Oracle JDBC driver to the Ambari server node
+# The ojdbc8.jar is typically found in $ORACLE_HOME/jdbc/lib/ on the Oracle DB server
+sudo mkdir -p /usr/share/java
+sudo cp /path/to/ojdbc8.jar /usr/share/java/ojdbc8.jar
+```
+
+```yaml
+# group_vars/all
+database: 'oracle'
+jdbc_driver_path: '/usr/share/java/ojdbc8.jar'
+```
+
+Additional Oracle-specific variables (set in `group_vars/all` under the database section):
+
+| Variable | Description | Default |
+| ---------- | ------------- | --------- |
+| `oracle_sid` | Oracle SID / service name — used in JDBC URLs and schema loading. Verify with `SELECT instance_name FROM v$instance;` | `'ACCELDATA'` |
+| `oracle_home` | ORACLE_HOME path on the DB server. **Only needed when `oracle_load_ambari_schema` is `true`** — the playbook uses it to locate the `sqlplus` binary for loading the Ambari DDL. If you set `oracle_load_ambari_schema: false` (customer loads DDLs manually), this variable is unused and can be left at the default. | `'/opt/oracle/product/19c/dbhome_1'` |
+| `oracle_load_ambari_schema` | Set to `false` to skip automatic Ambari DDL loading via `sqlplus`. When `false`, `oracle_home` is not needed. | `true` |
+
+> Oracle uses a single SID with different user/schemas per service. The `*_db_name` variables in `database_options` serve as schema names.
+>
 > For air-gapped environments, download the JAR on a connected machine and copy it to `/usr/share/java/` on the Ambari server node.
+>
+> For Oracle Instant Client setup, sqlplus installation, and manual DDL loading, see [docs/ORACLE_PREREQ.md](docs/ORACLE_PREREQ.md).
+
+**Oracle database preparation** — create users, tablespaces, and grants before running the playbooks:
+
+```sql
+-- Ambari (uses default USERS tablespace)
+CREATE USER ambari IDENTIFIED BY <password>
+  DEFAULT TABLESPACE USERS TEMPORARY TABLESPACE TEMP;
+GRANT UNLIMITED TABLESPACE TO ambari;
+GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE TO ambari;
+
+-- Hive (uses default USERS tablespace)
+CREATE USER hive IDENTIFIED BY <password>
+  DEFAULT TABLESPACE USERS TEMPORARY TABLESPACE TEMP;
+GRANT UNLIMITED TABLESPACE TO hive;
+GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE TO hive;
+
+-- Oozie (uses default USERS tablespace)
+CREATE USER oozie IDENTIFIED BY <password>
+  DEFAULT TABLESPACE USERS TEMPORARY TABLESPACE TEMP;
+GRANT UNLIMITED TABLESPACE TO oozie;
+GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE TO oozie;
+
+-- Ranger Admin (dedicated tablespace)
+CREATE TABLESPACE rangerdba
+  DATAFILE '/opt/oracle/oradata/<SID>/rangerdba.dbf'
+  SIZE 100M AUTOEXTEND ON NEXT 10M MAXSIZE UNLIMITED;
+CREATE USER rangerdba IDENTIFIED BY <password>
+  DEFAULT TABLESPACE rangerdba TEMPORARY TABLESPACE TEMP
+  QUOTA UNLIMITED ON rangerdba;
+GRANT CONNECT, RESOURCE TO rangerdba;
+GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE, CREATE VIEW TO rangerdba;
+
+-- Ranger KMS (dedicated tablespace)
+CREATE TABLESPACE rangerkms
+  DATAFILE '/opt/oracle/oradata/<SID>/rangerkms.dbf'
+  SIZE 100M AUTOEXTEND ON NEXT 10M MAXSIZE UNLIMITED;
+CREATE USER rangerkms IDENTIFIED BY <password>
+  DEFAULT TABLESPACE rangerkms TEMPORARY TABLESPACE TEMP
+  QUOTA UNLIMITED ON rangerkms;
+GRANT CONNECT, RESOURCE TO rangerkms;
+GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE, CREATE VIEW TO rangerkms;
+```
+
+> Replace `<SID>` with your Oracle instance name and `<password>` with secure passwords matching `vault.yml`. Ensure `database_options` usernames in `group_vars/all` match the Oracle users created above (e.g. `rangeradmin_db_username: 'rangerdba'`).
 
 The following databases must be pre-created with corresponding users and privileges:
 
@@ -382,6 +453,16 @@ bash configure_ambari.sh
 bash apply_blueprint.sh
 ```
 
+### Validate the blueprint before deploying
+
+Run the blueprint validation playbook to catch configuration errors before starting a long deployment:
+
+```bash
+ansible-playbook playbooks/check_dynamic_blueprint.yml
+```
+
+This checks that inventory group names match `blueprint_dynamic`, validates component placement, and renders the blueprint JSON without uploading it.
+
 ### Using ansible-playbook directly
 
 ```bash
@@ -394,6 +475,27 @@ ansible-playbook playbooks/install_ambari.yml
 ansible-playbook playbooks/configure_ambari.yml
 ansible-playbook playbooks/apply_blueprint.yml
 ```
+
+### Using tags
+
+The master playbook supports tags to run specific phases without separate playbook files:
+
+```bash
+# Prepare nodes only
+ansible-playbook playbooks/install_cluster.yml --tags prepare_nodes
+
+# Ambari install + configure (Phase 2 & 3)
+ansible-playbook playbooks/install_cluster.yml --tags ambari
+
+# Configure + blueprint (Phase 3 & 4)
+ansible-playbook playbooks/install_cluster.yml --tags blueprint
+```
+
+| Tag | Phases included |
+| --- | --------------- |
+| `prepare_nodes` | Phase 1 |
+| `ambari` | Phase 2 + Phase 3 |
+| `blueprint` | Phase 3 + Phase 4 |
 
 ## 6. Multiple Clusters (Optional)
 
@@ -475,10 +577,10 @@ Verify all items before running `install_cluster.sh`:
 
 ### Database
 
-- [ ] External database server (MySQL, MariaDB, or PostgreSQL) running and reachable
+- [ ] External database server (MySQL, MariaDB, PostgreSQL, or Oracle 19c) running and reachable
 - [ ] All required databases created: `ambari`, `hive`, `oozie`, `ranger`, `rangerkms`
-- [ ] Database users created with appropriate privileges
-- [ ] JDBC driver JAR present on the Ambari server node (`ls -l /usr/share/java/mysql-connector-java.jar`)
+- [ ] Database users created with appropriate privileges (for Oracle, see [docs/ORACLE_PREREQ.md](docs/ORACLE_PREREQ.md))
+- [ ] JDBC driver JAR present on the Ambari server node (e.g., `mysql-connector-java.jar`, `postgresql-jdbc.jar`, or `ojdbc8.jar` in `/usr/share/java/`)
 - [ ] `database_options.external_hostname` set to actual hostname (not the placeholder `EXTERNAL-DB-HOSTNAME`)
 
 ### Java Runtime
@@ -550,3 +652,15 @@ bash apply_blueprint.sh  # Phase 4
 ```
 
 > All playbooks are idempotent. After fixing an issue, re-run the failed phase — completed tasks are skipped automatically.
+
+### Tuning ansible.cfg
+
+The included `ansible.cfg` ships with production-ready defaults. Key settings you may want to adjust:
+
+| Setting | Default | When to change |
+| ------- | ------- | -------------- |
+| `forks` | `40` | Increase for very large clusters (100+ nodes) or decrease on resource-constrained workstations |
+| `timeout` | `60` | Increase if SSH connections time out on high-latency networks |
+| `host_key_checking` | `False` | Set to `True` in environments that require strict SSH host key verification |
+
+SSH multiplexing (`ControlMaster`, `ControlPersist=120s`) is enabled by default for faster execution across repeated connections.

@@ -1,5 +1,7 @@
 ---
 galaxy_info:
+  author: ODP Team
+  license: Apache-2.0
   role_name: ambari_repo
   description: YUM repository configuration for Ambari and ODP packages
   min_ansible_version: "2.14"

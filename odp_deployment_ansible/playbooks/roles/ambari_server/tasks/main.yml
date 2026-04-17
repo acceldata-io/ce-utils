@@ -51,6 +51,29 @@
         ambari_server_import_results is failed and
         ambari_server_import_results.msg is not search("Table .* already exists")
 
+- name: Load Ambari schema into Oracle
+  when: database == "oracle" and oracle_load_ambari_schema | default(true) | bool
+  block:
+    - name: Load the Ambari Server schema (oracle)
+      no_log: true
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          export ORACLE_HOME={{ oracle_home }}
+          export ORACLE_SID={{ oracle_sid }}
+          export LD_LIBRARY_PATH={{ oracle_home }}/instantclient/instantclient:{{ oracle_home }}/lib:$LD_LIBRARY_PATH
+          export PATH={{ oracle_home }}/instantclient/instantclient:{{ oracle_home }}/bin:$PATH
+          CONN_STR="{{ database_options.ambari_db_username }}/{{ database_options.ambari_db_password }}"
+          CONN_STR="${CONN_STR}@//{{ database_options.external_hostname | default(ansible_fqdn, true) }}"
+          CONN_STR="${CONN_STR}:{{ oracle_port }}/{{ oracle_sid }}"
+          echo "@/var/lib/ambari-server/resources/Ambari-DDL-Oracle-CREATE.sql
+          EXIT" | sqlplus "${CONN_STR}"
+        executable: /bin/bash
+      changed_when: false
+      environment:
+        ORACLE_SID: "{{ oracle_sid }}"
+        ORACLE_HOME: "{{ oracle_home }}"
+
 - name: Configure the Ambari JDBC driver
   ansible.builtin.command: >-
     /usr/sbin/ambari-server setup
@@ -58,6 +81,18 @@
     --jdbc-driver={{ jdbc_driver_path }}
   changed_when: false
   notify: Restart ambari-server
+
+- name: Set the Ambari Server database setup options (oracle)
+  no_log: true
+  ansible.builtin.set_fact:
+    ambari_server_database_options: >-
+      --database=oracle
+      --databasehost={{ database_options.external_hostname | default(ansible_fqdn, true) }}
+      --databaseport={{ oracle_port }}
+      --databasename={{ oracle_sid }}
+      --databaseusername={{ database_options.ambari_db_username }}
+      --databasepassword={{ database_options.ambari_db_password }}
+  when: database == "oracle"
 
 - name: Set the Ambari Server database setup options
   no_log: true
@@ -69,7 +104,7 @@
       --databasename={{ database_options.ambari_db_name }}
       --databaseusername={{ database_options.ambari_db_username }}
       --databasepassword={{ database_options.ambari_db_password }}
-  when: database != "embedded"
+  when: database != "embedded" and database != "oracle"
 
 - name: Set the Ambari Server Java setup option
   ansible.builtin.set_fact:

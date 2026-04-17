@@ -59,8 +59,10 @@ java_home: '/usr/lib/jvm/java-17-openjdk'
 ###############################################
 # databases, users, and privileges must be pre-created by the customer before running this playbook
 
-database: 'mariadb'                                      # the database type in use: 'postgres', 'mysql' or 'mariadb'
+database: 'mariadb'                                      # the database type in use: 'postgres', 'mysql', 'mariadb', or 'oracle'
 jdbc_driver_path: '/usr/share/java/mysql-connector-java.jar'  # path to JDBC driver on Ambari server node (must already be present)
+                                                             # for oracle use: '/usr/share/java/ojdbc8.jar'
+                                                             # for postgres use: '/usr/share/java/postgresql-jdbc.jar'
 database_options:
   external_hostname: 'EXTERNAL-DB-HOSTNAME'              # hostname or IP of the external database server
   ambari_db_name: 'ambari'
@@ -78,6 +80,11 @@ database_options:
   rangerkms_db_name: 'rangerkms'
   rangerkms_db_username: 'rangerkms'
   rangerkms_db_password: "{{ vault_rangerkms_db_password }}"
+
+# Oracle 19c configuration (only used when database is 'oracle')
+oracle_sid: 'ACCELDATA'                                   # Oracle SID / service name (used in JDBC URLs and schema loading)
+oracle_home: '/opt/oracle/product/19c/dbhome_1'           # ORACLE_HOME path — only needed to locate sqlplus for loading Ambari DDL; unused when oracle_load_ambari_schema is false
+oracle_load_ambari_schema: true                            # set to false to skip Ambari DDL loading (also makes oracle_home and oracle_sid optional for schema loading)
 
 
 #####################################
@@ -150,6 +157,7 @@ base_log_dir: '/var/log'
 base_tmp_dir: '/tmp'
 postgres_port: 5432
 mysql_port: 3306
+oracle_port: 1521
 
 
 ##############################################
@@ -168,7 +176,7 @@ blueprint_name: '{{ cluster_name }}_blueprint'
 blueprint_file: 'blueprint_dynamic.j2'
 blueprint_dynamic:
   - host_group: "odp-master01"
-    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT', 'SQOOP', 'KAFKA_BROKER']
+    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT', 'SQOOP', 'KAFKA_CLIENT']
     services:
       - ZOOKEEPER_SERVER
       - NAMENODE
@@ -188,7 +196,7 @@ blueprint_dynamic:
       - RANGER_KMS_SERVER
 
   - host_group: "odp-master02"
-    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT', 'SQOOP', 'KAFKA_BROKER']
+    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT', 'SQOOP', 'KAFKA_CLIENT']
     services:
       - ZOOKEEPER_SERVER
       - NAMENODE
@@ -200,7 +208,7 @@ blueprint_dynamic:
       - HBASE_MASTER
 
   - host_group: "odp-master03"
-    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT', 'SQOOP', 'KAFKA_BROKER']
+    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT', 'SQOOP', 'KAFKA_CLIENT']
     services:
       - ZOOKEEPER_SERVER
       - JOURNALNODE
@@ -208,6 +216,7 @@ blueprint_dynamic:
       - NODEMANAGER
       - HBASE_REGIONSERVER
       - OOZIE_SERVER
+      - KAFKA_BROKER
 
 
 ############################

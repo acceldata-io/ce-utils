@@ -7,4 +7,4 @@
 ######################################################
 
 [odp-master01]
-master01 ansible_host=odp-setup-ansible.acceldata.io ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+master01 ansible_host=odp-ansible.acceldata.dev ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"

@@ -26,7 +26,11 @@
       "admin-properties" : {
         "DB_FLAVOR" : "{{ database|regex_replace('mariadb', 'mysql')|upper }}",
         "SQL_CONNECTOR_JAR" : "{{ jdbc_driver_path }}",
+        {% if database == "oracle" -%}
+        "db_host" : "{{ database_options.external_hostname|default(ansible_fqdn,true) }}:{{ oracle_port }}/{{ oracle_sid }}",
+        {% else -%}
         "db_host" : "{{ database_options.external_hostname|default(ansible_fqdn,true) }}",
+        {% endif -%}
         "db_name" : "{{ database_options.rangeradmin_db_name }}",
         "db_user" : "{{ database_options.rangeradmin_db_username }}",
         "db_password" : "{{ database_options.rangeradmin_db_password }}",
@@ -44,6 +48,10 @@
         {% if database == "postgres" -%}
         "ranger.jpa.jdbc.driver": "org.postgresql.Driver",
         "ranger.jpa.jdbc.url": "jdbc:postgresql://{{ database_options.external_hostname|default(ansible_fqdn,true) }}:{{ postgres_port }}/{{ database_options.rangeradmin_db_name }}",
+        {% endif -%}
+        {% if database == "oracle" -%}
+        "ranger.jpa.jdbc.driver": "oracle.jdbc.OracleDriver",
+        "ranger.jpa.jdbc.url": "jdbc:oracle:thin:@//{{ database_options.external_hostname|default(ansible_fqdn,true) }}:{{ oracle_port }}/{{ oracle_sid }}",
         {% endif -%}
         "ranger.audit.source.type" : "solr",
         "ranger.audit.solr.zookeepers" : "{% for zk in zookeeper_hosts %}{{ hostvars[zk]['ansible_fqdn'] }}:2181{% if not loop.last %},{% endif %}{% endfor %}/infra-solr"
@@ -247,7 +255,11 @@
         "DB_FLAVOR" : "{{ database|regex_replace('mariadb', 'mysql')|upper }}",
         "SQL_CONNECTOR_JAR" : "{{ jdbc_driver_path }}",
         "KMS_MASTER_KEY_PASSWD" : "{{ ranger_security_options.kms_master_key_password }}",
+        {% if database == "oracle" -%}
+        "db_host" : "{{ database_options.external_hostname|default(ansible_fqdn,true) }}:{{ oracle_port }}/{{ oracle_sid }}",
+        {% else -%}
         "db_host" : "{{ database_options.external_hostname|default(ansible_fqdn,true) }}",
+        {% endif -%}
         "db_name" : "{{ database_options.rangerkms_db_name }}",
         "db_user" : "{{ database_options.rangerkms_db_username }}",
         "db_password" : "{{ database_options.rangerkms_db_password }}"
@@ -262,6 +274,10 @@
         {% if database == "postgres" -%}
         "ranger.ks.jpa.jdbc.url": "jdbc:postgresql://{{ database_options.external_hostname|default(ansible_fqdn,true) }}:{{ postgres_port }}/{{ database_options.rangerkms_db_name }}",
         "ranger.ks.jpa.jdbc.driver": "org.postgresql.Driver"
+        {% endif -%}
+        {% if database == "oracle" -%}
+        "ranger.ks.jpa.jdbc.url": "jdbc:oracle:thin:@//{{ database_options.external_hostname|default(ansible_fqdn,true) }}:{{ oracle_port }}/{{ oracle_sid }}",
+        "ranger.ks.jpa.jdbc.driver": "oracle.jdbc.OracleDriver"
         {% endif -%}
       }
     },
@@ -420,6 +436,10 @@
         "javax.jdo.option.ConnectionDriverName": "org.postgresql.Driver",
         "javax.jdo.option.ConnectionURL": "jdbc:postgresql://{{ database_options.external_hostname|default(ansible_fqdn,true) }}:{{ postgres_port }}/{{ database_options.hive_db_name }}",
         {% endif -%}
+        {% if database == "oracle" -%}
+        "javax.jdo.option.ConnectionDriverName": "oracle.jdbc.driver.OracleDriver",
+        "javax.jdo.option.ConnectionURL": "jdbc:oracle:thin:@//{{ database_options.external_hostname|default(ansible_fqdn,true) }}:{{ oracle_port }}/{{ oracle_sid }}",
+        {% endif -%}
         "ambari.hive.db.schema.name": "{{ database_options.hive_db_name }}",
         "javax.jdo.option.ConnectionUserName": "{{ database_options.hive_db_username }}",
         "javax.jdo.option.ConnectionPassword": "{{ database_options.hive_db_password }}",
@@ -453,6 +473,10 @@
         "hive_database": "Existing PostgreSQL Database",
         "hive_database_type": "postgres",
         {% endif -%}
+        {% if database == "oracle" -%}
+        "hive_database": "Existing Oracle Database",
+        "hive_database_type": "oracle",
+        {% endif -%}
         "hive_database_name": "{{ database_options.hive_db_name }}",
         {% endif -%}
 {% if rangeradmin_hosts|length > 0 and ranger_options.enable_plugins|default(no) %}
@@ -480,6 +504,10 @@
         "oozie.service.JPAService.jdbc.driver": "org.postgresql.Driver",
         "oozie.service.JPAService.jdbc.url": "jdbc:postgresql://{{ database_options.external_hostname|default(ansible_fqdn,true) }}:{{ postgres_port }}/{{ database_options.oozie_db_name }}",
         {% endif -%}
+        {% if database == "oracle" -%}
+        "oozie.service.JPAService.jdbc.driver": "oracle.jdbc.driver.OracleDriver",
+        "oozie.service.JPAService.jdbc.url": "jdbc:oracle:thin:@//{{ database_options.external_hostname|default(ansible_fqdn,true) }}:{{ oracle_port }}/{{ oracle_sid }}",
+        {% endif -%}
         "oozie.db.schema.name": "{{ database_options.oozie_db_name }}",
         "oozie.service.JPAService.jdbc.username": "{{ database_options.oozie_db_username }}",
         "oozie.service.JPAService.jdbc.password": "{{ database_options.oozie_db_password }}",
@@ -496,8 +524,11 @@
         {% if database == "mysql" or database == "mariadb" -%}
         "oozie_database": "Existing MySQL / MariaDB Database",
         {% endif -%}
-         {% if database == "postgres" -%}
+        {% if database == "postgres" -%}
         "oozie_database": "Existing PostgreSQL Database",
+        {% endif -%}
+        {% if database == "oracle" -%}
+        "oozie_database": "Existing Oracle Database",
         {% endif -%}
         {% endif -%}
         "oozie_user" : "oozie",

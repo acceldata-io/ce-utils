@@ -264,17 +264,25 @@ odp_deployment_ansible/
   apply_blueprint.sh           # Phase 4: Blueprint deployment
   inventory/
     static                     # Default inventory (edit this)
+    static_1_node              # Reference: 1-node all-in-one
+    static_2_node              # Reference: 2-node cluster
+    static_3_node              # Reference: 3-node cluster
+    static_4_node              # Reference: 4-node cluster
+    static_6_node              # Reference: 6-node cluster
+    static_multi_node          # Reference: multi-node HA
   playbooks/
     install_cluster.yml        # Master playbook (all phases)
     prepare_nodes.yml          # Phase 1 playbook
     install_ambari.yml         # Phase 2 playbook
     configure_ambari.yml       # Phase 3 playbook
     apply_blueprint.yml        # Phase 4 playbook
+    check_dynamic_blueprint.yml # Blueprint validation utility
     set_variables.yml          # Shared: dynamic groups + helper vars
     group_vars/
       all                      # Cluster configuration (edit this)
       all_3_node               # Reference: 3-node non-HA layout
       all_3_node_ha            # Reference: 3-node HA layout
+      all_multi_node_ha        # Reference: multi-node HA layout
     roles/
       common/                  # OS prerequisites (Java, NTP, firewall)
       ambari_repo/             # YUM repository setup
@@ -312,6 +320,7 @@ These playbooks are designed for enterprise environments and follow security bes
 | **Fully Qualified Collection Names** | All modules use FQCN (e.g., `ansible.builtin.uri`, `community.postgresql.postgresql_db`) |
 | **Explicit file permissions** | `mode` set on all file, copy, and template tasks |
 | **No `ignore_errors`** | Proper `failed_when` conditions instead of blanket error suppression |
+| **TLS 1.2 enforcement** | Ambari agent connections enforce TLS 1.2 minimum protocol version |
 | **Minimal shell usage** | `ansible.builtin.command` or native modules preferred; `shell` only where required (e.g., sysfs writes) |
 | **Preflight validation** | Checks for placeholder values, JDBC driver existence, Python interpreter, blueprint consistency, and agent registration before proceeding |
 | **Idempotent execution** | Safe to re-run — tasks skip already-completed work without side effects |
@@ -325,7 +334,7 @@ These playbooks are designed for enterprise environments and follow security bes
 | **Ansible** | 2.16+ (`ansible` package recommended, or `ansible-core` + collections) |
 | **Collections** | `ansible.posix`, `community.general`, `community.postgresql`, `community.mysql` |
 | **Target OS** | RHEL 8 / RHEL 9 (or compatible: Rocky Linux, AlmaLinux) |
-| **Database** | External MariaDB, MySQL, or PostgreSQL — pre-created |
+| **Database** | External MariaDB, MySQL, PostgreSQL, or Oracle 19c — pre-created |
 | **Network** | SSH access from workstation to all cluster nodes |
 | **Java** | OpenJDK 17 (default) or OpenJDK 11 |
 
