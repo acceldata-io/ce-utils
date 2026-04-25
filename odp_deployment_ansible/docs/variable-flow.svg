@@ -52,27 +52,30 @@
   <rect x="176" y="186" width="110" height="32" rx="6" fill="#fff3e0" stroke="#ef6c00" stroke-width="1"/>
   <text x="231" y="206" text-anchor="middle" fill="#e65100" font-size="9" font-weight="600">default_password</text>
 
-  <line x1="286" y1="202" x2="306" y2="192" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
-  <line x1="286" y1="202" x2="306" y2="202" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
-  <line x1="286" y1="202" x2="306" y2="212" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="286" y1="202" x2="306" y2="189" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="286" y1="202" x2="306" y2="215" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="286" y1="202" x2="306" y2="241" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
 
   <rect x="310" y="180" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
   <text x="392" y="193" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">ranger_admin_password</text>
   <rect x="310" y="202" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
-  <text x="392" y="215" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">kms_master_key_password</text>
+  <text x="392" y="215" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">ranger_keyadmin_password</text>
   <rect x="310" y="224" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
-  <text x="392" y="237" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">knox master_secret</text>
+  <text x="392" y="237" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">kms_master_key_password</text>
 
-  <rect x="490" y="180" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
-  <text x="572" y="193" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">nifi encrypt_password</text>
-  <rect x="490" y="202" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
-  <text x="572" y="215" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">nifi sensitive_props_key</text>
-  <rect x="490" y="224" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
-  <text x="572" y="237" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">kerberos admin_password</text>
+  <rect x="490" y="170" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="572" y="183" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">knox master_secret</text>
+  <rect x="490" y="192" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="572" y="205" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">nifi encrypt_password</text>
+  <rect x="490" y="214" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="572" y="227" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">nifi sensitive_props_key</text>
+  <rect x="490" y="236" width="164" height="18" rx="9" fill="#fce4ec" stroke="#c62828" stroke-width="0.8"/>
+  <text x="572" y="249" text-anchor="middle" fill="#b71c1c" font-size="8" font-weight="600">kerberos admin_password</text>
 
-  <line x1="474" y1="192" x2="490" y2="192" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
-  <line x1="474" y1="212" x2="490" y2="212" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
-  <line x1="474" y1="234" x2="490" y2="234" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="474" y1="189" x2="490" y2="179" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="474" y1="215" x2="490" y2="201" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="474" y1="215" x2="490" y2="223" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="474" y1="241" x2="490" y2="245" stroke="#ef6c00" stroke-width="1" marker-end="url(#arr)"/>
 
   <!-- Footer note -->
   <rect x="20" y="264" width="640" height="40" rx="6" fill="#e8eaf6" stroke="#c5cae9" stroke-width="1"/>

@@ -1,4 +1,16 @@
 ---
+# =====================================================================
+# REFERENCE TEMPLATE — multi-node HA layout (3 masters + N workers).
+#
+# Usage:  cp playbooks/group_vars/all_multi_node_ha playbooks/group_vars/all
+#
+# This file is a self-contained copy (intentional — it is copied onto
+# `group_vars/all` which is the file Ansible actually loads). When you
+# change shared settings (JDK, repo URL, database, ambari_version, etc.)
+# remember they live in ALL of: all, all_3_node, all_3_node_ha,
+# all_multi_node_ha. Keep them consistent.
+# =====================================================================
+
 ###########################
 ## cluster configuration ##
 ###########################
@@ -41,16 +53,21 @@ timezone: UTC                                             # only used when set_t
 ## java configuration ##
 ########################
 
-java: 'openjdk'                                          # 'openjdk' (install via package manager), 'custom' (pre-installed JDK), or 'embedded' (Ambari managed)
+java: 'openjdk'                   # 'openjdk' , 'custom' (pre-installed JDK), or 'embedded'
 
-# JDK package to install when java is 'openjdk'
+# Ambari 3.x requires JDK 17 — this is installed on every node regardless of the ODP stack JDK.
+# Do not change unless Ambari certifies a different JDK in a future release.
+ambari_openjdk_package: 'java-17-openjdk-devel'
+ambari_java_home: '/usr/lib/jvm/java-17-openjdk'
+
+# ODP stack JDK — used by HDFS, YARN, Hive, Spark, etc. Can be JDK 11 or JDK 17.
+# When this differs from ambari_openjdk_package, both JDKs are installed on every node.
 # Common options:
 #   JDK 17: java-17-openjdk-devel   (JAVA_HOME: /usr/lib/jvm/java-17-openjdk)
 #   JDK 11: java-11-openjdk-devel   (JAVA_HOME: /usr/lib/jvm/java-11-openjdk)
 openjdk_package: 'java-17-openjdk-devel'
 
-# JAVA_HOME path — must match the installed JDK version
-# Update this if you change openjdk_package or use java: 'custom'
+# JAVA_HOME path for the ODP stack — must match openjdk_package (or the 'custom' pre-installed JDK)
 java_home: '/usr/lib/jvm/java-17-openjdk'
 
 
@@ -162,28 +179,31 @@ oracle_port: 1521
 
 #########################################################################
 ## blueprint configuration                                             ##
-## Multi-node HA setup (3 masters + N workers)                         ##
+## 6-node multi-node HA setup (3 masters + 3 compute workers)          ##
 ##                                                                     ##
-## odp-master01: Ambari + NameNode (active) + RM + Ranger + Knox       ##
-## odp-master02: NameNode (standby) + RM + Hive + HBase Master        ##
-## odp-master03: HBase Master + Oozie (dedicated master)               ##
-## odp-workers:  DataNode + NodeManager + RegionServer + clients       ##
+## odp-master01: Ambari + NameNode (active) + RM + Ranger +            ##
+##               Spark3 History Server                                 ##
+## odp-master02: NameNode (standby) + HiveServer2 (primary) +          ##
+##               Hive Metastore (primary) + Infra Solr                 ##
+## odp-master03: HiveServer2 (secondary) + Hive Metastore (standby) +  ##
+##               Zeppelin + Oozie                                      ##
+## odp-workers:  DataNode + NodeManager + clients                      ##
 ##                                                                     ##
-## HA: NameNode, ResourceManager, HBase Master                         ##
+## HA: NameNode (M1 active / M2 standby); Hive active/standby (M2/M3)  ##
 ## ZooKeeper on all 3 master nodes (quorum of 3)                       ##
 ## JournalNode on all 3 master nodes                                   ##
 ##                                                                     ##
 ## SCALING: Add as many hosts as needed to the [odp-workers] inventory ##
 ## group — all workers receive the same services automatically.        ##
-## Works with 1 worker or 500+ workers; no blueprint changes needed.   ##
 #########################################################################
 
 blueprint_name: '{{ cluster_name }}_blueprint'
 blueprint_file: 'blueprint_dynamic.j2'
 blueprint_dynamic:
   - host_group: "odp-master01"
-    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT', 'SQOOP', 'KAFKA_CLIENT']
+    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'OOZIE_CLIENT', 'SPARK3_CLIENT', 'SQOOP']
     services:
+      - AMBARI_SERVER
       - ZOOKEEPER_SERVER
       - NAMENODE
       - ZKFC
@@ -193,40 +213,38 @@ blueprint_dynamic:
       - YARN_REGISTRY_DNS
       - TIMELINE_READER
       - HISTORYSERVER
-      - AMBARI_SERVER
-      - INFRA_SOLR
-      - KNOX_GATEWAY
-      - RANGER_ADMIN
-      - RANGER_USERSYNC
-      - RANGER_KMS_SERVER
+
 
   - host_group: "odp-master02"
-    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT', 'SQOOP', 'KAFKA_CLIENT']
+    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'OOZIE_CLIENT', 'SPARK3_CLIENT', 'SQOOP']
     services:
       - ZOOKEEPER_SERVER
       - NAMENODE
       - ZKFC
       - JOURNALNODE
-      - RESOURCEMANAGER
       - HIVE_SERVER
       - HIVE_METASTORE
-      - HBASE_MASTER
+      - INFRA_SOLR
+      - SPARK3_JOBHISTORYSERVER
 
   - host_group: "odp-master03"
-    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT', 'SQOOP', 'KAFKA_CLIENT']
+    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'OOZIE_CLIENT', 'SPARK3_CLIENT', 'SQOOP']
     services:
       - ZOOKEEPER_SERVER
       - JOURNALNODE
-      - HBASE_MASTER
+      - HIVE_SERVER
+      - HIVE_METASTORE
+      - ZEPPELIN_MASTER
       - OOZIE_SERVER
+      - RANGER_ADMIN
+      - RANGER_USERSYNC
+      - RANGER_KMS_SERVER
 
   - host_group: "odp-workers"
-    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT', 'SQOOP', 'KAFKA_CLIENT']
+    clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'OOZIE_CLIENT', 'SPARK3_CLIENT', 'SQOOP']
     services:
       - DATANODE
       - NODEMANAGER
-      - HBASE_REGIONSERVER
-      - KAFKA_BROKER
 
 
 ############################
@@ -235,5 +253,5 @@ blueprint_dynamic:
 
 odp_minor_version: "{{ odp_version | regex_replace('.[0-9]+.[0-9]+[0-9_-]*$', '') }}"
 odp_major_version: "{{ odp_minor_version.split('.').0 }}"
-utils_version: "{{ '1.1.0.20' if odp_minor_version is version('2.5', '<') else ('1.1.0.21' if odp_version is version('2.6.4', '<') else '1.1.0.22') }}"  # noqa: yaml[line-length]
+utils_version: '1.1.0.22'   # ODP-UTILS repo id label registered in Ambari (must match the id in the repo_version template / VDF)
 hdfs_ha_name: "{{ cluster_name | regex_replace('_', '-') }}"

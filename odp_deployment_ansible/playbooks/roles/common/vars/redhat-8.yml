@@ -10,6 +10,9 @@ common_packages:
   - libtirpc-devel
   - python3.11
   - python3.11-pip
+  - jq                      # used by ODP diagnostic / support scripts
+  - krb5-workstation        # kinit / klist on every node (needed when Kerberos is enabled via Ambari)
+  - tzdata                  # timezone database, required by community.general.timezone
 
 # Python DB libraries for Ansible modules (community.mysql / community.postgresql)
 common_pip_packages:

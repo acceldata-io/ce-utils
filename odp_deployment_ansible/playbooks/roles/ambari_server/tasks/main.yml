@@ -47,9 +47,21 @@
         state: import
         target: /var/lib/ambari-server/resources/Ambari-DDL-MySQL-CREATE.sql
       register: ambari_server_import_results
+      # Re-runs are safe: MySQL/MariaDB raises "Table '…' already exists" when the schema is
+      # already present. Any other failure (connection, auth, syntax, constraint) must surface.
       failed_when: >-
         ambari_server_import_results is failed and
-        ambari_server_import_results.msg is not search("Table .* already exists")
+        'already exists' not in (ambari_server_import_results.msg | default('') | lower)
+  rescue:
+    # Surface a redacted error message so operators can see WHAT failed without
+    # exposing the password. community.mysql.mysql_db's .msg never contains the
+    # password (only host/user/db name and the server-returned error text).
+    - name: Show redacted MySQL/MariaDB schema-load failure
+      ansible.builtin.fail:
+        msg: >-
+          Ambari schema load against {{ database_options.external_hostname }}
+          (db={{ database_options.ambari_db_name }}, user={{ database_options.ambari_db_username }}) failed:
+          {{ ambari_server_import_results.msg | default('no message returned — check the mysql/mariadb server log') }}
 
 - name: Load Ambari schema into Oracle
   when: database == "oracle" and oracle_load_ambari_schema | default(true) | bool
@@ -66,10 +78,18 @@
           CONN_STR="{{ database_options.ambari_db_username }}/{{ database_options.ambari_db_password }}"
           CONN_STR="${CONN_STR}@//{{ database_options.external_hostname | default(ansible_fqdn, true) }}"
           CONN_STR="${CONN_STR}:{{ oracle_port }}/{{ oracle_sid }}"
-          echo "@/var/lib/ambari-server/resources/Ambari-DDL-Oracle-CREATE.sql
-          EXIT" | sqlplus "${CONN_STR}"
+          echo "WHENEVER SQLERROR EXIT SQL.SQLCODE
+          @/var/lib/ambari-server/resources/Ambari-DDL-Oracle-CREATE.sql
+          EXIT" | sqlplus -S "${CONN_STR}"
         executable: /bin/bash
-      changed_when: false
+      register: ambari_server_oracle_ddl
+      # sqlplus exits with the SQLCODE when WHENEVER SQLERROR is set. ORA-00955 (rc 955) means
+      # a schema object already exists — that's the idempotent re-run case, not a failure.
+      # Any other non-zero rc indicates a real SQL error and must fail the task.
+      failed_when: >-
+        ambari_server_oracle_ddl.rc != 0 and
+        ambari_server_oracle_ddl.rc != 955
+      changed_when: ambari_server_oracle_ddl.rc == 0
       environment:
         ORACLE_SID: "{{ oracle_sid }}"
         ORACLE_HOME: "{{ oracle_home }}"
@@ -79,7 +99,12 @@
     /usr/sbin/ambari-server setup
     --jdbc-db={{ database | regex_replace('mariadb', 'mysql') }}
     --jdbc-driver={{ jdbc_driver_path }}
-  changed_when: false
+  register: ambari_server_jdbc_setup
+  # Ambari prints "Copying" on first install and "Updating" when the driver is refreshed;
+  # on a no-op re-run the output only reports "already exists", so we report unchanged.
+  changed_when: >-
+    'Copying' in ambari_server_jdbc_setup.stdout or
+    'Updating' in ambari_server_jdbc_setup.stdout
   notify: Restart ambari-server
 
 - name: Set the Ambari Server database setup options (oracle)
@@ -109,9 +134,9 @@
 - name: Set the Ambari Server Java setup option
   ansible.builtin.set_fact:
     ambari_server_java_options: >-
-      -j {{ java_home }}
-      {% if 'java-17' in java_home %}
-      --ambari-java-home {{ java_home }}
+      -j {{ ambari_java_home }}
+      {% if 'java-17' in ambari_java_home %}
+      --ambari-java-home {{ ambari_java_home }}
       --stack-java-home {{ java_home }}
       {% endif %}
   when: java == "openjdk" or java == "custom"

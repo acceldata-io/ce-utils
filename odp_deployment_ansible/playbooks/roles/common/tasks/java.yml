@@ -1,17 +1,38 @@
 ---
-- name: Install OpenJDK package
+# Ambari 3.x requires JDK 17 on every node — install it regardless of the ODP stack JDK choice.
+- name: Install Ambari OpenJDK package (required on all nodes)
   ansible.builtin.package:
-    name: "{{ openjdk_package }}"
+    name: "{{ ambari_openjdk_package }}"
     state: present
   when: java == "openjdk"
 
-- name: Validate JAVA_HOME path exists on all nodes
+# Install the ODP stack JDK (may be JDK 11 or JDK 17). Skipped when it's the same package as Ambari's.
+- name: Install ODP stack OpenJDK package
+  ansible.builtin.package:
+    name: "{{ openjdk_package }}"
+    state: present
+  when: java == "openjdk" and openjdk_package != ambari_openjdk_package
+
+- name: Validate Ambari JAVA_HOME path exists on all nodes
+  ansible.builtin.stat:
+    path: "{{ ambari_java_home }}"
+  register: common_ambari_java_home_check
+  when: java == "custom" or java == "openjdk"
+
+- name: Fail if Ambari JAVA_HOME path does not exist
+  ansible.builtin.fail:
+    msg: >-
+      Ambari JAVA_HOME path '{{ ambari_java_home }}' does not exist on {{ inventory_hostname }}.
+      Ensure JDK 17 is installed or update ambari_java_home variable.
+  when: (java == "custom" or java == "openjdk") and not common_ambari_java_home_check.stat.exists
+
+- name: Validate ODP stack JAVA_HOME path exists on all nodes
   ansible.builtin.stat:
     path: "{{ java_home }}"
   register: common_java_home_check
   when: java == "custom" or java == "openjdk"
 
-- name: Fail if JAVA_HOME path does not exist
+- name: Fail if ODP stack JAVA_HOME path does not exist
   ansible.builtin.fail:
     msg: "JAVA_HOME path '{{ java_home }}' does not exist on {{ inventory_hostname }}. Ensure JDK is installed or update java_home variable."
   when: (java == "custom" or java == "openjdk") and not common_java_home_check.stat.exists

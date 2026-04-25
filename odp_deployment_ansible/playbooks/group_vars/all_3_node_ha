@@ -1,4 +1,16 @@
 ---
+# =====================================================================
+# REFERENCE TEMPLATE — 3-node HA layout (NameNode/RM/HBase HA).
+#
+# Usage:  cp playbooks/group_vars/all_3_node_ha playbooks/group_vars/all
+#
+# This file is a self-contained copy (intentional — it is copied onto
+# `group_vars/all` which is the file Ansible actually loads). When you
+# change shared settings (JDK, repo URL, database, ambari_version, etc.)
+# remember they live in ALL of: all, all_3_node, all_3_node_ha,
+# all_multi_node_ha. Keep them consistent.
+# =====================================================================
+
 ###########################
 ## cluster configuration ##
 ###########################
@@ -43,14 +55,19 @@ timezone: UTC                                             # only used when set_t
 
 java: 'openjdk'                                          # 'openjdk' (install via package manager), 'custom' (pre-installed JDK), or 'embedded' (Ambari managed)
 
-# JDK package to install when java is 'openjdk'
+# Ambari 3.x requires JDK 17 — this is installed on every node regardless of the ODP stack JDK.
+# Do not change unless Ambari certifies a different JDK in a future release.
+ambari_openjdk_package: 'java-17-openjdk-devel'
+ambari_java_home: '/usr/lib/jvm/java-17-openjdk'
+
+# ODP stack JDK — used by HDFS, YARN, Hive, Spark, etc. Can be JDK 11 or JDK 17.
+# When this differs from ambari_openjdk_package, both JDKs are installed on every node.
 # Common options:
 #   JDK 17: java-17-openjdk-devel   (JAVA_HOME: /usr/lib/jvm/java-17-openjdk)
 #   JDK 11: java-11-openjdk-devel   (JAVA_HOME: /usr/lib/jvm/java-11-openjdk)
 openjdk_package: 'java-17-openjdk-devel'
 
-# JAVA_HOME path — must match the installed JDK version
-# Update this if you change openjdk_package or use java: 'custom'
+# JAVA_HOME path for the ODP stack — must match openjdk_package (or the 'custom' pre-installed JDK)
 java_home: '/usr/lib/jvm/java-17-openjdk'
 
 
@@ -194,6 +211,7 @@ blueprint_dynamic:
       - RANGER_ADMIN
       - RANGER_USERSYNC
       - RANGER_KMS_SERVER
+      - ZEPPELIN_MASTER
 
   - host_group: "odp-master02"
     clients: ['ZOOKEEPER_CLIENT', 'HDFS_CLIENT', 'YARN_CLIENT', 'MAPREDUCE2_CLIENT', 'INFRA_SOLR_CLIENT', 'HIVE_CLIENT', 'TEZ_CLIENT', 'HBASE_CLIENT', 'OOZIE_CLIENT', 'SQOOP', 'KAFKA_CLIENT']
@@ -225,5 +243,5 @@ blueprint_dynamic:
 
 odp_minor_version: "{{ odp_version | regex_replace('.[0-9]+.[0-9]+[0-9_-]*$', '') }}"
 odp_major_version: "{{ odp_minor_version.split('.').0 }}"
-utils_version: "{{ '1.1.0.20' if odp_minor_version is version('2.5', '<') else ('1.1.0.21' if odp_version is version('2.6.4', '<') else '1.1.0.22') }}"  # noqa: yaml[line-length]
+utils_version: '1.1.0.22'   # ODP-UTILS repo id label registered in Ambari (must match the id in the repo_version template / VDF)
 hdfs_ha_name: "{{ cluster_name | regex_replace('_', '-') }}"

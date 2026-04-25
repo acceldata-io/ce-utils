@@ -93,6 +93,6 @@
   <text x="610" y="242" text-anchor="middle" fill="#bdbdbd" font-size="7">Hive, Tez, HBase, Oozie, Sqoop, Kafka</text>
 
   <!-- NameNode HA connector (through gap between nodes) -->
-  <line x1="234" y1="145" x2="270" y2="145" stroke="#c62828" stroke-width="1.5" stroke-dasharray="4,3"/>
-  <text x="252" y="140" text-anchor="middle" fill="#c62828" font-size="7" font-weight="700">HA</text>
+  <line x1="244" y1="145" x2="256" y2="145" stroke="#c62828" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="250" y="140" text-anchor="middle" fill="#c62828" font-size="7" font-weight="700">HA</text>
 </svg>

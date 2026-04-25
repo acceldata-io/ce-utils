@@ -1,8 +1,16 @@
 # Oracle 19c Prerequisites
 
-This document covers the Oracle-specific prerequisites for deploying ODP with an external Oracle 19c database.
+This document covers the Oracle-specific prerequisites for deploying ODP with an external Oracle 19c database. For the full install flow, return to [INSTALL_static.md → External database](../INSTALL_static.md#external-database).
 
-There are two approaches for loading the Ambari schema:
+## Version compatibility
+
+| Oracle version | Status | JDBC driver | Instant Client |
+| -------------- | ------ | ----------- | -------------- |
+| Oracle 19c | Tested — default target for this playbook | `ojdbc8.jar` | 19.x (instructions below) |
+| Oracle 21c | Community-supported — not validated by this playbook | `ojdbc11.jar` may be required | 21.x |
+| Oracle 12c and earlier | Not supported | — | — |
+
+## Ambari schema loading options
 
 - **Automated**: Set `oracle_load_ambari_schema: true` (default) in `group_vars/all`. The playbook loads the DDL via `sqlplus` using the `oracle_home` path.
 - **Manual**: Set `oracle_load_ambari_schema: false` and follow the steps below to install `sqlplus` (via Instant Client) and load the DDL yourself.
@@ -129,3 +137,20 @@ database_options:
 oracle_sid: 'ACCELDATA'
 oracle_load_ambari_schema: false             # loading manually using the steps above
 ```
+
+## 7. Troubleshooting
+
+Common Oracle integration failures and their resolutions.
+
+| Symptom | Cause | Fix |
+| ------- | ----- | --- |
+| `sqlplus: error while loading shared libraries: libocci_gcc53.so: cannot open shared object file` | Instant Client ships `libocci_gcc53.so.19.1` but no `libocci_gcc53.so` symlink | Create the symlink (step 1 of this document): `cd $ORACLE_HOME/instantclient/instantclient && ln -sf libocci_gcc53.so.19.1 libocci_gcc53.so` |
+| `sqlplus: error while loading shared libraries: libnsl.so.1: cannot open shared object file` | `libnsl` not installed by default on RHEL 8 / 9 | `sudo dnf install -y libnsl` (or `yum install -y libnsl` on RHEL 7) |
+| `ORA-12541: TNS:no listener` | Oracle listener not running, wrong host, or firewall blocking port 1521 | On the DB host: `lsnrctl status`. Verify `database_options.external_hostname` and confirm TCP 1521 is open from the Ambari server |
+| `ORA-12514: TNS:listener does not currently know of service requested in connect descriptor` | `oracle_sid` does not match the actual Oracle instance/service name | On the DB host: `sqlplus / as sysdba` then `SELECT instance_name FROM v$instance;` — update `oracle_sid` in `group_vars/all` to match |
+| `ORA-01017: invalid username/password; logon denied` | Vault password drift from the actual Oracle user password | Re-run the Oracle `CREATE USER ... IDENTIFIED BY <password>` with the value from `ansible-vault view vault.yml`, or rekey the Oracle user |
+| `ORA-01950: no privileges on tablespace 'USERS'` | Oracle user lacks `UNLIMITED TABLESPACE` or a per-tablespace quota | Run `GRANT UNLIMITED TABLESPACE TO <user>;` — see the SQL in [INSTALL_static.md → External database](../INSTALL_static.md#external-database) |
+| Phase 2 fails: `JDBC driver not found` | `ojdbc8.jar` missing on the Ambari server node | Copy the JDBC driver to `/usr/share/java/ojdbc8.jar` on the Ambari server before Phase 2 (see section 4 above) |
+| Phase 2 fails loading Ambari DDL via sqlplus | `oracle_load_ambari_schema: true` but `oracle_home` does not contain a working `sqlplus` | Either install Instant Client into `$ORACLE_HOME/instantclient` (steps 1–2) or set `oracle_load_ambari_schema: false` and load the DDL manually |
+
+For general deployment troubleshooting, see [INSTALL_static.md → Troubleshooting](../INSTALL_static.md#troubleshooting).

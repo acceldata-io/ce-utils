@@ -30,6 +30,7 @@ artifacts/
 *.vault
 vault_pass.txt
 .vault_password
+inventory/static
 
 # Logs
 *.log

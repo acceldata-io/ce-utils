@@ -1,20 +1,48 @@
 ######################################################
 ##
-## The static inventory puts the hosts in different groups as described here: https://docs.ansible.com/ansible/latest/user_guide/intro_inventory.html#hosts-and-groups
-## Variables would be defined directly for each host, including the ansible_user, the login user with sudoers permissions.
-## Passwordless SSH is used for authentication.
+## 6-node inventory — 3 master nodes + 3 compute (worker) nodes
+## Use with: playbooks/group_vars/all_multi_node_ha
+##
+## Connection credentials (ansible_user, ssh key) are set once in
+## [all:vars] below — no need to repeat them on every host line.
+## Override per-host if a specific node needs different credentials.
+##
+## The compute hosts are also grouped under [odp-workers]
+## (via odp-workers:children) so the blueprint's "odp-workers"
+## host_group resolves correctly.
 ##
 ######################################################
 
+# --- Shared connection settings for every host in this inventory ---
+
+[all:vars]
+ansible_user=deployer
+ansible_ssh_private_key_file=/home/deployer/.ssh/deployer_id_rsa
+
+# --- Master nodes ---
+
 [odp-master01]
-master01 ansible_host=HOSTNAME1 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+master01 ansible_host=cisco-node1.adsre.com
+
 [odp-master02]
-master02 ansible_host=HOSTNAME2 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+master02 ansible_host=cisco-node2.adsre.com
+
 [odp-master03]
-master03 ansible_host=HOSTNAME3 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+master03 ansible_host=cisco-node3.adsre.com
+
+# --- Compute / Worker nodes ---
+
 [odp-compute04]
-compute04 ansible_host=HOSTNAME4 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+compute04 ansible_host=cisco-node4.adsre.com
+
 [odp-compute05]
-compute05 ansible_host=HOSTNAME5 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+compute05 ansible_host=cisco-node5.adsre.com
+
 [odp-compute06]
-compute06 ansible_host=HOSTNAME6 ansible_user=root ansible_ssh_private_key_file="~/.ssh/id_rsa"
+compute06 ansible_host=cisco-node6.adsre.com
+
+# Aggregate all compute nodes into the odp-workers group used by the blueprint
+[odp-workers:children]
+odp-compute04
+odp-compute05
+odp-compute06

@@ -11,7 +11,7 @@
         - "{{ ansible_os_family | lower }}.yml"
         - defaults.yml
       paths:
-        - ../common/vars
+        - "{{ role_path }}/vars"
 
 - name: Install required packages (only if missing)
   ansible.builtin.package:
@@ -44,15 +44,20 @@
     'Could not find' not in (common_chronyd_result.msg | default(''))
 
 - name: Add mappings to /etc/hosts
+  vars:
+    # Prefer the host's default-route IPv4; fall back to the inventory ansible_host value
+    # when the target has multiple NICs / no default route (ansible_default_ipv4 undefined).
+    common_hosts_ip: "{{ hostvars[item].ansible_default_ipv4.address | default(hostvars[item].ansible_host | default('')) }}"
+    common_hosts_name: "{{ hostvars[item].ansible_fqdn | default(hostvars[item].ansible_nodename) }}"
   ansible.builtin.lineinfile:
     path: /etc/hosts
-    regexp: "^{{ hostvars[item]['ansible_default_ipv4']['address'] }}.*"  # noqa: yaml[line-length]
-    line: "{{ hostvars[item]['ansible_default_ipv4']['address'] }} {{ hostvars[item]['ansible_fqdn'] | default(hostvars[item]['ansible_nodename']) }}"  # noqa: yaml[line-length]
+    regexp: "^{{ common_hosts_ip }}.*"
+    line: "{{ common_hosts_ip }} {{ common_hosts_name }}"
     insertafter: "^127..*$"
     state: present
     mode: '0644'
   loop: "{{ groups['hadoop-cluster'] | sort(reverse=True) }}"
-  when: not external_dns
+  when: not external_dns and common_hosts_ip | length > 0
 
 - name: Disable firewall service
   when: disable_firewall and common_firewall_service_name is defined
@@ -75,10 +80,28 @@
         common_firewall_disable_result is failed and
         'Could not find' not in (common_firewall_disable_result.msg | default(''))
 
-- name: Disable selinux
-  ansible.posix.selinux:
-    state: disabled
+- name: Disable SELinux
+  # Intentionally avoid ansible.posix.selinux: that module requires the libselinux
+  # Python bindings, and on RHEL/Rocky 9 those only ship for the system python3,
+  # not for /usr/bin/python3.11 (which this playbook uses). Using plain command +
+  # lineinfile here is binding-free and reboot-equivalent.
   when: disable_selinux | default(false) | bool
+  block:
+    - name: Set SELinux to permissive at runtime (no reboot needed)
+      ansible.builtin.command: setenforce 0
+      register: common_selinux_setenforce
+      changed_when: common_selinux_setenforce.rc == 0
+      failed_when:
+        - common_selinux_setenforce.rc != 0
+        - "'SELinux is disabled' not in (common_selinux_setenforce.stderr | default(''))"
+
+    - name: Persist SELinux=disabled in /etc/selinux/config (takes effect on next reboot)
+      ansible.builtin.lineinfile:
+        path: /etc/selinux/config
+        regexp: '^SELINUX='
+        line: 'SELINUX=disabled'
+        state: present
+        mode: '0644'
 
 - name: Read current THP enabled state
   ansible.builtin.slurp:

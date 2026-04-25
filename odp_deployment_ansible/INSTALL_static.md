@@ -21,6 +21,8 @@ Deploy an Acceldata ODP cluster on pre-built infrastructure using a static Ansib
 ---
 
 > **Prerequisites:** All cluster nodes must be reachable via SSH and have RHEL 8 or RHEL 9 (or compatible) installed.
+>
+> **Air-gapped installs:** three artifacts must be staged before running the playbooks — Ansible collections, the Ambari/ODP RPM mirror, and JDBC drivers. See [collections tarballs](#install-collections-only-if-using-ansible-core), [`repo_base_url` → local mirror](#4-configure-cluster-variables), and [JDBC driver download](#4-configure-cluster-variables) respectively. For Oracle, also see [Oracle Instant Client](docs/ORACLE_PREREQ.md#1-install-oracle-instant-client-sqlplus).
 
 ## 1. Workstation Setup
 
@@ -261,6 +263,8 @@ jdbc_driver_path: '/usr/share/java/postgresql-jdbc.jar'
 
 **Oracle 19c**:
 
+> **Security warning:** the SQL blocks below are illustrative templates. Replace every `<password>` placeholder with a strong, unique password and store it in `vault.yml` — never commit real credentials to Git or use the example literals in production.
+
 ```bash
 # Copy the Oracle JDBC driver to the Ambari server node
 # The ojdbc8.jar is typically found in $ORACLE_HOME/jdbc/lib/ on the Oracle DB server
@@ -332,17 +336,31 @@ GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE, CREATE VIEW TO rangerkms;
 
 > Replace `<SID>` with your Oracle instance name and `<password>` with secure passwords matching `vault.yml`. Ensure `database_options` usernames in `group_vars/all` match the Oracle users created above (e.g. `rangeradmin_db_username: 'rangerdba'`).
 
-The following databases must be pre-created with corresponding users and privileges:
+The following databases must be pre-created with corresponding users and privileges. Non-secret identifiers live in `group_vars/all` under `database_options`; all passwords live in `vault.yml`.
 
-| Service | DB name variable | Username variable | Password (in vault) |
-| --------- | ----------------- | ------------------- | --------------------- |
-| Ambari | `ambari_db_name` | `ambari_db_username` | `vault_ambari_db_password` |
-| Hive | `hive_db_name` | `hive_db_username` | `vault_hive_db_password` |
-| Oozie | `oozie_db_name` | `oozie_db_username` | `vault_oozie_db_password` |
-| Ranger Admin | `rangeradmin_db_name` | `rangeradmin_db_username` | `vault_rangeradmin_db_password` |
-| Ranger KMS | `rangerkms_db_name` | `rangerkms_db_username` | `vault_rangerkms_db_password` |
+**`group_vars/all` → `database_options` (non-secret):**
 
-> Database passwords are stored in `vault.yml`, not in `group_vars`.
+| Service | DB name key | Username key |
+| ------- | ----------- | ------------ |
+| Ambari | `ambari_db_name` | `ambari_db_username` |
+| Hive | `hive_db_name` | `hive_db_username` |
+| Oozie | `oozie_db_name` | `oozie_db_username` |
+| Ranger Admin | `rangeradmin_db_name` | `rangeradmin_db_username` |
+| Ranger KMS | `rangerkms_db_name` | `rangerkms_db_username` |
+
+**`vault.yml` (secrets):**
+
+| Service | Vault variable |
+| ------- | -------------- |
+| Ambari | `vault_ambari_db_password` |
+| Hive | `vault_hive_db_password` |
+| Oozie | `vault_oozie_db_password` |
+| Ranger Admin | `vault_rangeradmin_db_password` |
+| Ranger KMS | `vault_rangerkms_db_password` |
+
+> Database passwords are never stored in `group_vars` — only in `vault.yml`.
+>
+> **Back up the database before first run.** Phase 2 loads the Ambari DDL (and optionally the Oracle Ambari DDL when `oracle_load_ambari_schema: true`). If the target database contains any prior state, take a snapshot or export first — the DDL load is not reversible.
 
 ### Kerberos (optional)
 
@@ -561,6 +579,7 @@ Verify all items before running `install_cluster.sh`:
 - [ ] SSH access from workstation to all nodes (key-based or password)
 - [ ] Sufficient disk, memory, and CPU on all nodes for the planned services
 - [ ] Network connectivity between all cluster nodes (no firewall blocking inter-node traffic)
+- [ ] Corporate / network firewall permits the Ambari and ODP service ports listed in [README.md → Network & Ports](README.md#network--ports)
 
 ### Workstation
 
@@ -582,6 +601,7 @@ Verify all items before running `install_cluster.sh`:
 - [ ] Database users created with appropriate privileges (for Oracle, see [docs/ORACLE_PREREQ.md](docs/ORACLE_PREREQ.md))
 - [ ] JDBC driver JAR present on the Ambari server node (e.g., `mysql-connector-java.jar`, `postgresql-jdbc.jar`, or `ojdbc8.jar` in `/usr/share/java/`)
 - [ ] `database_options.external_hostname` set to actual hostname (not the placeholder `EXTERNAL-DB-HOSTNAME`)
+- [ ] External database snapshot / export taken — the first playbook run loads DDL and is not reversible
 
 ### Java Runtime
 

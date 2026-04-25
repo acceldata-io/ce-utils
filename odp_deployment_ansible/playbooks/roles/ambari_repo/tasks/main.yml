@@ -10,7 +10,7 @@
         - "{{ ansible_os_family | lower }}.yml"
         - defaults.yml
       paths:
-        - ../ambari_repo/vars
+        - "{{ role_path }}/vars"
 
 - name: Add the Ambari repository (yum)
   ansible.builtin.yum_repository:

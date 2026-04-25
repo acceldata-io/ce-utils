@@ -17,8 +17,11 @@ Ansible playbooks for deploying **Acceldata ODP** (Open Data Platform) clusters 
 - [Project Structure](#project-structure)
 - [Roles](#roles)
 - [Security & Compliance](#security--compliance)
+- [Network & Ports](#network--ports)
 - [Requirements](#requirements)
+- [Performance Tuning](#performance-tuning)
 - [Troubleshooting](#troubleshooting)
+- [Glossary](#glossary)
 - [License](#license)
 
 ---
@@ -80,6 +83,14 @@ bash configure_ambari.sh
 bash apply_blueprint.sh
 ```
 
+**Validate before deploying.** Dry-run the blueprint without creating a cluster:
+
+```bash
+ansible-playbook playbooks/check_dynamic_blueprint.yml
+```
+
+This verifies that inventory group names match `blueprint_dynamic`, component placement is valid, and the blueprint JSON renders — catching misconfiguration before a long Phase 4 run.
+
 ## Blueprint Topologies
 
 Three reference topologies are included. Copy the desired layout to `group_vars/all`:
@@ -87,6 +98,19 @@ Three reference topologies are included. Copy the desired layout to `group_vars/
 ```bash
 cp playbooks/group_vars/all_3_node_ha playbooks/group_vars/all
 ```
+
+### Inventory ↔ group_vars mapping
+
+Pick the inventory file that matches your hardware, then copy the matching reference
+template to `group_vars/all` (the file Ansible actually loads).
+
+| Inventory file | Reference group_vars to copy | Topology |
+| -------------- | ---------------------------- | -------- |
+| [inventory/static_1_node](inventory/static_1_node) | `group_vars/all` (default) | 1-node PoC |
+| [inventory/static_3_node](inventory/static_3_node) | `group_vars/all_3_node` | 3 nodes, no HA |
+| [inventory/static_4_node](inventory/static_4_node) | `group_vars/all_3_node_ha` | 3-node HA + 1 worker |
+| [inventory/static_6_node](inventory/static_6_node) | `group_vars/all_multi_node_ha` | 3 masters + 3 workers |
+| [inventory/static_multi_node](inventory/static_multi_node) | `group_vars/all_multi_node_ha` | 3 masters + N workers |
 
 ### 1-Node All-in-One
 
@@ -127,7 +151,9 @@ ansible-vault edit vault.yml
 ansible-vault encrypt vault.yml
 ```
 
-**Tower/AWX users:** add a Vault Credential to the Job Template — no `.vault_password` file needed.
+### Ansible Tower / AWX
+
+In Tower or AWX, add this repository as a Project and attach a **Vault Credential** to the Job Template — Tower reads the vault password from the credential, so no `.vault_password` file is required on disk. `requirements.yml` is resolved automatically at project sync.
 
 ## Dynamic Blueprint Services
 
@@ -158,9 +184,11 @@ See the [MPacks repository listing](https://docs.acceldata.io/odp/documentation/
 | **Workflow** | `AIRFLOW_SCHEDULER`, `AIRFLOW_WEBSERVER`, `AIRFLOW_WORKER` | — |
 | **UI** | `HUE_SERVER` | — |
 
-#### Adding an MPack Service
+#### MPack Extension Pattern
 
-After installing the management pack on the Ambari server, three files need changes:
+MPack services in the table above are recognized in `blueprint_dynamic` (host placement) but do not ship with generated `configurations` blocks — you provide those when you integrate an MPack. The pattern below is what to apply for each new MPack service; it mirrors how core services are wired in this project.
+
+Three files are touched:
 
 **1. `playbooks/group_vars/all`** — add component names to `blueprint_dynamic`:
 
@@ -173,9 +201,9 @@ blueprint_dynamic:
       - SPARK3_JOBHISTORYSERVER                     # add server component
 ```
 
-**2. `playbooks/set_variables.yml`** — add helper variable tracking for the new service.
+**2. `playbooks/set_variables.yml`** — register a host-list helper variable if the new service needs HA wiring, Ranger audit targeting, or cross-service references.
 
-`set_variables.yml` builds host lists that `blueprint_dynamic.j2` uses for HA wiring, Ranger audit targets, and cross-service references. Currently tracked:
+`set_variables.yml` computes these helpers from the combined `blueprint_dynamic`:
 
 | Helper Variable | Populated When Service Present |
 | --------------- | ------------------------------ |
@@ -190,27 +218,16 @@ blueprint_dynamic:
 | `journalnode_groups` | `JOURNALNODE` |
 | `zkfc_groups` | `ZKFC` |
 
-MPack services that need new helper variables (follow the same pattern):
+Add entries using the same `set_fact` pattern. A new MPack service typically needs one helper per service that participates in HA, service discovery, or cross-component URLs (for example `SPARK3_JOBHISTORYSERVER` → `spark3_hosts`, `NIFI_MASTER` → `nifi_hosts`, `OZONE_MANAGER` → `ozone_hosts`).
 
-| New Helper Variable | Service | Why Needed |
-| ------------------- | ------- | ---------- |
-| `spark3_hosts` | `SPARK3_JOBHISTORYSERVER` | Spark3 log dir, Livy3 config |
-| `nifi_hosts` | `NIFI_MASTER` | NiFi security config, registry URL |
-| `impala_hosts` | `IMPALA_STATE_STORE` | Statestore / catalog cross-refs |
-| `ozone_hosts` | `OZONE_MANAGER` | Ozone HA wiring, S3 gateway config |
-| `kafka3_hosts` | `KAFKA3_BROKER` | Kafka3 ZK / Ranger audit config |
-| `trino_hosts` | `TRINO_COORDINATOR` | Coordinator discovery URL |
-| `clickhouse_hosts` | `CLICKHOUSE_KEEPER` | Keeper quorum config |
-| `pinot_hosts` | `PINOT_CONTROLLER` | Controller discovery, ZK config |
+**3. `playbooks/roles/ambari_blueprint/templates/blueprint_dynamic.j2`** — add a `configurations` block guarded by service presence.
 
-**3. `playbooks/roles/ambari_blueprint/templates/blueprint_dynamic.j2`** — add configuration blocks.
+The template uses `{% if 'SERVICE' in blueprint_all_services %}` guards. Core services already wired in the template:
 
-The blueprint template uses `{% if 'SERVICE' in blueprint_all_services %}` guards. Currently handled:
-
-| Existing Config Blocks | Services |
-| ---------------------- | -------- |
+| Config Blocks | Services |
+| ------------- | -------- |
 | Kerberos | `kerberos-env`, `krb5-conf` |
-| Ranger | `admin-properties`, `ranger-admin-site`, `ranger-env`, all audit plugins (HDFS, Hive, YARN, HBase, Knox, Kafka) |
+| Ranger | `admin-properties`, `ranger-admin-site`, `ranger-env`, audit plugins (HDFS, Hive, YARN, HBase, Knox, Kafka) |
 | Ranger KMS | `kms-properties`, `dbks-site`, `kms-env`, `kms-site`, `ranger-kms-audit` |
 | HDFS | `hadoop-env`, `hdfs-site`, `core-site` (includes HA wiring) |
 | YARN | `yarn-env`, `yarn-site`, `yarn-hbase-env`, `yarn-hbase-site` (includes RM HA) |
@@ -228,27 +245,18 @@ The blueprint template uses `{% if 'SERVICE' in blueprint_all_services %}` guard
 | Zeppelin | `zeppelin-env` |
 | Solr (user) | `solr-config-env` |
 
-MPack services that need new config blocks (add using the same `{% if %}` guard pattern):
+When extending, follow the same guard style, for example:
 
-| New Config Blocks Needed | Guard Condition |
-| ------------------------ | --------------- |
-| `spark3-env`, `livy3-env`, `spark3-thrift-sparkconf` | `SPARK3_JOBHISTORYSERVER in blueprint_all_services` |
-| `nifi-env`, `nifi-properties`, `nifi-registry-env` | `NIFI_MASTER in blueprint_all_services` |
-| `flink-env` | `FLINK_JOBHISTORYSERVER in blueprint_all_services` |
-| `kafka3-broker`, `kafka3-env` | `KAFKA3_BROKER in blueprint_all_services` |
-| `impala-env`, `impala-catalog`, `impala-statestore` | `IMPALA_STATE_STORE in blueprint_all_services` |
-| `trino-config`, `trino-env` | `TRINO_COORDINATOR in blueprint_all_services` |
-| `ozone-env`, `ozone-site`, `ozone-recon`, `ozone-scm` | `OZONE_MANAGER in blueprint_all_services` |
-| `kudu-env`, `kudu-site` | `KUDU_MASTER in blueprint_all_services` |
-| `airflow-env`, `airflow-core-site` | `AIRFLOW_SCHEDULER in blueprint_all_services` |
-| `hue-env`, `hue-ini` | `HUE_SERVER in blueprint_all_services` |
-| `clickhouse-env`, `clickhouse-config` | `CLICKHOUSE_SERVER in blueprint_all_services` |
-| `pinot-env`, `pinot-controller`, `pinot-broker` | `PINOT_CONTROLLER in blueprint_all_services` |
-| `mlflow-env` | `MLFLOW_SERVER in blueprint_all_services` |
-| `jupyterhub-env` | `JUPYTERHUB in blueprint_all_services` |
-| `registry-env`, `registry-common` | `REGISTRY_SERVER in blueprint_all_services` |
-| `zeppelin-env` | `ZEPPELIN_MASTER in blueprint_all_services` (already exists) |
-| Ranger audit plugins | `ranger-spark3-audit`, `ranger-nifi-audit`, `ranger-ozone-audit`, etc. |
+```jinja
+{% if 'SPARK3_JOBHISTORYSERVER' in blueprint_all_services %}
+{
+  "spark3-env": { ... },
+  "livy3-env": { ... }
+},
+{% endif %}
+```
+
+Reference the relevant MPack's `configuration/*.xml` files (installed under `/var/lib/ambari-server/resources/mpacks/<mpack>/` after `ambari-server install-mpack`) for the exact property names expected by that stack.
 
 ## Project Structure
 
@@ -327,6 +335,43 @@ These playbooks are designed for enterprise environments and follow security bes
 | **No `become` escalation leaks** | Privilege escalation scoped to play level; delegated tasks use `become: false` |
 | **Ansible Tower / AWX ready** | Overridable variables, no local path dependencies, Vault Credential support |
 
+## Network & Ports
+
+Phase 1 disables the local host firewall (`disable_firewall: true`). Any corporate or network firewall between cluster nodes, the Ambari server, clients, and the external database must allow the ports below. Ports are Ambari / ODP defaults — override in Ambari after deployment if your site uses non-defaults.
+
+| Component | Port | Direction | Purpose |
+| --------- | ---- | --------- | ------- |
+| Ambari Server | `8080` | Inbound from operators | Ambari Web UI / REST API (HTTP) |
+| Ambari Server | `8440` | Inbound from agents | Agent registration (HTTPS, two-way) |
+| Ambari Server | `8441` | Inbound from agents | Agent heartbeat / commands (HTTPS) |
+| NameNode | `8020` | Inbound from clients | HDFS RPC (`fs.defaultFS`) |
+| NameNode | `9870` | Inbound from operators | NameNode Web UI |
+| JournalNode | `8485` | Inbound from NameNodes | HDFS HA edit log |
+| DataNode | `9864`, `9866`, `9867` | Inbound from cluster | DataNode HTTP / data transfer / IPC |
+| ResourceManager | `8088` | Inbound from operators | YARN Web UI |
+| ResourceManager | `8032`, `8030`, `8031` | Inbound from clients / NMs | YARN scheduler / RM / resource tracker |
+| NodeManager | `8042`, `45454` | Inbound from RM | NodeManager UI / shuffle |
+| HistoryServer (MR) | `19888`, `10020` | Inbound from clients | MR job history UI / IPC |
+| Hive Server2 | `10000` (binary), `10001` (HTTP) | Inbound from clients | JDBC / ODBC |
+| Hive Metastore | `9083` | Inbound from Hive / Spark | Metastore Thrift |
+| HBase Master | `16000`, `16010` | Inbound from operators / RS | Master RPC / Web UI |
+| HBase RegionServer | `16020`, `16030` | Inbound from clients | RegionServer RPC / Web UI |
+| ZooKeeper | `2181` | Inbound from clients | Client connections |
+| ZooKeeper | `2888`, `3888` | Inter-ZK | Quorum / leader election |
+| Kafka Broker | `9092` (PLAINTEXT), `9093` (SASL_SSL) | Inbound from producers / consumers | Kafka protocol |
+| Ranger Admin | `6080` (HTTP), `6182` (HTTPS) | Inbound from operators / plugins | Ranger UI / API |
+| Ranger KMS | `9292` | Inbound from HDFS / clients | KMS API |
+| Knox Gateway | `8443` | Inbound from external clients | Gateway HTTPS |
+| Oozie | `11000` | Inbound from clients | Oozie Web UI / REST |
+| Infra Solr | `8886` | Inbound from Ranger / Atlas | Ranger audit destination |
+| Zeppelin | `9995` | Inbound from operators | Zeppelin UI |
+| External DB (PostgreSQL) | `5432` | Outbound from Ambari / services | Configurable via `postgres_port` |
+| External DB (MySQL / MariaDB) | `3306` | Outbound from Ambari / services | Configurable via `mysql_port` |
+| External DB (Oracle) | `1521` | Outbound from Ambari / services | Configurable via `oracle_port` |
+| KDC / Active Directory | `88` (TCP/UDP), `636` (LDAPS) | Outbound from cluster | Kerberos auth / LDAP lookup (when `security: active-directory`) |
+
+Add reverse entries (outbound from operator workstations → Ambari Server 8080 / Knox 8443) to any user-facing firewall.
+
 ## Requirements
 
 | Requirement | Detail |
@@ -339,6 +384,27 @@ These playbooks are designed for enterprise environments and follow security bes
 | **Java** | OpenJDK 17 (default) or OpenJDK 11 |
 
 For detailed OS, JDK, and database compatibility see the [ODP Support Matrix](https://docs.acceldata.io/odp/support-matrix).
+
+### Dual-JDK behavior
+
+Ambari 3.x requires JDK 17 — controlled by `ambari_openjdk_package` / `ambari_java_home` in `group_vars/all`. The ODP stack JDK (used by HDFS, YARN, Hive, Spark, etc.) is independent and set via `openjdk_package` / `java_home`. When the two differ (e.g. Ambari on JDK 17, ODP on JDK 11), both JDKs are installed on every node; Ambari uses its own, services use theirs. Do not change `ambari_openjdk_package` unless a future Ambari release certifies a different JDK.
+
+## Performance Tuning
+
+`ansible.cfg` ships with production-ready defaults. Adjust these if you hit scale or latency limits:
+
+| Setting | Default | When to change |
+| ------- | ------- | -------------- |
+| `forks` | `40` | Raise for clusters >100 nodes; lower on resource-constrained workstations |
+| `timeout` (defaults + ssh) | `60` | Raise on high-latency links or when SSH handshakes time out |
+| `gathering` | `smart` | Keep smart — only gathers facts once per host. Set to `explicit` only for debugging |
+| `pipelining` | `True` | Keep on — reduces SSH round trips per task. Requires `requiretty` disabled in sudoers (default on RHEL 8/9) |
+| `ssh_args` `ControlMaster` / `ControlPersist=300s` | enabled | Keep on — reuses SSH connections across tasks for ~3–5× faster runs |
+| `retries` (ssh) | `3` | Raise on flaky networks; lower to fail fast in CI |
+| `host_key_checking` | `False` | Set to `True` in environments that require strict SSH host key verification |
+| `wait_timeout` (in `group_vars/all`) | `3600` | Raise for very large clusters where Phase 4 cluster build exceeds one hour |
+
+Playbooks use the `linear` strategy — required because `set_variables.yml` uses `add_host`, which is incompatible with the `free` strategy.
 
 ## Troubleshooting
 
@@ -355,6 +421,31 @@ For detailed OS, JDK, and database compatibility see the [ODP Support Matrix](ht
 | Database schema load fails | Wrong DB credentials or DB not created | Verify databases exist and passwords in `vault.yml` match |
 
 **Re-running after failure:** All playbooks are idempotent. Fix the issue and re-run the same phase — it will skip completed tasks automatically.
+
+## Glossary
+
+| Term | Meaning |
+| ---- | ------- |
+| **Ambari** | Apache Ambari — management and monitoring platform for Hadoop/ODP clusters |
+| **Agent** | `ambari-agent` daemon running on every node; executes commands from the Ambari Server |
+| **Server** | `ambari-server` daemon on the designated node; owns cluster state and the REST API |
+| **Blueprint** | JSON document describing services, host groups, and configurations — submitted to Ambari to provision a cluster |
+| **Dynamic Blueprint** | Blueprint rendered from a Jinja2 template (`blueprint_dynamic.j2`) at playbook runtime based on `blueprint_dynamic` in `group_vars/all` |
+| **Static Blueprint** | A hand-authored JSON blueprint referenced by `blueprint_file` |
+| **Host Group** | Named group of hosts in a blueprint that share the same service assignments |
+| **VDF** | Version Definition File — XML document that registers a specific ODP version and its repositories with Ambari |
+| **MPack** | Management Pack — Ambari extension that adds service definitions (Spark3, NiFi, Ozone, Trino, etc.) not bundled with the core stack |
+| **HA** | High Availability — active/standby or quorum-based redundancy for critical components (NameNode, ResourceManager, HBase Master, Ranger KMS) |
+| **NameNode** | HDFS metadata service; supports active/standby HA via JournalNodes and ZKFC |
+| **JournalNode** | Quorum participant storing the HDFS edit log for NameNode HA |
+| **ZKFC** | ZooKeeper Failover Controller — monitors NameNodes and triggers HA failover |
+| **ResourceManager** | YARN scheduler; supports active/standby HA |
+| **Ranger** | Centralized authorization, auditing, and data masking for Hadoop services |
+| **KMS** | Key Management Server — Ranger KMS provides transparent HDFS encryption keys |
+| **Knox** | Perimeter gateway that proxies and secures REST/HTTP traffic to cluster services |
+| **SPNEGO** | Kerberos-over-HTTP authentication used by Ambari and service Web UIs (`security_options.http_authentication: true`) |
+| **Infra Solr** | Embedded Solr instance used by Ranger to store audit records |
+| **VDF / `repo_version_template`** | Ambari API payloads registering the ODP stack build and RPM repositories |
 
 ## License
 

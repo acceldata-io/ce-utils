@@ -10,7 +10,7 @@
         - "{{ ansible_os_family | lower }}.yml"
         - defaults.yml
       paths:
-        - ../ambari_config/vars
+        - "{{ role_path }}/vars"
 
 - name: Set the GPL Licensed setting in Ambari
   ansible.builtin.lineinfile:
@@ -53,7 +53,7 @@
             - "vdf-ODP-{{ odp_minor_version }}-latest.xml.j2"
             - "vdf-ODP-{{ odp_major_version }}-latest.xml.j2"
           paths:
-            - ../templates
+            - "{{ role_path }}/templates"
       loop:
         - "{{ lookup('ansible.builtin.first_found', vdf_template_params) }}"
 
@@ -170,11 +170,13 @@
     user: "{{ ambari_admin_user }}"
     password: "{{ ambari_admin_password }}"
     headers: '{"X-Requested-By":"ambari"}'
-    status_code: 200,201,202,404
+    status_code: 200,404
     return_content: false
   no_log: true
   loop: "{{ groups['hadoop-cluster'] }}"
   register: ambari_config_result
-  until: "ambari_config_result.status != 404"
-  retries: 100
+  # Only 200 means "registered"; 404 means "still coming up" → retry.
+  # Any other status (5xx, auth failure) falls through and fails the task immediately.
+  until: ambari_config_result.status == 200
+  retries: 60
   delay: 5

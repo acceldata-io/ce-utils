@@ -1,2 +1,26 @@
 ---
+# Enforce the strictest built-in ansible-lint profile.
+# Profile ladder: min -> basic -> moderate -> safety -> shared -> production.
+# "production" is the top-tier profile used by Red Hat / AAP-certified content.
+profile: production
+
+# Treat every warning as a failure (non-zero exit). No silent drift.
+strict: true
+
+# Do not skip any rules. Add exceptions here ONLY with a justification comment.
 skip_list: []
+warn_list: []
+
+# Use the yamllint config from this directory when linting YAML formatting.
+use_default_rules: true
+
+# Explicitly enable rules that aren't on by default but are valuable in strict mode.
+enable_list:
+  - args                      # validate module arguments against module docs
+  - empty-string-compare      # flag `== ""` comparisons (use `| length`)
+  - no-log-password           # fail if a password var is used without no_log
+  - no-same-owner             # fail on file tasks that don't pin owner/group
+  - yaml                      # yamllint-style YAML structural checks
+
+# Keep output compact so CI logs stay readable.
+verbosity: 1
