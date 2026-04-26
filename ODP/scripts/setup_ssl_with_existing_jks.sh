@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ./setup_ssl_with_existing_jks.sh
-# Supported Services: HDFS/YARN/MapReduce, Infra-Solr, Hive, Ranger, Spark2, Kafka, HBase, Spark3, Oozie, Ranger KMS, Ozone, NiFi, Schema Registry, Livy2, Kafka3, Livy3, NiFi Registry, Trino
+# Supported Services: HDFS/YARN/MapReduce, Infra-Solr, Hive, Ranger, Spark2, Kafka, HBase, Spark3, Oozie, Ranger KMS, Ozone, NiFi, Schema Registry, Livy2, Kafka3, Livy3, NiFi Registry, Trino, Zeppelin
 ##########################################################################
 GREEN='\e[32m'; YELLOW='\e[33m'; RED='\e[31m'; CYAN='\e[36m'; NC='\e[0m'  # Color codes
 #---------------------------------------------------------
@@ -111,13 +111,17 @@ handle_ssl_failure() {
 #---------------------------------------------------------
 if [[ "${PROTOCOL,,}" == "https" ]]; then
     AMBARI_CERT_PATH="/tmp/ambari.crt"
-    if openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" </dev/null 2>/dev/null \
-        | openssl x509 -outform PEM > "${AMBARI_CERT_PATH}" && [[ -s "${AMBARI_CERT_PATH}" ]]; then
+    # Extract the full certificate chain (not just the leaf) so Python can verify.
+    echo | openssl s_client -showcerts -connect "${AMBARISERVER}:${PORT}" 2>/dev/null \
+        | awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{ print }' > "${AMBARI_CERT_PATH}"
+    if [[ -s "${AMBARI_CERT_PATH}" ]]; then
+        # REQUESTS_CA_BUNDLE is for the `requests` library.
+        # SSL_CERT_FILE is what Python 3's stdlib ssl/urllib honors — configs.py uses urllib.
         export REQUESTS_CA_BUNDLE="${AMBARI_CERT_PATH}"
+        export SSL_CERT_FILE="${AMBARI_CERT_PATH}"
     else
         handle_ssl_failure "Could not obtain Ambari SSL certificate"
     fi
-    export PYTHONHTTPSVERIFY=0  # Optional fallback
 fi
 # Helper Function: Retrieve Host for a Given Component
 #---------------------------------------------------------
@@ -134,6 +138,12 @@ get_host_for_component() {
 CLUSTER=$(curl -s -k -u "$USER:$PASSWORD" -i -H 'X-Requested-By: ambari' \
     "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters" \
     | sed -n 's/.*"cluster_name" : "\([^\"]*\)".*/\1/p')
+
+if [[ -z "$CLUSTER" ]]; then
+    echo -e "${RED}[ERROR] Could not retrieve cluster name from Ambari.${NC}"
+    echo -e "${RED}Check AMBARISERVER, PORT, PROTOCOL, USER, and PASSWORD — then re-run.${NC}"
+    exit 1
+fi
 
 timelineserver=$(get_host_for_component "APP_TIMELINE_SERVER")
 historyserver=$(get_host_for_component "HISTORYSERVER")
@@ -174,10 +184,16 @@ echo -e "${GREEN}keytool -list -keystore \"$keystore\"${NC}"
 # Function: set_config
 # Invokes the Ambari configuration script to set a given property.
 #---------------------------------------------------------
+# Global failure counter — each enable_*_ssl function resets this at start
+# and reads it at the end to report truthful success/failure.
+SET_CONFIG_FAILURES=0
+
 set_config() {
     local config_file=$1 key=$2 value=$3
+    local tmp_err
+    tmp_err=$(mktemp /tmp/setup_ssl.err.XXXXXX)
 
-    python /var/lib/ambari-server/resources/scripts/configs.py \
+    if python /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$USER" \
         -p "$PASSWORD" \
         -s "$PROTOCOL" \
@@ -187,9 +203,32 @@ set_config() {
         -n "$CLUSTER" \
         -c "$config_file" \
         -k "$key" \
-        -v "$value" \
-    && echo -e "${GREEN}[OK]${NC} Updated ${config_file}:${key}" \
-    || echo -e "${RED}Failed updating ${key} in ${config_file}.${NC}" | tee -a /tmp/setup_ssl.log
+        -v "$value" 2> >(tee "$tmp_err" >&2); then
+        echo -e "${GREEN}[OK]${NC} Updated ${config_file}:${key}"
+        rm -f "$tmp_err"
+        return 0
+    else
+        echo -e "${RED}Failed updating ${key} in ${config_file}.${NC}" | tee -a /tmp/setup_ssl.log
+        SET_CONFIG_FAILURES=$((SET_CONFIG_FAILURES + 1))
+        # If this is an SSL trust failure, there's no point continuing — every
+        # subsequent call will hit the same error. Hand off to the guided recovery.
+        if grep -q "CERTIFICATE_VERIFY_FAILED" "$tmp_err" 2>/dev/null; then
+            rm -f "$tmp_err"
+            handle_ssl_failure "Ambari API rejected our certificate (CERTIFICATE_VERIFY_FAILED). Python's SSL trust store does not include Ambari's CA."
+        fi
+        rm -f "$tmp_err"
+        return 1
+    fi
+}
+
+# Report truthful outcome for an enable_*_ssl block based on SET_CONFIG_FAILURES.
+report_result() {
+    local service="$1"
+    if [[ ${SET_CONFIG_FAILURES} -eq 0 ]]; then
+        echo -e "${GREEN}Successfully enabled SSL for ${service}.${NC}"
+    else
+        echo -e "${RED}[WARNING] ${SET_CONFIG_FAILURES} properties failed while enabling SSL for ${service}. See /tmp/setup_ssl.log.${NC}"
+    fi
 }
 
 #---------------------------------------------------------
@@ -197,6 +236,7 @@ set_config() {
 #---------------------------------------------------------
 
 enable_hdfs_ssl() {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for HDFS, YARN, and MapReduce...${NC}"
     set_config "core-site" "hadoop.ssl.require.client.cert" "false"
     set_config "core-site" "hadoop.ssl.hostname.verifier" "DEFAULT"
@@ -226,10 +266,11 @@ enable_hdfs_ssl() {
     set_config "hdfs-site" "dfs.https.enable" "true"
     set_config "tez-site" "tez.runtime.shuffle.ssl.enable" "true"
     set_config "tez-site" "tez.runtime.shuffle.keep-alive.enabled" "true"
-    echo -e "${GREEN}Successfully enabled SSL for HDFS, YARN, and MapReduce.${NC}"
+    report_result "HDFS, YARN, and MapReduce"
 }
 
 enable_infra_solr_ssl() {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Infra-Solr...${NC}"
     set_config "infra-solr-env" "infra_solr_ssl_enabled" "true"
     set_config "infra-solr-env" "infra_solr_keystore_location" "$keystore"
@@ -238,11 +279,12 @@ enable_infra_solr_ssl() {
     set_config "infra-solr-env" "infra_solr_truststore_location" "$truststore"
     set_config "infra-solr-env" "infra_solr_truststore_password" "$truststorepassword"
     set_config "infra-solr-env" "infra_solr_truststore_type" "jks"
-    set_config "infra-solr-env" "infra_solr_extra_java_opts" "-Dsolr.jetty.keystore.type=jks -Dsolr.jetty.truststore.type=jks" 
-    echo -e "${GREEN}Successfully enabled SSL for Infra-Solr.${NC}"
+    set_config "infra-solr-env" "infra_solr_extra_java_opts" "-Dsolr.jetty.keystore.type=jks -Dsolr.jetty.truststore.type=jks"
+    report_result "Infra-Solr"
 }
 
 enable_hive_ssl() {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Hive...${NC}"
     set_config "hive-site" "hive.server2.use.SSL" "true"
     set_config "hive-site" "hive.server2.keystore.path" "$keystore"
@@ -250,10 +292,11 @@ enable_hive_ssl() {
     set_config "hive-site" "hive.server2.webui.use.ssl" "true"
     set_config "hive-site" "hive.server2.webui.keystore.path" "$keystore"
     set_config "hive-site" "hive.server2.webui.keystore.password" "$keystorepassword"
-    echo -e "${GREEN}Successfully enabled SSL for Hive.${NC}"
+    report_result "Hive"
 }
 
 enable_ranger_ssl() {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Ranger...${NC}"
     set_config "ranger-admin-site" "ranger.service.http.enabled" "false"
     set_config "ranger-admin-site" "ranger.https.attrib.keystore.file" "$keystore"
@@ -347,11 +390,12 @@ enable_ranger_ssl() {
     set_config "ranger-trino-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
     set_config "ranger-trino-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
     set_config "ranger-trino-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"
-    set_config "ranger-trino-security" "ranger.plugin.trino.policy.rest.url" "https://$rangeradmin:6182" 
-    echo -e "${GREEN}Successfully enabled SSL for Ranger.${NC}"
+    set_config "ranger-trino-security" "ranger.plugin.trino.policy.rest.url" "https://$rangeradmin:6182"
+    report_result "Ranger"
 }
 
 enable_ranger_kms_ssl() {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to configure SSL for ODP Ranger KMS...${NC}"
     set_config "ranger-kms-site" "ranger.service.https.attrib.ssl.enabled" "true"
     set_config "ranger-kms-site" "ranger.service.https.attrib.client.auth" "false"
@@ -361,10 +405,11 @@ enable_ranger_kms_ssl() {
     set_config "hdfs-site" "dfs.encryption.key.provider.uri" "kms://https@$rangerkms:9393/kms"
     set_config "core-site" "hadoop.security.key.provider.path" "kms://https@$rangerkms:9393/kms"
     set_config "kms-env" "kms_port" "9393"
-    echo -e "${GREEN}ODP Ranger KMS SSL configuration applied.${NC}"
+    report_result "ODP Ranger KMS"
 }
 
 enable_spark2_ssl() {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Spark2...${NC}"
     set_config "yarn-site" "spark.authenticate" "false"
     set_config "spark2-defaults" "spark.authenticate" "false"
@@ -378,40 +423,44 @@ enable_spark2_ssl() {
     set_config "spark2-defaults" "spark.ssl.trustStorePassword" "$truststorepassword"
     set_config "spark2-defaults" "spark.ui.https.enabled" "true"
     set_config "spark2-defaults" "spark.ssl.historyServer.port" "18481"
-    echo -e "${GREEN}Successfully enabled SSL for Spark2.${NC}"
+    report_result "Spark2"
 }
 
 enable_kafka_ssl() {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Kafka...${NC}"
     set_config "kafka-broker" "ssl.keystore.location" "$keystore"
     set_config "kafka-broker" "ssl.keystore.password" "$keystorepassword"
     set_config "kafka-broker" "ssl.key.password" "$keystorepassword"
     set_config "kafka-broker" "ssl.truststore.location" "$truststore"
     set_config "kafka-broker" "ssl.truststore.password" "$truststorepassword"
-    echo -e "${GREEN}Successfully enabled SSL for Kafka.${NC}"
+    report_result "Kafka"
 }
 
 enable_kafka3_ssl() {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Kafka...${NC}"
     set_config "kafka3-broker" "ssl.keystore.location" "$keystore"
     set_config "kafka3-broker" "ssl.keystore.password" "$keystorepassword"
     set_config "kafka3-broker" "ssl.key.password" "$keystorepassword"
     set_config "kafka3-broker" "ssl.truststore.location" "$truststore"
     set_config "kafka3-broker" "ssl.truststore.password" "$truststorepassword"
-    echo -e "${GREEN}Successfully enabled SSL for Kafka3.${NC}"
+    report_result "Kafka3"
 }
 
 enable_hbase_ssl() {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for HBase...${NC}"
     set_config "hbase-site" "hbase.ssl.enabled" "true"
     set_config "hbase-site" "hadoop.ssl.enabled" "true"
     set_config "hbase-site" "ssl.server.keystore.keypassword" "$keystorepassword"
     set_config "hbase-site" "ssl.server.keystore.password" "$keystorepassword"
     set_config "hbase-site" "ssl.server.keystore.location" "$keystore"
-    echo -e "${GREEN}Successfully enabled SSL for HBase.${NC}"
+    report_result "HBase"
 }
 
 enable_spark3_ssl() {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Spark3...${NC}"
     set_config "yarn-site" "spark.authenticate" "false"
     set_config "spark3-defaults" "spark.authenticate" "false"
@@ -425,10 +474,11 @@ enable_spark3_ssl() {
     set_config "spark3-defaults" "spark.ssl.trustStorePassword" "$truststorepassword"
     set_config "spark3-defaults" "spark.ui.https.enabled" "true"
     set_config "spark3-defaults" "spark.ssl.historyServer.port" "18482"
-    echo -e "${GREEN}Successfully enabled SSL for Spark3.${NC}"
+    report_result "Spark3"
 }
 
 enable_oozie_ssl() {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Oozie...${NC}"
     set_config "oozie-site" "oozie.https.enabled" "true"
     set_config "oozie-site" "oozie.https.port" "11443"
@@ -437,11 +487,12 @@ enable_oozie_ssl() {
     set_config "oozie-site" "oozie.https.truststore.file" "$truststore"
     set_config "oozie-site" "oozie.https.truststore.pass" "$truststorepassword"
     set_config "oozie-site" "oozie.base.url" "https://$OOZIE_HOSTNAME:11443/oozie"
-    echo -e "${GREEN}Successfully enabled SSL for Oozie.${NC}"
+    report_result "Oozie"
 }
 
 enable_ozone_ssl () {
-    echo -e "${YELLOW}Starting to enable SSL for Ozone...${NC}"    
+    SET_CONFIG_FAILURES=0
+    echo -e "${YELLOW}Starting to enable SSL for Ozone...${NC}"
     set_config "ozone-env" "ozone_scm_ssl_enabled" "true"
     set_config "ozone-env" "ozone_manager_ssl_enabled" "true"
     set_config "ozone-env" "ozone_s3g_ssl_enabled" "true"
@@ -489,12 +540,13 @@ enable_ozone_ssl () {
     set_config "ssl-server-om" "ssl.server.keystore.keypassword" "$keystorepassword"
     set_config "ssl-server-recon" "ssl.server.keystore.keypassword" "$keystorepassword"
     set_config "ssl-server-s3g" "ssl.server.keystore.keypassword" "$keystorepassword"
-    set_config "ssl-server-scm" "ssl.server.keystore.keypassword" "$keystorepassword"    
-    echo -e "${GREEN}Successfully enabled SSL for Ozone.${NC}"
+    set_config "ssl-server-scm" "ssl.server.keystore.keypassword" "$keystorepassword"
+    report_result "Ozone"
 }
 
 enable_nifi_ssl () {
-    echo -e "${YELLOW}Starting to enable SSL for NiFi ...${NC}"    
+    SET_CONFIG_FAILURES=0
+    echo -e "${YELLOW}Starting to enable SSL for NiFi ...${NC}"
     set_config "nifi-ambari-ssl-config" "nifi.node.ssl.isenabled" "true"
     set_config "nifi-ambari-ssl-config" "nifi.security.keyPasswd" "$keystorepassword"
     set_config "nifi-ambari-ssl-config" "nifi.security.keystore" "$keystore"    
@@ -503,14 +555,15 @@ enable_nifi_ssl () {
     set_config "nifi-ambari-ssl-config" "nifi.security.truststore" "$truststore"
     set_config "nifi-ambari-ssl-config" "nifi.security.truststoreType" "jks"    
     set_config "nifi-ambari-ssl-config" "nifi.security.truststorePasswd" "$truststorepassword"
-    echo -e "${GREEN}Successfully enabled SSL for NiFi.${NC}"
+    report_result "NiFi"
 }
 
 #---------------------------------------------------------
 # NiFi Registry SSL enablement
 #---------------------------------------------------------
 enable_nifi_registry_ssl () {
-    echo -e "${YELLOW}Starting to enable SSL for NiFi Registry ...${NC}"    
+    SET_CONFIG_FAILURES=0
+    echo -e "${YELLOW}Starting to enable SSL for NiFi Registry ...${NC}"
     set_config "nifi-registry-ambari-ssl-config" "nifi.registry.ssl.isenabled" "true"
     set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.keystore" "$keystore"
     set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.keyPasswd" "$keystorepassword"
@@ -520,61 +573,76 @@ enable_nifi_registry_ssl () {
     set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.truststorePasswd" "$truststorepassword"
     set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.keystoreType" "jks"
     set_config "nifi-registry-ambari-ssl-config" "nifi.registry.security.truststoreType" "jks"
-    echo -e "${GREEN}Successfully enabled SSL for NiFi Registry.${NC}"
+    report_result "NiFi Registry"
 }
 
 enable_schema_registry () {
-    echo -e "${YELLOW}Starting to enable SSL for Schema Registry ...${NC}"        
+    SET_CONFIG_FAILURES=0
+    echo -e "${YELLOW}Starting to enable SSL for Schema Registry ...${NC}"
     set_config "registry-ssl-config" "registry.ssl.isenabled" "true"
     set_config "registry-ssl-config" "registry.keyStoreType" "jks"
     set_config "registry-ssl-config" "registry.trustStoreType" "jks"
     set_config "registry-ssl-config" "registry.keyStorePath" "$keystore"
     set_config "registry-ssl-config" "registry.trustStorePath" "$truststore"
     set_config "registry-ssl-config" "registry.keyStorePassword" "$keystorepassword"    
-    set_config "registry-ssl-config" "registry.trustStorePassword" "$truststorepassword"  
-    echo -e "${GREEN}Successfully enabled SSL for Schema Registry.${NC}"
+    set_config "registry-ssl-config" "registry.trustStorePassword" "$truststorepassword"
+    report_result "Schema Registry"
 }
 
 #---------------------------------------------------------
 # Livy3 SSL enablement
 #---------------------------------------------------------
-#---------------------------------------------------------
-# Livy3 SSL enablement
-#---------------------------------------------------------
 enable_livy3_ssl () {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Livy3...${NC}"
     set_config "livy3-conf" "livy.keystore" "$keystore"
     set_config "livy3-conf" "livy.keystore.password" "$keystorepassword"
     set_config "livy3-conf" "livy.key-password" "$keystorepassword"
-    echo -e "${GREEN}Successfully enabled SSL for Livy3.${NC}"
+    report_result "Livy3"
 }
 
 #---------------------------------------------------------
 # Livy2 SSL enablement
 #---------------------------------------------------------
 enable_livy2_ssl () {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Livy2...${NC}"
     set_config "livy2-conf" "livy.keystore" "$keystore"
     set_config "livy2-conf" "livy.keystore.password" "$keystorepassword"
     set_config "livy2-conf" "livy.key-password" "$keystorepassword"
-    echo -e "${GREEN}Successfully enabled SSL for Livy2.${NC}"
+    report_result "Livy2"
 }
 
 enable_trino_ssl () {
+    SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Trino...${NC}"
     set_config "trino-env" "ssl_enabled" "true"
     set_config "trino-env" "ssl_keystore" "$keystore"
     set_config "trino-env" "ssl_keystore_password" "$keystorepassword"
     set_config "trino-env" "java_truststore" "$truststore"
     set_config "trino-env" "java_truststore_password" "$truststorepassword"
-    echo -e "${GREEN}Successfully enabled SSL for Trino.${NC}"
+    report_result "Trino"
+}
+
+enable_zeppelin_ssl () {
+    SET_CONFIG_FAILURES=0
+    echo -e "${YELLOW}Starting to enable SSL for Zeppelin...${NC}"
+    set_config "zeppelin-site" "zeppelin.ssl" "true"
+    set_config "zeppelin-site" "zeppelin.ssl.key.manager.password" "$keystorepassword"
+    set_config "zeppelin-site" "zeppelin.ssl.keystore.password" "$keystorepassword"
+    set_config "zeppelin-site" "zeppelin.ssl.keystore.path" "$keystore"
+    set_config "zeppelin-site" "zeppelin.ssl.keystore.type" "jks"
+    set_config "zeppelin-site" "zeppelin.ssl.truststore.password" "$truststorepassword"
+    set_config "zeppelin-site" "zeppelin.ssl.truststore.path" "$truststore"
+    set_config "zeppelin-site" "zeppelin.ssl.truststore.type" "jks"
+    report_result "Zeppelin"
 }
 #---------------------------------------------------------
 # Menu for Selecting SSL Configuration Services
 #---------------------------------------------------------
 display_service_options() {
     echo -e "${YELLOW}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "        ${GREEN}🚀  SSL Configuration Menu – Choose a Service{NC}"
+    echo -e "        ${GREEN}🚀  SSL Configuration Menu – Choose a Service${NC}"
     echo -e "${YELLOW}╚════════════════════════════════════════════════════════════╝${NC}\n"
     echo -e "${GREEN}  1)${NC} 🗃️   HDFS, YARN & MapReduce"
     echo -e "${GREEN}  2)${NC} 🔍   Infra-Solr"
@@ -594,6 +662,7 @@ display_service_options() {
     echo -e "${GREEN} 16)${NC} 🧪   Livy3"
     echo -e "${GREEN} 17)${NC} 📝   NiFi Registry"
     echo -e "${GREEN} 18)${NC} 🚀   Trino"
+    echo -e "${GREEN} 19)${NC} 📓   Zeppelin"
     echo -e "${YELLOW}────────────────────────────────────────────────────────────${NC}"
     echo -e "${GREEN}  A)${NC} 🌐   All Services (for the brave)"
     echo -e "${RED}  Q)${NC} ❌   Quit (no changes)"
@@ -625,7 +694,8 @@ while true; do
         16) enable_livy3_ssl ;;
         17) enable_nifi_registry_ssl ;;
         18) enable_trino_ssl ;;
-        [Aa]) 
+        19) enable_zeppelin_ssl ;;
+        [Aa])
             enable_hdfs_ssl
             enable_infra_solr_ssl
             enable_hive_ssl
@@ -636,7 +706,7 @@ while true; do
             enable_spark3_ssl
             enable_oozie_ssl
             enable_ranger_kms_ssl
-            enable_ozone_ss
+            enable_ozone_ssl
             enable_nifi_ssl
             enable_nifi_registry_ssl
             enable_schema_registry
@@ -644,6 +714,7 @@ while true; do
             enable_livy3_ssl
             enable_kafka3_ssl
             enable_trino_ssl
+            enable_zeppelin_ssl
             ;;
         [Qq]) 
             echo -e "${GREEN}Exiting...${NC}"
