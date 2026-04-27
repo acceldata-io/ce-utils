@@ -22,7 +22,7 @@ CONFIGS_PYTHON_BIN="${CONFIGS_PYTHON_BIN:-$PYTHON_BIN}"
 JSON_TOOL="$SCRIPT_DIR/lib/json_content_roundtrip.py"
 
 AMBARI_HOST="${AMBARI_HOST:-$(hostname -f)}"
-AMBARI_PORT="${AMBARI_PORT:-8080}"
+AMBARI_PORT="${AMBARI_PORT-}"
 AMBARI_PROTOCOL="${AMBARI_PROTOCOL:-http}"
 VERSION_NOTE="${VERSION_NOTE:-ODP-6189 ambari_java_home for CredentialUtil (ce-utils util-3.3.6.3-101)}"
 BACKUP_ROOT="${BACKUP_ROOT:-$SCRIPT_DIR/backups}"
@@ -46,8 +46,8 @@ Usage: patch_ambari_java_home.sh [options]
   --dry-run             Stack: cmp only, no copy. Cluster: get+transform but no configs.py set
   -h, --help            This help
 
-Env: AMBARI_USER, AMBARI_PASSWORD, CLUSTER (optional), AMBARI_HOST, AMBARI_PORT,
-     AMBARI_PROTOCOL, AMBARI_RESOURCES, BACKUP_ROOT, PYTHON_BIN (default python3.11),
+Env: AMBARI_USER, AMBARI_PASSWORD, CLUSTER (optional), AMBARI_HOST, AMBARI_PORT (1-65535, default 8080),
+     AMBARI_PROTOCOL (http|https), AMBARI_RESOURCES, BACKUP_ROOT, PYTHON_BIN (default python3.11),
      CONFIGS_PYTHON_BIN (defaults to PYTHON_BIN; set e.g. python2 only for configs.py)
 EOF
   exit "${1:-0}"
@@ -66,6 +66,38 @@ done
 
 log() { echo "[patch-ambari-java-home] $*"; }
 die() { echo "[patch-ambari-java-home] ERROR: $*" >&2; exit 1; }
+
+# Trim, validate protocol and API port; default port 8080 when unset or blank.
+normalize_ambari_connection() {
+  AMBARI_HOST="$(echo -n "${AMBARI_HOST:-}" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [[ -n "$AMBARI_HOST" ]] || die "AMBARI_HOST is empty (set it or fix hostname)."
+
+  AMBARI_PROTOCOL="$(echo -n "${AMBARI_PROTOCOL:-http}" | tr '[:upper:]' '[:lower:]')"
+  [[ "$AMBARI_PROTOCOL" == "http" || "$AMBARI_PROTOCOL" == "https" ]] \
+    || die "AMBARI_PROTOCOL must be http or https (got: ${AMBARI_PROTOCOL})"
+
+  local p
+  p="$(echo -n "${AMBARI_PORT-}" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [[ -z "$p" ]]; then
+    AMBARI_PORT="8080"
+  else
+    AMBARI_PORT="$p"
+    [[ "$AMBARI_PORT" =~ ^[0-9]+$ ]] || die "AMBARI_PORT must be numeric (got: ${p})"
+    if ((10#$AMBARI_PORT < 1 || 10#$AMBARI_PORT > 65535)); then
+      die "AMBARI_PORT must be 1-65535 or unset for default 8080 (got: ${p})"
+    fi
+  fi
+}
+
+# This util mutates server paths and uses local configs.py; require the Ambari Server node.
+require_ambari_server_node() {
+  if [[ ! -d /var/lib/ambari-server ]]; then
+    die "This host is not the Ambari Server (missing /var/lib/ambari-server). Run this script on the Ambari Server host."
+  fi
+  if [[ ! -f /etc/ambari-server/conf/ambari.properties ]]; then
+    log "WARN: /etc/ambari-server/conf/ambari.properties missing (non-standard install?); continuing."
+  fi
+}
 
 file_sha256() {
   "$PYTHON_BIN" -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$1"
@@ -170,6 +202,7 @@ detect_cluster_name() {
   local curl_opts=(-sS -u "${AMBARI_USER}:${AMBARI_PASSWORD}" -H "X-Requested-By: ambari")
   [[ "${AMBARI_PROTOCOL}" == "https" ]] && curl_opts+=(-k)
   curl "${curl_opts[@]}" "${AMBARI_PROTOCOL}://${AMBARI_HOST}:${AMBARI_PORT}/api/v1/clusters" \
+    --connect-timeout 10 --max-time 60 \
     | sed -n 's/.*"cluster_name" *: *"\([^"]*\)".*/\1/p' | head -n 1
 }
 
@@ -223,6 +256,13 @@ patch_cluster_config_type() {
 }
 
 main() {
+  if [[ "$DO_STACK_PYTHON" -eq 1 || "$DO_CLUSTER_CONFIG" -eq 1 ]]; then
+    require_ambari_server_node
+  fi
+
+  normalize_ambari_connection
+  log "Ambari API: ${AMBARI_PROTOCOL}://${AMBARI_HOST}:${AMBARI_PORT}"
+
   need_stack_prereqs
 
   if [[ "$DO_CLUSTER_CONFIG" -eq 1 ]]; then

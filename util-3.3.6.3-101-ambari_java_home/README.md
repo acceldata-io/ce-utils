@@ -4,11 +4,14 @@ Ambari Server utility for **ODP 3.3** (e.g. **3.3.6.3-101**): applies **[ODP-618
 
 **Does:** (1) copies three vendored **`files/stacks/ODP/3.3/.../*.py`** into **`/var/lib/ambari-server/resources/...`** with backups under **`$BACKUP_ROOT/<timestamp>/`**; (2) **`configs.py` get → sed/awk on `kafka-env` / `cruise-control-env` `content` → set** (skips set if nothing changed). Stack definition **XML** on disk is **not** changed here; use **`temp.md`** if you need that diff manually.
 
-## Run (on Ambari Server)
+## Run
+
+**Host:** must be the **Ambari Server** node (script checks for **`/var/lib/ambari-server`**). **`AMBARI_PORT`** defaults to **8080**; must be **1–65535** if set. **`AMBARI_PROTOCOL`** is **`http`** or **`https`** (case-insensitive).
 
 ```bash
 export AMBARI_USER=admin AMBARI_PASSWORD='***'
 export CLUSTER=mycluster   # optional if API infers one cluster
+# export AMBARI_HOST=$(hostname -f) AMBARI_PORT=8443 AMBARI_PROTOCOL=https
 sudo -E ./patch_ambari_java_home.sh
 ```
 
@@ -18,6 +21,6 @@ sudo -E ./patch_ambari_java_home.sh
 | `--no-cluster-config` | Skip `configs.py` |
 | `--dry-run` | Stack: compare only. Cluster: no `configs.py set` |
 
-**Needs:** root for stack copies; **`configs.py`** at **`$AMBARI_RESOURCES/scripts/configs.py`** (default **`AMBARI_RESOURCES=/var/lib/ambari-server/resources`**). **`PYTHON_BIN`** defaults to **`python3.11`**. Set **`CONFIGS_PYTHON_BIN`** only if **`configs.py`** must use another interpreter.
+**Needs:** root for stack copies; **`configs.py`** at **`$AMBARI_RESOURCES/scripts/configs.py`**. **`PYTHON_BIN`** defaults to **`python3.11`**. Override **`CONFIGS_PYTHON_BIN`** only if **`configs.py`** must use another interpreter.
 
 Afterward: restart **Kafka**, **Cruise Control**, **Druid** if required; check Ambari for new **`kafka-env` / `cruise-control-env`** versions.
