@@ -20,6 +20,8 @@ CONFIGS_PY="${CONFIGS_PY:-$AMBARI_RESOURCES/scripts/configs.py}"
 PYTHON_BIN="${PYTHON_BIN:-python3.11}"
 CONFIGS_PYTHON_BIN="${CONFIGS_PYTHON_BIN:-$PYTHON_BIN}"
 JSON_TOOL="$SCRIPT_DIR/lib/json_content_roundtrip.py"
+CLUSTER_TOOL="$SCRIPT_DIR/lib/ambari_cluster_name.py"
+SHA256_TOOL="$SCRIPT_DIR/lib/file_sha256.py"
 
 AMBARI_HOST="${AMBARI_HOST:-$(hostname -f)}"
 AMBARI_PORT="${AMBARI_PORT-}"
@@ -100,7 +102,7 @@ require_ambari_server_node() {
 }
 
 file_sha256() {
-  "$PYTHON_BIN" -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$1"
+  "$PYTHON_BIN" "$SHA256_TOOL" "$1"
 }
 
 need_stack_prereqs() {
@@ -191,19 +193,38 @@ transform_env_content_file() {
   }
 }
 
+# Autodiscover cluster via lib/ambari_cluster_name.py (urllib + JSON).
 detect_cluster_name() {
   if [[ -n "${CLUSTER:-}" ]]; then
-    echo "$CLUSTER"
+    echo -n "${CLUSTER}" | tr -d '\r\n'
     return 0
   fi
   if [[ -z "${AMBARI_USER:-}" || -z "${AMBARI_PASSWORD:-}" ]]; then
     return 1
   fi
-  local curl_opts=(-sS -u "${AMBARI_USER}:${AMBARI_PASSWORD}" -H "X-Requested-By: ambari")
-  [[ "${AMBARI_PROTOCOL}" == "https" ]] && curl_opts+=(-k)
-  curl "${curl_opts[@]}" "${AMBARI_PROTOCOL}://${AMBARI_HOST}:${AMBARI_PORT}/api/v1/clusters" \
-    --connect-timeout 10 --max-time 60 \
-    | sed -n 's/.*"cluster_name" *: *"\([^"]*\)".*/\1/p' | head -n 1
+  [[ -f "$CLUSTER_TOOL" ]] || die "Missing $CLUSTER_TOOL"
+  local insecure=() err_tmp rc out multi
+  [[ "${AMBARI_PROTOCOL}" == "https" ]] && insecure=(--insecure)
+  err_tmp="$(mktemp "${TMPDIR:-/tmp}/amb-cn-err.XXXXXX")"
+  set +e
+  out="$("$PYTHON_BIN" "$CLUSTER_TOOL" \
+    --host "$AMBARI_HOST" --port "$AMBARI_PORT" --protocol "$AMBARI_PROTOCOL" \
+    --user "$AMBARI_USER" --password "$AMBARI_PASSWORD" "${insecure[@]}" 2>"$err_tmp")"
+  rc=$?
+  set -e
+  if [[ "$rc" -eq 0 ]]; then
+    rm -f "$err_tmp"
+    echo -n "$out"
+    return 0
+  fi
+  if [[ "$rc" -eq 2 ]]; then
+    multi="$(cat "$err_tmp" 2>/dev/null || true)"
+    rm -f "$err_tmp"
+    die "Several Ambari clusters found; set CLUSTER to one of: ${multi}"
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do log "$line"; done <"$err_tmp"
+  rm -f "$err_tmp"
+  return 1
 }
 
 patch_cluster_config_type() {
@@ -268,6 +289,8 @@ main() {
   if [[ "$DO_CLUSTER_CONFIG" -eq 1 ]]; then
     [[ -f "$CONFIGS_PY" ]] || die "Missing $CONFIGS_PY"
     [[ -f "$JSON_TOOL" ]] || die "Missing $JSON_TOOL"
+    [[ -f "$CLUSTER_TOOL" ]] || die "Missing $CLUSTER_TOOL"
+    [[ -f "$SHA256_TOOL" ]] || die "Missing $SHA256_TOOL"
   fi
 
   if [[ "$DO_STACK_PYTHON" -eq 1 ]]; then
@@ -281,7 +304,7 @@ main() {
 
     CLUSTER="$(detect_cluster_name)" || true
     CLUSTER="$(echo -n "${CLUSTER:-}" | tr -d '\r\n')"
-    [[ -n "$CLUSTER" ]] || die "CLUSTER empty: set CLUSTER or fix Ambari API auth/host."
+    [[ -n "$CLUSTER" ]] || die "CLUSTER empty: export CLUSTER=... or fix Ambari REST (see messages above; try AMBARI_PROTOCOL=https on TLS ports)."
 
     local work
     work="$(mktemp -d "${TMPDIR:-/tmp}/ambari-java-home.XXXXXX")"

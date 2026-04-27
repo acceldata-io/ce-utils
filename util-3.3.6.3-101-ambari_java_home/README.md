@@ -2,7 +2,7 @@
 
 Ambari Server utility for **ODP 3.3** (e.g. **3.3.6.3-101**): applies **[ODP-6189](https://github.com/acceldata-io/odp-ambari/pull/484)** so **CredentialUtil** uses **`ambari_java_home`** / **`$AMBARI_JAVA_HOME/bin/java`** instead of **`java`** on `PATH` (avoids failures when the stack uses Java 11).
 
-**Does:** (1) copies three vendored **`files/stacks/ODP/3.3/.../*.py`** into **`/var/lib/ambari-server/resources/...`** with backups under **`$BACKUP_ROOT/<timestamp>/`**; (2) **`configs.py` get → sed/awk on `kafka-env` / `cruise-control-env` `content` → set** (skips set if nothing changed). Stack definition **XML** on disk is **not** changed here; use **`temp.md`** if you need that diff manually.
+**Does:** (1) copies three vendored **`files/stacks/ODP/3.3/.../*.py`** into **`/var/lib/ambari-server/resources/...`** with backups under **`$BACKUP_ROOT/<timestamp>/`**; (2) **`configs.py` get → sed/awk on `kafka-env` / `cruise-control-env` `content` → set** (skips set if nothing changed). Helpers under **`lib/`**: **`ambari_cluster_name.py`** (autodiscover `CLUSTER` via REST), **`json_content_roundtrip.py`**, **`file_sha256.py`**. Stack definition **XML** is not applied here; see **`temp.md`** if you need that diff manually.
 
 ## Run
 
