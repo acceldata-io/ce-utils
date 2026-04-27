@@ -23,4 +23,20 @@ sudo -E ./patch_ambari_java_home.sh
 
 **Needs:** root for stack copies; **`configs.py`** at **`$AMBARI_RESOURCES/scripts/configs.py`**. **`PYTHON_BIN`** defaults to **`python3.11`**. Override **`CONFIGS_PYTHON_BIN`** only if **`configs.py`** must use another interpreter. With **`AMBARI_PROTOCOL=https`**, **`configs.py`** is called with **`--unsafe`** (skip TLS cert verify) unless you set **`AMBARI_SSL_VERIFY_STRICT=1`**.
 
-Afterward: restart **Kafka**, **Cruise Control**, **Druid** if required; check Ambari for new **`kafka-env` / `cruise-control-env`** versions.
+### After this util
+
+1. **Cluster configs** (`kafka-env`, `cruise-control-env`): Ambari stores the new version; agents use it the next time those components run **install / configure / start / restart**. Do a **rolling restart** (or restart) of **Kafka**, **Cruise Control**, and **Druid** (and any other consumer of those configs).
+
+2. **Stack `*.py`** on the server (`/var/lib/ambari-server/resources/stacks/...`): agents often keep **cached** copies under **`/var/lib/ambari-agent/`** (exact layout varies by Ambari/ODP). Until the cache is refreshed, a host might still run **old** `params.py` / `kafka.py` for stack-driven actions.
+
+   **Recommended:** on **each host** that runs Kafka, Cruise Control, Druid (or simply **all** cluster nodes), as root:
+
+   ```bash
+   sudo ambari-agent restart
+   ```
+
+   That restarts the agent and typically rebuilds cache from the server on the next command.
+
+3. **If something still looks stale** (rare): with the agent **stopped**, only after checking your Ambari/ODP version docs, some sites clear **`/var/lib/ambari-agent/cache`** (or the version-specific cache tree) then start the agent again — **do not** delete arbitrary paths without confirming with your runbook.
+
+4. Optionally **restart Ambari Server** if your operations guide requires it after editing `resources/` (often **not** strictly required for stack file edits alone).
