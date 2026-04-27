@@ -21,6 +21,6 @@ sudo -E ./patch_ambari_java_home.sh
 | `--no-cluster-config` | Skip `configs.py` |
 | `--dry-run` | Stack: compare only. Cluster: no `configs.py set` |
 
-**Needs:** root for stack copies; **`configs.py`** at **`$AMBARI_RESOURCES/scripts/configs.py`**. **`PYTHON_BIN`** defaults to **`python3.11`**. Override **`CONFIGS_PYTHON_BIN`** only if **`configs.py`** must use another interpreter.
+**Needs:** root for stack copies; **`configs.py`** at **`$AMBARI_RESOURCES/scripts/configs.py`**. **`PYTHON_BIN`** defaults to **`python3.11`**. Override **`CONFIGS_PYTHON_BIN`** only if **`configs.py`** must use another interpreter. With **`AMBARI_PROTOCOL=https`**, **`configs.py`** is called with **`--unsafe`** (skip TLS cert verify) unless you set **`AMBARI_SSL_VERIFY_STRICT=1`**.
 
 Afterward: restart **Kafka**, **Cruise Control**, **Druid** if required; check Ambari for new **`kafka-env` / `cruise-control-env`** versions.

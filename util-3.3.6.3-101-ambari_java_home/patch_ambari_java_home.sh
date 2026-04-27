@@ -50,7 +50,8 @@ Usage: patch_ambari_java_home.sh [options]
 
 Env: AMBARI_USER, AMBARI_PASSWORD, CLUSTER (optional), AMBARI_HOST, AMBARI_PORT (1-65535, default 8080),
      AMBARI_PROTOCOL (http|https), AMBARI_RESOURCES, BACKUP_ROOT, PYTHON_BIN (default python3.11),
-     CONFIGS_PYTHON_BIN (defaults to PYTHON_BIN; set e.g. python2 only for configs.py)
+     CONFIGS_PYTHON_BIN (defaults to PYTHON_BIN; set e.g. python2 only for configs.py),
+     AMBARI_SSL_VERIFY_STRICT (set to 1 with https to omit configs.py --unsafe; default is verify skip for self-signed)
 EOF
   exit "${1:-0}"
 }
@@ -236,7 +237,10 @@ patch_cluster_config_type() {
 
   log "configs.py get: ${config_type}"
   local ssl_flag=()
-  [[ "${AMBARI_PROTOCOL}" == "https" ]] && ssl_flag=(-s https)
+  if [[ "${AMBARI_PROTOCOL}" == "https" ]]; then
+    ssl_flag=(-s https)
+    [[ "${AMBARI_SSL_VERIFY_STRICT:-0}" == "1" ]] || ssl_flag+=(--unsafe)
+  fi
 
   local err
   err="$("$CONFIGS_PYTHON_BIN" "$CONFIGS_PY" \
@@ -283,6 +287,9 @@ main() {
 
   normalize_ambari_connection
   log "Ambari API: ${AMBARI_PROTOCOL}://${AMBARI_HOST}:${AMBARI_PORT}"
+  if [[ "${AMBARI_PROTOCOL}" == "https" ]] && [[ "${AMBARI_SSL_VERIFY_STRICT:-0}" != "1" ]]; then
+    log "configs.py will use --unsafe for HTTPS (urllib cert verify off). Export AMBARI_SSL_VERIFY_STRICT=1 to enforce verification."
+  fi
 
   need_stack_prereqs
 
