@@ -4,6 +4,7 @@
 #
 # Stack: replace whole .py files from ./files/... (timestamped backup under BACKUP_ROOT).
 # Cluster: configs.py get -> extract content -> sed/awk -> merge JSON -> configs.py set.
+# After stack *.py changes: restart ambari-agent (and services) so agents drop stale cache — see README.
 #
 # Run on the Ambari Server (root for stack writes under /var/lib/ambari-server/resources).
 #
@@ -313,15 +314,19 @@ main() {
     CLUSTER="$(echo -n "${CLUSTER:-}" | tr -d '\r\n')"
     [[ -n "$CLUSTER" ]] || die "CLUSTER empty: export CLUSTER=... or fix Ambari REST (see messages above; try AMBARI_PROTOCOL=https on TLS ports)."
 
-    local work
-    work="$(mktemp -d "${TMPDIR:-/tmp}/ambari-java-home.XXXXXX")"
-    trap 'rm -rf "$work"' EXIT
+    # Not local: EXIT trap runs after main() returns; locals would be unset (set -u then errors on $work).
+    _JAVA_HOME_PATCH_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ambari-java-home.XXXXXX")"
+    trap 'rm -rf "${_JAVA_HOME_PATCH_WORK:-}"' EXIT
 
-    patch_cluster_config_type "kafka-env" "$work"
-    patch_cluster_config_type "cruise-control-env" "$work"
+    patch_cluster_config_type "kafka-env" "$_JAVA_HOME_PATCH_WORK"
+    patch_cluster_config_type "cruise-control-env" "$_JAVA_HOME_PATCH_WORK"
+
+    trap - EXIT
+    rm -rf "${_JAVA_HOME_PATCH_WORK}"
   fi
 
-  log "Finished. Restart Kafka, Cruise Control, Druid if needed; see README.md."
+  log "Finished. Restart Kafka, Cruise Control, Druid (and other affected) components for new kafka-env / cruise-control-env."
+  log "Stack *.py was updated on the server only — restart ambari-agent on hosts that run those services (or all nodes) so agent cache picks up fresh stack scripts; see README.md."
 }
 
 main "$@"
