@@ -595,9 +595,12 @@ enable_schema_registry () {
 enable_livy3_ssl () {
     SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Livy3...${NC}"
+    set_config "livy3-conf" "livy.ssl" "true"
     set_config "livy3-conf" "livy.keystore" "$keystore"
     set_config "livy3-conf" "livy.keystore.password" "$keystorepassword"
     set_config "livy3-conf" "livy.key-password" "$keystorepassword"
+    set_config "livy3-conf" "livy.truststore" "$truststore"
+    set_config "livy3-conf" "livy.truststore.password" "$truststorepassword"
     report_result "Livy3"
 }
 
