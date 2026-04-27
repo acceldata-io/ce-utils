@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+#
+# ODP-6189: Use Ambari's JDK (ambari_java_home) for CredentialUtil on ODP 3.3 / Ambari Server.
+#
+# Stack: replace whole .py files from ./files/... (timestamped backup under BACKUP_ROOT).
+# Cluster: configs.py get -> extract content -> sed/awk -> merge JSON -> configs.py set.
+#
+# Run on the Ambari Server (root for stack writes under /var/lib/ambari-server/resources).
+#
+#   export AMBARI_USER=admin AMBARI_PASSWORD='***'
+#   export CLUSTER=name   # optional if API returns a single cluster
+#   sudo -E ./patch_ambari_java_home.sh [--no-stack-python] [--no-cluster-config] [--dry-run]
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AMBARI_RESOURCES="${AMBARI_RESOURCES:-/var/lib/ambari-server/resources}"
+CONFIGS_PY="${CONFIGS_PY:-$AMBARI_RESOURCES/scripts/configs.py}"
+# Default interpreter unless the caller exports PYTHON_BIN.
+PYTHON_BIN="${PYTHON_BIN:-python3.11}"
+CONFIGS_PYTHON_BIN="${CONFIGS_PYTHON_BIN:-$PYTHON_BIN}"
+JSON_TOOL="$SCRIPT_DIR/lib/json_content_roundtrip.py"
+
+AMBARI_HOST="${AMBARI_HOST:-$(hostname -f)}"
+AMBARI_PORT="${AMBARI_PORT:-8080}"
+AMBARI_PROTOCOL="${AMBARI_PROTOCOL:-http}"
+VERSION_NOTE="${VERSION_NOTE:-ODP-6189 ambari_java_home for CredentialUtil (ce-utils util-3.3.6.3-101)}"
+BACKUP_ROOT="${BACKUP_ROOT:-$SCRIPT_DIR/backups}"
+
+STACK_PY_RELS=(
+  "stacks/ODP/3.3/services/DRUID/package/scripts/params.py"
+  "stacks/ODP/3.3/services/KAFKA/package/scripts/params.py"
+  "stacks/ODP/3.3/services/KAFKA/package/scripts/kafka.py"
+)
+
+DO_STACK_PYTHON=1
+DO_CLUSTER_CONFIG=1
+DRY_RUN=0
+
+usage() {
+  cat <<'EOF'
+Usage: patch_ambari_java_home.sh [options]
+
+  --no-stack-python     Skip copying stack *.py from ./files/
+  --no-cluster-config   Skip configs.py get / transform / set
+  --dry-run             Stack: cmp only, no copy. Cluster: get+transform but no configs.py set
+  -h, --help            This help
+
+Env: AMBARI_USER, AMBARI_PASSWORD, CLUSTER (optional), AMBARI_HOST, AMBARI_PORT,
+     AMBARI_PROTOCOL, AMBARI_RESOURCES, BACKUP_ROOT, PYTHON_BIN (default python3.11),
+     CONFIGS_PYTHON_BIN (defaults to PYTHON_BIN; set e.g. python2 only for configs.py)
+EOF
+  exit "${1:-0}"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-stack-python) DO_STACK_PYTHON=0 ;;
+    --no-cluster-config) DO_CLUSTER_CONFIG=0 ;;
+    --dry-run) DRY_RUN=1 ;;
+    -h|--help) usage 0 ;;
+    *) echo "Unknown option: $1" >&2; usage 1 ;;
+  esac
+  shift
+done
+
+log() { echo "[patch-ambari-java-home] $*"; }
+die() { echo "[patch-ambari-java-home] ERROR: $*" >&2; exit 1; }
+
+file_sha256() {
+  "$PYTHON_BIN" -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$1"
+}
+
+need_stack_prereqs() {
+  local d="$AMBARI_RESOURCES/stacks/ODP/3.3"
+  [[ -d "$d" ]] || die "Missing stack dir: $d (wrong AMBARI_RESOURCES?)"
+  if [[ "$DO_STACK_PYTHON" -eq 1 ]]; then
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+      die "Stack file copies need root (sudo), or use --no-stack-python."
+    fi
+  fi
+}
+
+ensure_stack_py_sources() {
+  local rel missing=0
+  for rel in "${STACK_PY_RELS[@]}"; do
+    if [[ ! -f "$SCRIPT_DIR/files/$rel" ]]; then
+      log "Missing: files/$rel"
+      missing=1
+    fi
+  done
+  if [[ "$missing" -ne 0 ]]; then
+    die "Add the three patched .py files under $SCRIPT_DIR/files/ (paths in README.md)."
+  fi
+}
+
+replace_stack_py_files() {
+  ensure_stack_py_sources
+  local stamp bdir rel src dst
+  stamp="$(date +%Y%m%d%H%M%S)"
+  bdir="$BACKUP_ROOT/$stamp"
+  for rel in "${STACK_PY_RELS[@]}"; do
+    src="$SCRIPT_DIR/files/$rel"
+    dst="$AMBARI_RESOURCES/$rel"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      if [[ ! -f "$dst" ]]; then
+        log "DRY-RUN: target missing: $dst"
+      elif cmp -s "$src" "$dst"; then
+        log "DRY-RUN: $rel unchanged (matches bundle)"
+      else
+        log "DRY-RUN: would replace $rel"
+      fi
+      continue
+    fi
+    [[ -f "$dst" ]] || die "Target missing on server: $dst"
+    mkdir -p "$bdir/$(dirname "$rel")"
+    cp -a "$dst" "$bdir/$rel"
+    cp -a "$src" "$dst"
+    log "Installed $rel (backup: $bdir/$rel)"
+  done
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    log "Stack Python backups: $bdir"
+  fi
+}
+
+# CredentialUtil: PATH java -> $AMBARI_JAVA_HOME/bin/java; export AMBARI_JAVA_HOME after JAVA_HOME.
+transform_env_content_file() {
+  local f="$1" tmp
+  tmp="$(mktemp "${f}.tmp.XXXXXX")" || die "mktemp failed for $f"
+  sed 's|`java -cp "/var/lib/ambari-agent/cred/lib/\*"|`$AMBARI_JAVA_HOME/bin/java -cp "/var/lib/ambari-agent/cred/lib/*"|g' "$f" >"$tmp" || {
+    rm -f "$tmp"
+    die "sed failed on $f"
+  }
+  mv "$tmp" "$f" || {
+    rm -f "$tmp"
+    die "mv failed for $f"
+  }
+  if grep -qE '^[[:space:]]*export AMBARI_JAVA_HOME=' "$f"; then
+    return 0
+  fi
+  tmp="$(mktemp "${f}.tmp.XXXXXX")" || die "mktemp failed for $f"
+  awk '
+    /^[[:space:]]*export JAVA_HOME=/ && !done {
+      print
+      match($0, /^[[:space:]]*/)
+      indent = substr($0, 1, RLENGTH)
+      print indent "export AMBARI_JAVA_HOME={{ambari_java_home}}"
+      done = 1
+      next
+    }
+    { print }
+  ' "$f" >"$tmp" || {
+    rm -f "$tmp"
+    die "awk failed on $f"
+  }
+  mv "$tmp" "$f" || {
+    rm -f "$tmp"
+    die "mv failed for $f"
+  }
+}
+
+detect_cluster_name() {
+  if [[ -n "${CLUSTER:-}" ]]; then
+    echo "$CLUSTER"
+    return 0
+  fi
+  if [[ -z "${AMBARI_USER:-}" || -z "${AMBARI_PASSWORD:-}" ]]; then
+    return 1
+  fi
+  local curl_opts=(-sS -u "${AMBARI_USER}:${AMBARI_PASSWORD}" -H "X-Requested-By: ambari")
+  [[ "${AMBARI_PROTOCOL}" == "https" ]] && curl_opts+=(-k)
+  curl "${curl_opts[@]}" "${AMBARI_PROTOCOL}://${AMBARI_HOST}:${AMBARI_PORT}/api/v1/clusters" \
+    | sed -n 's/.*"cluster_name" *: *"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+patch_cluster_config_type() {
+  local config_type="$1"
+  local work="$2"
+  local raw="${work}/${config_type}.raw.json"
+  local new="${work}/${config_type}.new.json"
+  local content="${work}/${config_type}.content.sh"
+
+  log "configs.py get: ${config_type}"
+  local ssl_flag=()
+  [[ "${AMBARI_PROTOCOL}" == "https" ]] && ssl_flag=(-s https)
+
+  local err
+  err="$("$CONFIGS_PYTHON_BIN" "$CONFIGS_PY" \
+    -u "$AMBARI_USER" -p "$AMBARI_PASSWORD" "${ssl_flag[@]}" -a get -t "$AMBARI_PORT" \
+    -l "$AMBARI_HOST" -n "$CLUSTER" -c "$config_type" -f "$raw" 2>&1)" || {
+    if echo "$err" | grep -qiE 'not found|missing'; then
+      log "Config type ${config_type} not present; skip."
+      return 0
+    fi
+    die "configs.py get failed (${config_type}): $err"
+  }
+
+  "$PYTHON_BIN" "$JSON_TOOL" extract "$raw" "$content" || die "extract content failed (${config_type})"
+
+  local before after
+  before="$(file_sha256 "$content")"
+  transform_env_content_file "$content"
+  after="$(file_sha256 "$content")"
+
+  if [[ "$before" == "$after" ]]; then
+    log "${config_type}: content unchanged; skip set."
+    return 0
+  fi
+
+  "$PYTHON_BIN" "$JSON_TOOL" merge "$raw" "$content" "$new" || die "merge failed (${config_type})"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would configs.py set ${config_type}"
+    return 0
+  fi
+
+  log "configs.py set: ${config_type}"
+  err="$("$CONFIGS_PYTHON_BIN" "$CONFIGS_PY" \
+    -u "$AMBARI_USER" -p "$AMBARI_PASSWORD" "${ssl_flag[@]}" -a set -t "$AMBARI_PORT" \
+    -l "$AMBARI_HOST" -n "$CLUSTER" -c "$config_type" -f "$new" \
+    -b "$VERSION_NOTE" 2>&1)" || die "configs.py set failed (${config_type}): $err"
+  log "Updated ${config_type}."
+}
+
+main() {
+  need_stack_prereqs
+
+  if [[ "$DO_CLUSTER_CONFIG" -eq 1 ]]; then
+    [[ -f "$CONFIGS_PY" ]] || die "Missing $CONFIGS_PY"
+    [[ -f "$JSON_TOOL" ]] || die "Missing $JSON_TOOL"
+  fi
+
+  if [[ "$DO_STACK_PYTHON" -eq 1 ]]; then
+    log "Stack Python: copy from files/ -> $AMBARI_RESOURCES (BACKUP_ROOT=$BACKUP_ROOT)"
+    replace_stack_py_files
+  fi
+
+  if [[ "$DO_CLUSTER_CONFIG" -eq 1 ]]; then
+    [[ -n "${AMBARI_USER:-}" ]] || die "Set AMBARI_USER (and AMBARI_PASSWORD), or use --no-cluster-config."
+    [[ -n "${AMBARI_PASSWORD:-}" ]] || die "Set AMBARI_PASSWORD, or use --no-cluster-config."
+
+    CLUSTER="$(detect_cluster_name)" || true
+    CLUSTER="$(echo -n "${CLUSTER:-}" | tr -d '\r\n')"
+    [[ -n "$CLUSTER" ]] || die "CLUSTER empty: set CLUSTER or fix Ambari API auth/host."
+
+    local work
+    work="$(mktemp -d "${TMPDIR:-/tmp}/ambari-java-home.XXXXXX")"
+    trap 'rm -rf "$work"' EXIT
+
+    patch_cluster_config_type "kafka-env" "$work"
+    patch_cluster_config_type "cruise-control-env" "$work"
+  fi
+
+  log "Finished. Restart Kafka, Cruise Control, Druid if needed; see README.md."
+}
+
+main "$@"
