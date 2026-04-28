@@ -2176,30 +2176,45 @@ fetch_services() {
 get_ambari_config() {
     local config_type="$1"
     local output_file="$2"
-    
+
     if [[ -z "$config_type" ]] || [[ -z "$output_file" ]]; then
         error "Usage: get_ambari_config <config_type> <output_file>"
         return 1
     fi
-    
+
     local ssl_flag=""
     if [[ "$AMBARI_PROTOCOL" == "https" ]]; then
         ssl_flag="-s https"
     fi
-    
-    # Use python3 by default, but can use PYTHON_BIN if set
-    local python_bin="${PYTHON_BIN:-python3}"
-    
+
+    # Try python2 first (configs.py uses Python 2 syntax), fall back to python3
+    local python_bin="python2"
+    if ! command -v python2 &> /dev/null; then
+        python_bin="python3"
+    fi
+
     local err
     err=$($python_bin /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$AMBARI_USER" -p "$AMBARI_PASSWORD" $ssl_flag -a get -t "$AMBARI_PORT" \
         -l "$AMBARI_SERVER" -n "$CLUSTER" \
         -c "$config_type" -f "$output_file" 2>&1 1>/dev/null)
     local rc=$?
-    
+
     if ((rc != 0)); then
         if echo "$err" | grep -q "Missing parentheses in call to 'print'"; then
-            error "Python version issue detected. Please set PYTHON_BIN=python2 for Python 2."
+            # If we used python3 and got a syntax error, try python2 if available
+            if [[ "$python_bin" == "python3" ]] && command -v python2 &> /dev/null; then
+                err=$(python2 /var/lib/ambari-server/resources/scripts/configs.py \
+                    -u "$AMBARI_USER" -p "$AMBARI_PASSWORD" $ssl_flag -a get -t "$AMBARI_PORT" \
+                    -l "$AMBARI_SERVER" -n "$CLUSTER" \
+                    -c "$config_type" -f "$output_file" 2>&1 1>/dev/null)
+                rc=$?
+                if ((rc == 0)); then
+                    return 0
+                fi
+            fi
+            error "Python version issue: configs.py requires Python 2, but only Python 3 is available."
+            error "Please install python2 or update /var/lib/ambari-server/resources/scripts/configs.py for Python 3 compatibility."
             return 1
         fi
         if [[ "$AMBARI_PROTOCOL" == "https" ]] && echo "$err" | grep -q "CERTIFICATE_VERIFY_FAILED"; then
