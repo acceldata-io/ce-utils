@@ -65,10 +65,10 @@ ambari_java_home: '/usr/lib/jvm/java-17-openjdk'
 # Common options:
 #   JDK 17: java-17-openjdk-devel   (JAVA_HOME: /usr/lib/jvm/java-17-openjdk)
 #   JDK 11: java-11-openjdk-devel   (JAVA_HOME: /usr/lib/jvm/java-11-openjdk)
-openjdk_package: 'java-17-openjdk-devel'
+openjdk_package: 'java-11-openjdk-devel'
 
 # JAVA_HOME path for the ODP stack — must match openjdk_package (or the 'custom' pre-installed JDK)
-java_home: '/usr/lib/jvm/java-17-openjdk'
+java_home: '/usr/lib/jvm/java-11-openjdk'
 
 
 ###############################################
@@ -156,7 +156,7 @@ nifi_security_options:
 
 ambari_admin_user: 'admin'
 ambari_admin_default_password: "{{ vault_ambari_admin_default_password }}"
-config_recommendation_strategy: 'ALWAYS_APPLY_DONT_OVERRIDE_CUSTOM_VALUES'
+config_recommendation_strategy: 'NEVER_APPLY'
 
 wait: true
 wait_timeout: 3600
