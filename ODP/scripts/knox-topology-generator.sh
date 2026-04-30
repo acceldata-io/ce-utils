@@ -2187,10 +2187,23 @@ get_ambari_config() {
         ssl_flag="-s https"
     fi
 
-    # Try python2 first (configs.py uses Python 2 syntax), fall back to python3
-    local python_bin="python2"
-    if ! command -v python2 &> /dev/null; then
-        python_bin="python3"
+    # Detect the Python interpreter Ambari itself is running under (matches configs.py syntax).
+    # Falls back to python3, then python2.
+    local python_bin=""
+    python_bin=$(ps -eo args= 2>/dev/null \
+        | grep -E '/ambari[-_]agent/(lib/)?ambari_agent/main\.py[[:space:]]+start' \
+        | grep -v grep \
+        | awk '{print $1}' \
+        | head -n 1)
+    if [[ -z "$python_bin" ]] || [[ ! -x "$python_bin" ]]; then
+        if command -v python3 &> /dev/null; then
+            python_bin="python3"
+        elif command -v python2 &> /dev/null; then
+            python_bin="python2"
+        else
+            error "No Python interpreter found (need python3 or python2 to run configs.py)."
+            return 1
+        fi
     fi
 
     local err
@@ -2201,8 +2214,8 @@ get_ambari_config() {
     local rc=$?
 
     if ((rc != 0)); then
+        # Py3 running an older Py2 configs.py -> "Missing parentheses in call to 'print'"
         if echo "$err" | grep -q "Missing parentheses in call to 'print'"; then
-            # If we used python3 and got a syntax error, try python2 if available
             if [[ "$python_bin" == "python3" ]] && command -v python2 &> /dev/null; then
                 err=$(python2 /var/lib/ambari-server/resources/scripts/configs.py \
                     -u "$AMBARI_USER" -p "$AMBARI_PASSWORD" $ssl_flag -a get -t "$AMBARI_PORT" \
@@ -2213,8 +2226,24 @@ get_ambari_config() {
                     return 0
                 fi
             fi
-            error "Python version issue: configs.py requires Python 2, but only Python 3 is available."
-            error "Please install python2 or update /var/lib/ambari-server/resources/scripts/configs.py for Python 3 compatibility."
+            error "Python version mismatch: configs.py appears to be Python 2, but only Python 3 is available."
+            error "Install python2 or replace /var/lib/ambari-server/resources/scripts/configs.py with a Python 3 compatible version."
+            return 1
+        fi
+        # Py2 running a modern Py3 configs.py -> "SyntaxError: invalid syntax" on f-strings
+        if echo "$err" | grep -qE "SyntaxError: invalid syntax|f\""; then
+            if [[ "$python_bin" == "python2" ]] && command -v python3 &> /dev/null; then
+                err=$(python3 /var/lib/ambari-server/resources/scripts/configs.py \
+                    -u "$AMBARI_USER" -p "$AMBARI_PASSWORD" $ssl_flag -a get -t "$AMBARI_PORT" \
+                    -l "$AMBARI_SERVER" -n "$CLUSTER" \
+                    -c "$config_type" -f "$output_file" 2>&1 1>/dev/null)
+                rc=$?
+                if ((rc == 0)); then
+                    return 0
+                fi
+            fi
+            error "Python version mismatch: configs.py requires Python 3, but only Python 2 is available."
+            error "Install python3 or replace /var/lib/ambari-server/resources/scripts/configs.py with a Python 2 compatible version."
             return 1
         fi
         if [[ "$AMBARI_PROTOCOL" == "https" ]] && echo "$err" | grep -q "CERTIFICATE_VERIFY_FAILED"; then
