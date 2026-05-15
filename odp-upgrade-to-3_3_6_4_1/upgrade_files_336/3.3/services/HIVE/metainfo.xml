@@ -20,7 +20,7 @@
   <services>
     <service>
       <name>HIVE</name>
-      <version>4.0.0</version>
+      <version>4.0.1</version>
     </service>
   </services>
 </metainfo>
