@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ./setup_ssl_with_existing_jks.sh
-# Supported Services: HDFS/YARN/MapReduce, Infra-Solr, Hive, Ranger, Spark2, Kafka, HBase, Spark3, Oozie, Ranger KMS, Ozone, NiFi, Schema Registry, Livy2, Kafka3, Livy3, NiFi Registry, Trino, Zeppelin
+# Supported Services: HDFS/YARN/MapReduce, Infra-Solr, Hive, Ranger, Spark2, Kafka, HBase, Spark3, Oozie, Ranger KMS, Ozone, NiFi, Schema Registry, Livy2, Kafka3, Livy3, NiFi Registry, Trino, Zeppelin, Solr, Atlas
 ##########################################################################
 GREEN='\e[32m'; YELLOW='\e[33m'; RED='\e[31m'; CYAN='\e[36m'; NC='\e[0m'  # Color codes
 #---------------------------------------------------------
@@ -24,6 +24,29 @@ keystorepassword='keystore_Password'       # Replace with actual keystore passwo
 truststorepassword='truststore_Password'     # Replace with actual truststore password
 keystore="/opt/security/pki/server.jks"
 truststore="/opt/security/pki/ca-certs.jks"
+
+# Ranger plugin certificate Common Name (CN) enforcement.
+# Controls whether common.name.for.certificate is pushed into every Ranger
+# plugin config (ranger-<service>-plugin-properties). Ranger Admin uses this to
+# validate the CN of the certificate the plugin presents over 2-way SSL.
+#   "disabled"  -> (default) do not set common.name.for.certificate anywhere.
+#   "wildcard"  -> set common.name.for.certificate=<RANGER_CERT_CN> on ALL
+#                  ranger-<service>-plugin-properties config types.
+RANGER_PLUGIN_CN_MODE="disabled"   # "disabled" | "wildcard"
+# The certificate Common Name (CN) to enforce. Used only when
+# RANGER_PLUGIN_CN_MODE="wildcard". This is the CN (Owner) of your keystore cert.
+# Leave empty to be prompted at runtime. To find it, run on the keystore host:
+#   keytool -list -v -keystore "$keystore" | grep -i 'Owner:'
+RANGER_CERT_CN=""
+
+# Atlas credential provider (JCEKS). Atlas reads keystore/truststore passwords
+# from this provider, not from application-properties directly. The file must be
+# created manually on the Atlas node after configs are set (see end-of-run guide).
+atlas_jceks_local="/etc/atlas/conf/atlas.jceks"
+atlas_jceks_uri="jceks://file${atlas_jceks_local}"
+# Tracks whether the user enabled SSL for Atlas, so we can print the JCEKS
+# creation steps once at the very end.
+ATLAS_SELECTED=false
 
 # File validation flag (set to "false" to skip file existence checks)
 CHECK_FILES="${CHECK_FILES:-true}"  # Default: true (check files)
@@ -80,7 +103,7 @@ handle_ssl_failure() {
         echo -e "  • Run 'update-ca-trust extract' to add them to your system trust store"
         echo ""
         echo ""
-        read -p "Do you want to extract and install the Ambari CA certificate now? (yes/no): " choice
+        read -rp "Do you want to extract and install the Ambari CA certificate now? (yes/no): " choice
         if [[ "${choice,,}" != "yes" ]]; then
             echo -e "${YELLOW}Aborting certificate installation. Please add the CA manually if needed.${NC}"
             exit 1
@@ -150,6 +173,7 @@ historyserver=$(get_host_for_component "HISTORYSERVER")
 rangeradmin=$(get_host_for_component "RANGER_ADMIN")
 OOZIE_HOSTNAME=$(get_host_for_component "OOZIE_SERVER")
 rangerkms=$(get_host_for_component "RANGER_KMS_SERVER")
+atlasserver=$(get_host_for_component "ATLAS_SERVER")
 
 echo -e "${GREEN}==========================================================${NC}"
 echo -e "${GREEN}              Acceldata ODP SSL Configuration Script        ${NC}"
@@ -295,6 +319,36 @@ enable_hive_ssl() {
     report_result "Hive"
 }
 
+# Pushes common.name.for.certificate into every Ranger plugin config when
+# RANGER_PLUGIN_CN_MODE="wildcard". Driven purely by the flag — there is no
+# separate menu option; it runs as part of enable_ranger_ssl. When active it
+# also relaxes Ranger Admin's client auth to "want" so plugins are validated by
+# certificate CN over 2-way SSL. Default mode "disabled" => this is a no-op.
+apply_ranger_plugin_cn() {
+    [[ "${RANGER_PLUGIN_CN_MODE,,}" == "wildcard" ]] || return 0
+
+    # Resolve the certificate CN (user input). Prompt if not preset.
+    if [[ -z "${RANGER_CERT_CN}" ]]; then
+        echo -e "${YELLOW}RANGER_PLUGIN_CN_MODE=wildcard: common.name.for.certificate will be set on all Ranger plugins.${NC}"
+        echo -e "${CYAN}Find the certificate Common Name (Owner CN) with:${NC}"
+        echo -e "  ${GREEN}keytool -list -v -keystore \"$keystore\" | grep -i 'Owner:'${NC}"
+        read -rp "Enter the certificate Common Name (CN) to enforce: " RANGER_CERT_CN
+    fi
+    if [[ -z "${RANGER_CERT_CN}" ]]; then
+        echo -e "${RED}[WARNING] No CN provided; skipping common.name.for.certificate.${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}Setting common.name.for.certificate=\"${RANGER_CERT_CN}\" on all Ranger plugins...${NC}"
+    # Relax Ranger Admin client auth so CN validation applies (want, not false).
+    set_config "ranger-admin-site" "ranger.service.https.attrib.clientAuth" "want"
+
+    local svc
+    for svc in hdfs yarn hive kms hbase kafka knox nifi nifi-registry kudu ozone schema-registry kafka3 trino atlas solr; do
+        set_config "ranger-${svc}-plugin-properties" "common.name.for.certificate" "$RANGER_CERT_CN"
+    done
+}
+
 enable_ranger_ssl() {
     SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Ranger...${NC}"
@@ -391,6 +445,16 @@ enable_ranger_ssl() {
     set_config "ranger-trino-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
     set_config "ranger-trino-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"
     set_config "ranger-trino-security" "ranger.plugin.trino.policy.rest.url" "https://$rangeradmin:6182"
+    set_config "ranger-atlas-policymgr-ssl" "xasecure.policymgr.clientssl.keystore" "$keystore"
+    set_config "ranger-atlas-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
+    set_config "ranger-atlas-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
+    set_config "ranger-atlas-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"
+    set_config "ranger-solr-policymgr-ssl" "xasecure.policymgr.clientssl.keystore" "$keystore"
+    set_config "ranger-solr-policymgr-ssl" "xasecure.policymgr.clientssl.keystore.password" "$keystorepassword"
+    set_config "ranger-solr-policymgr-ssl" "xasecure.policymgr.clientssl.truststore" "$truststore"
+    set_config "ranger-solr-policymgr-ssl" "xasecure.policymgr.clientssl.truststore.password" "$truststorepassword"
+    # Optional: enforce certificate CN on all Ranger plugins (flag-driven, default off).
+    apply_ranger_plugin_cn
     report_result "Ranger"
 }
 
@@ -640,6 +704,70 @@ enable_zeppelin_ssl () {
     set_config "zeppelin-site" "zeppelin.ssl.truststore.type" "jks"
     report_result "Zeppelin"
 }
+
+enable_solr_ssl () {
+    SET_CONFIG_FAILURES=0
+    echo -e "${YELLOW}Starting to enable SSL for Solr...${NC}"
+    set_config "solr-config" "solr_ssl_enabled" "true"
+    set_config "solr-config" "solr_keystore_location" "$keystore"
+    set_config "solr-config" "solr_keystore_password" "$keystorepassword"
+    set_config "solr-config" "solr_truststore_location" "$truststore"
+    set_config "solr-config" "solr_truststore_password" "$truststorepassword"
+    report_result "Solr"
+}
+
+# Prints the Atlas JCEKS credential-provider creation guide. Shown right after
+# Atlas SSL is enabled, and again at the end of the run as a reminder.
+print_atlas_jceks_guide() {
+    echo ""
+    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN} Atlas: create the credential provider (required)${NC}"
+    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+    echo -e "Atlas reads the keystore/truststore passwords from a JCEKS credential"
+    echo -e "provider, not from application-properties. You configured:"
+    echo -e "  ${GREEN}cert.stores.credential.provider.path = ${atlas_jceks_uri}${NC}"
+    echo ""
+    echo -e "${YELLOW}The provider path can be local or in HDFS, e.g.:${NC}"
+    echo -e "  jceks://file/local/file/path/file.jceks"
+    echo -e "  jceks://hdfs@namenodehost:port/path/in/hdfs/to/file.jceks"
+    echo ""
+    echo -e "${YELLOW}To create it, log in to the Atlas node${atlasserver:+ (${atlasserver})} and run:${NC}"
+    echo -e "  ${GREEN}cd /usr/odp/current/atlas-server/bin${NC}"
+    echo -e "  ${GREEN}./cputil.py${NC}"
+    echo ""
+    echo -e "When prompted, enter the provider path and the passwords:"
+    echo -e "  Please enter the full path to the credential provider: ${GREEN}${atlas_jceks_uri}${NC}"
+    echo -e "  Please enter the password value for keystore.password:   ${YELLOW}<keystore password>${NC}"
+    echo -e "  Please enter the password value for keystore.password again:"
+    echo -e "  Please enter the password value for truststore.password: ${YELLOW}<truststore password>${NC}"
+    echo -e "  Please enter the password value for truststore.password again:"
+    echo -e "  Please enter the password value for password:            ${YELLOW}<key/server cert password>${NC}"
+    echo -e "  Please enter the password value for password again:"
+    echo ""
+    echo -e "${YELLOW}Then fix ownership so the Atlas process can read it:${NC}"
+    echo -e "  ${GREEN}chown atlas:hadoop ${atlas_jceks_local}${NC}"
+    echo ""
+    echo -e "${YELLOW}Restart the Atlas service after creating the credential provider.${NC}"
+    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+}
+
+enable_atlas_ssl () {
+    SET_CONFIG_FAILURES=0
+    ATLAS_SELECTED=true
+    echo -e "${YELLOW}Starting to enable SSL for Atlas...${NC}"
+    set_config "application-properties" "atlas.enableTLS" "true"
+    set_config "application-properties" "keystore.file" "$keystore"
+    set_config "application-properties" "keystore.password" "$keystorepassword"
+    set_config "application-properties" "truststore.file" "$truststore"
+    set_config "application-properties" "truststore.password" "$truststorepassword"
+    set_config "application-properties" "cert.stores.credential.provider.path" "$atlas_jceks_uri"
+    set_config "application-properties" "atlas.kafka.ssl.truststore.location" "$truststore"
+    set_config "application-properties" "atlas.kafka.ssl.truststore.password" "$truststorepassword"
+    report_result "Atlas"
+    # Show the JCEKS creation steps immediately so they aren't missed in the
+    # menu loop; they're repeated once more at the end of the run.
+    print_atlas_jceks_guide
+}
 #---------------------------------------------------------
 # Menu for Selecting SSL Configuration Services
 #---------------------------------------------------------
@@ -666,6 +794,8 @@ display_service_options() {
     echo -e "${GREEN} 17)${NC} 📝   NiFi Registry"
     echo -e "${GREEN} 18)${NC} 🚀   Trino"
     echo -e "${GREEN} 19)${NC} 📓   Zeppelin"
+    echo -e "${GREEN} 20)${NC} 🔍   Solr"
+    echo -e "${GREEN} 21)${NC} 🗺️   Atlas"
     echo -e "${YELLOW}────────────────────────────────────────────────────────────${NC}"
     echo -e "${GREEN}  A)${NC} 🌐   All Services (for the brave)"
     echo -e "${RED}  Q)${NC} ❌   Quit (no changes)"
@@ -698,6 +828,8 @@ while true; do
         17) enable_nifi_registry_ssl ;;
         18) enable_trino_ssl ;;
         19) enable_zeppelin_ssl ;;
+        20) enable_solr_ssl ;;
+        21) enable_atlas_ssl ;;
         [Aa])
             enable_hdfs_ssl
             enable_infra_solr_ssl
@@ -718,6 +850,8 @@ while true; do
             enable_kafka3_ssl
             enable_trino_ssl
             enable_zeppelin_ssl
+            enable_solr_ssl
+            enable_atlas_ssl
             ;;
         [Qq]) 
             echo -e "${GREEN}Exiting...${NC}"
@@ -737,6 +871,17 @@ if ls doSet_version* 1> /dev/null 2>&1; then
     echo -e "${GREEN}JSON files moved to /tmp.${NC}"
 else
     echo -e "${YELLOW}No JSON files found to move.${NC}"
+fi
+
+#---------------------------------------------------------
+# Atlas Post-Configuration: Credential Provider (JCEKS) Guide
+# Atlas does not read the keystore/truststore passwords from
+# application-properties directly — it expects them in a JCEKS credential
+# provider referenced by cert.stores.credential.provider.path. This file must
+# be created manually on the Atlas node, so guide the user through it.
+#---------------------------------------------------------
+if [[ "${ATLAS_SELECTED}" == "true" ]]; then
+    print_atlas_jceks_guide
 fi
 
 echo -e "${GREEN}Script execution completed.${NC}"
