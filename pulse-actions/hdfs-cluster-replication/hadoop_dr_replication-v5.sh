@@ -955,7 +955,7 @@ check_cluster_health() {
         if [[ -n "${KRB5CCNAME:-}" ]]; then
             # Export KRB5CCNAME for curl to use
             export KRB5CCNAME
-            curl_cmd="curl --silent --max-time 10 --fail --negotiate -u : \"$jmx_url\""
+            curl_cmd="curl -ik --silent --max-time 10 --fail --negotiate -u : \"$jmx_url\""
             echo ""
             echo "  >>> Curl Command (Kerberos with custom cache):"
             echo "  >>>   KRB5CCNAME=\"${KRB5CCNAME}\" $curl_cmd"
@@ -963,7 +963,7 @@ check_cluster_health() {
             log "[DEBUG] Using Kerberos with KRB5CCNAME=\"${KRB5CCNAME}\""
         else
             # Kerberos mode but no custom cache - use default location
-            curl_cmd="curl --silent --max-time 10 --fail --negotiate -u : \"$jmx_url\""
+            curl_cmd="curl -ik --silent --max-time 10 --fail --negotiate -u : \"$jmx_url\""
             echo ""
             echo "  >>> Curl Command (Kerberos, default cache):"
             echo "  >>>   $curl_cmd"
@@ -972,28 +972,28 @@ check_cluster_health() {
         fi
         
         # Execute curl with Kerberos authentication
-        jmx_response=$(curl --silent --max-time 10 --fail --negotiate -u : "$jmx_url" 2>/dev/null || true)
+        jmx_response=$(curl -ik --silent --max-time 10 --fail --negotiate -u : "$jmx_url" 2>/dev/null || true)
         
         # Check if Kerberos authentication failed
         if [[ -z "$jmx_response" ]] || ! echo "$jmx_response" | grep -q "FSNamesystem"; then
             log "[WARN] Kerberos authentication failed, trying without Kerberos..."
-            curl_cmd="curl --silent --max-time 10 --fail \"$jmx_url\""
+            curl_cmd="curl -ik --silent --max-time 10 --fail \"$jmx_url\""
             echo ""
             echo "  >>> Fallback Curl Command (no Kerberos):"
             echo "  >>>   $curl_cmd"
             echo ""
             log "[DEBUG] Fallback to non-Kerberos mode"
-            jmx_response=$(curl --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
+            jmx_response=$(curl -ik --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
         fi
     else
         # Non-Kerberos mode
-        curl_cmd="curl --silent --max-time 10 --fail \"$jmx_url\""
+        curl_cmd="curl -ik --silent --max-time 10 --fail \"$jmx_url\""
         echo ""
         echo "  >>> Curl Command (no Kerberos):"
         echo "  >>>   $curl_cmd"
         echo ""
         log "[DEBUG] Using non-Kerberos mode"
-        jmx_response=$(curl --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
+        jmx_response=$(curl -ik --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
     fi
     
     # Check if we got a valid response
