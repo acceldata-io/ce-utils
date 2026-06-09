@@ -41,6 +41,21 @@
 #   7) DISTCP_USER          - User to run `hadoop distcp` as (default: same as HDFS_USER)
 #                              If not provided or empty, will use HDFS_USER value
 #   8) COPY_OPTS            - Additional DistCp options (quoted string)
+#                              Throughput / memory controls can be appended here:
+#                                -m <N>            Max map tasks (parallelism). With "-strategy dynamic"
+#                                                  this is the number of mappers splitting the chunks.
+#                                -bandwidth <MBps> Throttle PER MAP. Effective network ceiling is
+#                                                  roughly  N x MBps  (e.g. -m 20 -bandwidth 100 ~= 2000 MB/s).
+#                                                  Tune -m and -bandwidth together.
+#                                -Dmapreduce.map.memory.mb=<MB>        Mapper container memory.
+#                                -Dmapreduce.map.java.opts=-Xmx<~80% of MB>m   Mapper JVM heap.
+#                                                  Keep -Xmx < memory.mb (leave ~20% headroom) or YARN
+#                                                  kills the container.
+#                              Example value:
+#                                "--strategy dynamic -direct -update -pugptx -skipcrccheck -m 20 -bandwidth 100"
+#                              NOTE: the DistCp DRIVER/client heap is NOT a DistCp flag and cannot go here;
+#                                    set it via the HADOOP_CLIENT_OPTS env var (see below) to avoid client OOM
+#                                    while building the copy listing / running -diff.
 #   9) YARN_QUEUE           - YARN queue name for DistCp jobs (default: "default")
 #   10) LOG_PATH            - Path to log file (default: /var/log/hadoop-dr-replicate.log)
 #   11) AUTO_FULL_DISTCP    - Auto-run full DistCp on initial baseline (optional, default: "no")
@@ -80,6 +95,13 @@
 #     environment variable to ensure deterministic behavior.
 #
 # Environment Variables (Optional):
+#   - HADOOP_CLIENT_OPTS    - JVM options for the DistCp DRIVER/client (NOT the YARN mappers).
+#     Default applied by this script if unset: -Xmx5g
+#     The client builds the copy listing and computes snapshot diffs in-process; the Hadoop
+#     default heap (~1 GB) can OOM on large directories (e.g. "java.lang.OutOfMemoryError" /
+#     "GC overhead limit exceeded" before the YARN job is even submitted). Raise it for big trees:
+#     Example: export HADOOP_CLIENT_OPTS="-Xmx4g"
+#     (Mapper-side memory is tuned separately via -Dmapreduce.map.memory.mb in COPY_OPTS, arg 8.)
 #   - SOURCE_HTTP_SCHEME    - HTTP scheme for source cluster JMX access (default: http)
 #     Example: export SOURCE_HTTP_SCHEME=https
 #   - SOURCE_NN_WEB_PORT    - NameNode web UI port for source cluster (default: 50070)
@@ -345,6 +367,13 @@ DEST_NN_WEB_PORT="${DEST_NN_WEB_PORT:-50070}"     # NameNode web UI port for des
 # Example: export KRB5CCNAME=/tmp/krb_12345
 # If not set, curl will use the default Kerberos cache location.
 KRB5CCNAME="${KRB5CCNAME:-}"
+
+# DistCp driver/client JVM heap (NOT the YARN mappers).
+# The DistCp client builds the copy listing and computes snapshot diffs in-process; the
+# Hadoop default heap (~1 GB) can OOM on large directories before the YARN job is submitted.
+# Apply a safe default of 5g unless the operator already set HADOOP_CLIENT_OPTS, and export
+# it so it is inherited by the `hadoop distcp` / `hdfs` invocations (incl. via run_as_distcp).
+export HADOOP_CLIENT_OPTS="${HADOOP_CLIENT_OPTS:--Xmx5g}"
 
 # Lock file directory used to store per-directory snapshot capability locks.
 # Each directory will have its own lock file: ${SNAP_LOCK_DIR}/<sanitized_dir_path>.lock    
@@ -1202,6 +1231,89 @@ rollback_once_for_failure() {
 }
 
 # -----------------------------------------------------------------------------
+# Baseline bootstrap completion / self-heal (runs ONCE per directory, on the
+# baseline transition last_snap == ${SNAP_PREFIX}_0, BEFORE the incremental -diff).
+#
+# Why this exists:
+#   The destination baseline snapshot ${SNAP_PREFIX}_0 is created in Stage 3 while the
+#   destination directory may still be EMPTY (AUTO_FULL_DISTCP=no, before manual copy),
+#   PARTIAL (a full DistCp was interrupted / OOM'd), or filled out-of-band by an operator.
+#   DistCp -diff requires the destination LIVE data to equal the destination ${SNAP_PREFIX}_0
+#   snapshot, and the incremental diff only carries SOURCE-side deltas -- it can never
+#   backfill files the bulk copy missed. The previous `snapshotDiff ... "."` heuristic was
+#   unreliable (false negatives), which left the baseline stale and caused
+#   "The target has been modified since snapshot" failures (and risked a silent empty DR
+#   if -diff "succeeded" copying nothing).
+#
+# What it does (deterministic, works for BOTH AUTO_FULL_DISTCP=yes and =no):
+#   1) One-time full `distcp -update` from the SOURCE ${SNAP_PREFIX}_0 snapshot into the
+#      destination. Near-noop if already fully copied; backfills any gaps. If this fails we
+#      do NOT re-baseline (re-baselining a bad state would freeze divergence).
+#   2) Delete + recreate the destination ${SNAP_PREFIX}_0 snapshot from the reconciled state,
+#      so DistCp's "target unchanged since fromSnapshot" precondition holds.
+#   3) Clear any stale rollback markers for this baseline pair (from a prior failed run).
+#
+# Runs only while state == ${SNAP_PREFIX}_0; once state advances to _1 it never runs again.
+# Returns 0 on success (caller proceeds to -diff), 1 on failure (caller fails the directory).
+# -----------------------------------------------------------------------------
+reconcile_and_rebaseline_dest() {
+    local d="$1"
+    local baseline_snap="$2"
+    local key
+    key=$(sanitize "$d")
+    local src_base_uri="hdfs://$SOURCE_CLUSTER${d}/.snapshot/${baseline_snap}"
+    local dst_uri="hdfs://$DEST_CLUSTER${d}"
+
+    log_substage "Baseline bootstrap: reconciling destination to source snapshot $baseline_snap"
+    log "[INIT] Reconciling destination $d to source snapshot $baseline_snap (one-time bootstrap safeguard)"
+
+    # Step 1: full -update from source baseline snapshot into destination (backfills any gaps)
+    local reconcile_err="/tmp/distcp_reconcile_err_${key}_$$.log"
+    TEMP_FILES+=("$reconcile_err")
+    log_cmd "Baseline Reconcile DistCp Command"
+    echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS $src_base_uri $dst_uri"
+    echo ""
+    # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
+    if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS "$src_base_uri" "$dst_uri" 2> >(tee "$reconcile_err" >&2); then
+        log "[INFO] Baseline reconcile DistCp succeeded for $d"
+    else
+        echo "[ERROR] Baseline reconcile DistCp FAILED for $d (see $reconcile_err)"
+        log "[ERROR] Baseline reconcile DistCp failed for $d. Not re-baselining (would freeze an incorrect state)."
+        if [[ -f "$reconcile_err" ]] && [[ -s "$reconcile_err" ]]; then
+            analyze_error "$reconcile_err"
+        fi
+        return 1
+    fi
+
+    # Step 2: refresh the destination baseline snapshot to match the reconciled state
+    if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${baseline_snap}\$"; then
+        log "[DEBUG] Deleting destination baseline snapshot $baseline_snap to refresh it"
+        if ! run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -deleteSnapshot "$d" "$baseline_snap" 2>/dev/null; then
+            log "[WARN] Failed to delete destination baseline snapshot $baseline_snap (will attempt recreate anyway)"
+        fi
+    fi
+    if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$baseline_snap"; then
+        log "[INFO] Destination baseline snapshot $baseline_snap refreshed to reconciled state for $d"
+    else
+        echo "[ERROR] FAILED to recreate destination baseline snapshot $baseline_snap for $d"
+        log "[ERROR] Could not refresh destination baseline snapshot $baseline_snap for $d. Incremental -diff will likely fail."
+        return 1
+    fi
+
+    # Step 3: clear any stale rollback markers for this baseline pair (from a previous failed run)
+    local stale
+    shopt -s nullglob
+    for stale in "${ROLLBACK_MARKER_DIR}/${key}__from_${baseline_snap}__to_"*.marker; do
+        if rm -f "$stale" 2>/dev/null; then
+            log "[INFO] Cleared stale rollback marker: $stale"
+        fi
+    done
+    shopt -u nullglob
+
+    return 0
+}
+
+# -----------------------------------------------------------------------------
 # main()
 # -----------------------------------------------------------------------------
 main() {
@@ -1715,9 +1827,20 @@ main() {
                 echo "One or more full DistCp operations failed. Please:"
                 echo "1. Review the error messages above"
                 echo "2. Fix any issues (network, permissions, cluster health, etc.)"
-                echo "3. Manually run the failed DistCp commands or re-run this script"
+                echo "   - If this was an OutOfMemory error, the DistCp client heap is likely too small."
+                echo "     Raise it before re-running, e.g.:  export HADOOP_CLIENT_OPTS=\"-Xmx4g\""
+                echo "     (Mapper-side memory can be tuned via -Dmapreduce.map.memory.mb in COPY_OPTS.)"
+                echo "3. Re-run this script (recommended), OR run the failed full DistCp commands manually."
+                echo ""
+                echo "   IMPORTANT: The destination baseline snapshot ${SNAP_PREFIX}_0 was NOT refreshed"
+                echo "   (the script exits before re-baselining on failure, so a partial copy can't poison it)."
+                echo "   On the NEXT run, Stage 4 automatically reconciles the destination to the source"
+                echo "   ${SNAP_PREFIX}_0 snapshot (one-time full -update) and refreshes the baseline before"
+                echo "   the first incremental diff -- so simply fixing the issue and re-running is safe,"
+                echo "   whether you let the script copy or you copy manually first."
                 echo ""
                 log "[ERROR] Baseline full DistCp failed for one or more directories. Script terminating."
+                log "[INFO] On re-run, Stage 4 self-heals the baseline (reconcile + re-baseline) before incremental sync."
                 exit 1
             fi
             
@@ -1937,67 +2060,36 @@ main() {
             continue
         fi
 
-        # 4c) Special handling for baseline snapshot: Check if destination was modified
-        #      after manual DistCp (AUTO_FULL_DISTCP="no" scenario)
-        #      Only applies to baseline snapshot (dr_snap_0), not subsequent snapshots
-        #      For subsequent snapshots, ROLLBACK_ON_FAILURE handles modifications
+        # 4c) Baseline transition self-heal (deterministic; runs ONCE per directory).
+        #      On the first incremental (last_snap == ${SNAP_PREFIX}_0), the destination may be
+        #      empty (manual mode before copy), partial (interrupted/OOM'd full copy), or filled
+        #      out-of-band. Instead of guessing with `snapshotDiff ... "."` (unreliable, gave
+        #      false negatives), we reconcile the destination to the SOURCE baseline snapshot with
+        #      a one-time full `distcp -update` (backfills any gaps), then refresh the destination
+        #      baseline snapshot so DistCp's "target unchanged since fromSnapshot" precondition
+        #      holds. This works for BOTH AUTO_FULL_DISTCP=yes and =no, and prevents a silently
+        #      empty DR. Subsequent snapshots (idx > 0) skip this and rely on ROLLBACK_ON_FAILURE.
         baseline_snap="${SNAP_PREFIX}_0"
         if [[ "$last_snap" == "$baseline_snap" ]]; then
-            log "[DEBUG] Working with baseline snapshot $baseline_snap. Checking if destination was modified after manual DistCp..."
-            
-            # Use snapshotDiff to check if destination directory differs from snapshot
-            # snapshotDiff returns non-zero if there are differences
-            # We compare the snapshot to the current directory state (represented by ".")
-            snapshot_diff_exit_code=0
-            snapshot_diff_output=$(run_as_hdfs hdfs snapshotDiff -fs "hdfs://$DEST_CLUSTER" "$d" "$baseline_snap" "." 2>&1) || snapshot_diff_exit_code=$?
-            
-            # If snapshotDiff shows differences (exit code != 0) or if it indicates modifications,
-            # the destination has been modified since the snapshot was created
-            if [[ $snapshot_diff_exit_code -ne 0 ]] || 
-               echo "$snapshot_diff_output" | grep -qE "(M\.|R\.|\\+)" || 
-               echo "$snapshot_diff_output" | grep -q "has been modified"; then
-                log "[WARN] Detected that destination was modified since baseline snapshot $baseline_snap"
-                log "[INFO] This likely occurred after manual DistCp (AUTO_FULL_DISTCP=\"no\")"
-                log "[INFO] Automatically recreating baseline snapshot on destination to match current state..."
-                
-                echo ""
-                echo "=========================================================================================================================================="
-                echo ">>> 🔧 BASELINE SNAPSHOT DETECTION: Destination Modified After Manual DistCp <<<"
-                echo "=========================================================================================================================================="
-                echo ">>> Directory: $d"
-                echo ">>> Baseline Snapshot: $baseline_snap"
-                echo ">>> Action: Recreating baseline snapshot on destination to match current state"
-                echo ">>> Reason: Destination was modified (likely from manual DistCp)"
-                echo "=========================================================================================================================================="
-                echo ""
-                
-                # Delete old baseline snapshot on destination
-                if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${baseline_snap}\$"; then
-                    log "[DEBUG] Deleting old baseline snapshot $baseline_snap on destination (pre-manual-DistCp state)"
-                    if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -deleteSnapshot "$d" "$baseline_snap" 2>/dev/null; then
-                        log "[INFO] Deleted old baseline snapshot $baseline_snap on destination"
-                    else
-                        log "[WARN] Failed to delete old baseline snapshot $baseline_snap on destination (may proceed anyway)"
-                    fi
-                fi
-                
-                # Create new baseline snapshot on destination (post-manual-DistCp state)
-                log "[INIT] Creating new baseline snapshot '$baseline_snap' on destination (post-manual-DistCp state): $d"
-                if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$baseline_snap"; then
-                    log "[INFO] New baseline snapshot '$baseline_snap' created on destination for $d (post-manual-DistCp state)"
-                    echo ""
-                    echo "------------------------------------------------------------------------------------------------------------------------------------------"
-                    echo "[SUCCESS] Baseline snapshot recreated on destination"
-                    echo "------------------------------------------------------------------------------------------------------------------------------------------"
-                    echo ""
-                else
-                    echo "[ERROR] FAILED to create new baseline snapshot '$baseline_snap' on DESTINATION: $d"
-                    log "[ERROR] Failed to create new baseline snapshot on destination for $d"
-                    log "[ERROR] Incremental sync may fail. Manual intervention may be required."
-                    # Continue anyway - let DistCp attempt and fail with clear error
-                fi
-            else
-                log "[DEBUG] Baseline snapshot $baseline_snap is valid - destination not modified since snapshot creation"
+            echo ""
+            echo "=========================================================================================================================================="
+            echo ">>> 🔧 BASELINE BOOTSTRAP SELF-HEAL for $d <<<"
+            echo "=========================================================================================================================================="
+            echo ">>> Reconciling destination to source snapshot $baseline_snap before the first incremental diff."
+            echo ">>> (One-time per directory; ensures the destination baseline is complete and consistent.)"
+            echo "=========================================================================================================================================="
+            echo ""
+            if ! reconcile_and_rebaseline_dest "$d" "$baseline_snap"; then
+                echo "============================================"
+                echo ">>> [ERROR] [STAGE 4] Baseline reconcile/re-baseline FAILED for: $d <<<"
+                echo "============================================"
+                log "[ERROR] [Stage 4] Baseline bootstrap self-heal failed for $d. Skipping incremental this run."
+                log "[INFO] Fix the reconcile DistCp issue (network/permissions/heap) and re-run; the bootstrap will retry."
+                METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
+                dir_end_ts=$(date +%s)
+                log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
+                ALL_OK=false
+                continue
             fi
         fi
 
@@ -2051,18 +2143,32 @@ main() {
                 analyze_error "$DISTCP_STDERR_FILE"
             fi
             echo ""
-            # Detect snapshot-modified symptom
-            # For baseline snapshot, we already tried to fix it above, so this is for subsequent snapshots
-            # For subsequent snapshots, use ROLLBACK_ON_FAILURE logic
+            # Detect snapshot-modified symptom.
+            # Baseline (idx 0) was already reconciled + re-baselined in 4c, so it is handled
+            # separately below (no destructive rollback). Subsequent snapshots use ROLLBACK_ON_FAILURE.
             if grep -q "The target has been modified since snapshot" "$DISTCP_STDERR_FILE" 2>/dev/null ||
                 grep -q "target has changed since snapshot" "$DISTCP_STDERR_FILE" 2>/dev/null; then
-                # Check if this is baseline snapshot - if so, we already tried to fix it, so this is unexpected
+                # Baseline case (last_snap == ${SNAP_PREFIX}_0): we already reconciled + refreshed
+                # the destination baseline in 4c. A "target modified" error here means the
+                # destination changed AGAIN between the re-baseline and this diff (e.g. concurrent
+                # writes). The destructive -rdiff rollback (revert to ${SNAP_PREFIX}_0) is NEVER
+                # appropriate for the baseline -- it would discard the data we just copied. Fail
+                # cleanly with guidance instead.
                 if [[ "$last_snap" == "$baseline_snap" ]]; then
-                    log "[ERROR] Baseline snapshot modification detected but automatic fix failed or destination was modified again"
-                    log "[ERROR] Manual intervention required. Consider re-running bootstrap."
+                    echo "============================================"
+                    echo ">>> [ERROR] [STAGE 4] Baseline diff still failed after self-heal for: $d <<<"
+                    echo "============================================"
+                    log "[ERROR] [Stage 4] Destination was modified again after baseline re-baseline for $d (concurrent writes?)."
+                    log "[ERROR] Destructive rollback is intentionally NOT attempted for the baseline snapshot."
+                    log "[INFO] Ensure no writers are touching the destination $d during replication, then re-run."
+                    METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
+                    dir_end_ts=$(date +%s)
+                    log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
+                    ALL_OK=false
+                    continue
                 fi
-                
-                # For baseline or subsequent snapshots, honor hardcoded ROLLBACK_ON_FAILURE
+
+                # Subsequent snapshots only (idx > 0): honor ROLLBACK_ON_FAILURE
                 if [[ "${ROLLBACK_ON_FAILURE,,}" == "yes" ]]; then
                     echo ""
                     echo "=========================================================================================================================================="
