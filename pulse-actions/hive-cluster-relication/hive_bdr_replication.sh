@@ -11,6 +11,7 @@
 #     - Incremental mode: Scheduled queries for ongoing replication when DB exists
 #     - If schedule_expr is provided, creates scheduled queries for incremental replication
 #     - Multi-database mode: Replicate multiple DBs in one invocation (pipe-delimited)
+#     - Failover mode: Reverse replication direction after a cluster failover
 #
 # Usage:
 #   ./hive_bdr.sh \
@@ -34,10 +35,10 @@
 #                              Single table: "sales.'t1'"
 #                              Exclude:      "sales.'(?!t1$).*'"
 #                              NOTE: | inside single-quoted table patterns is NOT a separator
-#   2) SRC_NAMESERVICE      - Source cluster nameservice
-#   3) DST_NAMESERVICE      - Destination cluster nameservice
-#   4) SRC_JDBC_URL         - Source HiveServer2 JDBC connection URL
-#   5) DST_JDBC_URL         - Destination HiveServer2 JDBC connection URL
+#   2) SRC_NAMESERVICE      - Source cluster nameservice (original primary)
+#   3) DST_NAMESERVICE      - Destination cluster nameservice (original replica)
+#   4) SRC_JDBC_URL         - Source HiveServer2 JDBC connection URL (original primary)
+#   5) DST_JDBC_URL         - Destination HiveServer2 JDBC connection URL (original replica)
 #   6) REPL_BASE_DIR        - Base replication directory (default: /user/hive/repl/)
 #   7) DISTCP_OPTS          - DistCp options (default: -p -update -skipcrccheck)
 #   8) LOG_DIR              - Log directory path (default: /var/log/hive-replication)
@@ -51,6 +52,29 @@
 # Environment variable overrides:
 #   DISTCP_QUEUE            - YARN queue for DistCp jobs (default: default)
 #                              Example: DISTCP_QUEUE=replication ./hive_bdr.sh ...
+#   FAILOVER_MODE           - Enable failover (direction reversal) for Hive BDR replication.
+#                              Default: false
+#                              Set to "true" when a failover has already occurred and DST has
+#                              become the new primary cluster receiving production writes.
+#
+#                              Prerequisites:
+#                                - Hive replication must already be configured and operational
+#                                - At least one incremental REPL DUMP must have completed on DST
+#                                  after bootstrap (Hive requires this before failover.start)
+#                                - Cluster failover must have been completed
+#                                - New writes must be occurring only on the DST cluster
+#
+#                              Workflow:
+#                                Step 1: Disable existing scheduled queries on both clusters
+#                                Step 2: REPL DUMP on DST (new primary) with
+#                                        'hive.repl.failover.start'='true'
+#                                Step 3: REPL LOAD on SRC (old primary, now new replica)
+#                                Step 4: Create reversed scheduled queries:
+#                                          DUMP on DST, LOAD on SRC
+#                              This reverses replication so changes on the new primary (DST)
+#                              are replicated back to the old primary (SRC).
+#
+#                              Example: FAILOVER_MODE=true ./hive_bdr.sh ...
 #
 # Example (Bootstrap + Scheduled Incremental):
 #   ./hive_bdr.sh \
@@ -85,6 +109,22 @@
 # Example (Incremental only - DB already exists):
 #   Same as above - script will detect existing DB and skip bootstrap
 #
+# Example (Failover - reverse replication after ODP-Aurora became primary):
+#   NOTE: Ensure at least one incremental REPL DUMP has completed on ODP-Aurora
+#         after bootstrap, before enabling FAILOVER_MODE.
+#   FAILOVER_MODE=true ./hive_bdr.sh \
+#     "migration01" \
+#     "ODP-Aquaman" \
+#     "ODP-Aurora" \
+#     "jdbc:hive2://host1:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#     "jdbc:hive2://host3:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#     "/user/hive/repl/" \
+#     "-p -update -skipcrccheck" \
+#     "/var/log/hive-replication" \
+#     "" \
+#     "EVERY 5 MINUTES" \
+#     "00:03:00"
+#
 # Note: LOAD schedule will be offset by LOAD_OFFSET from DUMP schedule
 #   DUMP: EVERY 5 MINUTES → runs at 0, 5, 10, 15, 20, 25...
 #   LOAD: EVERY 5 MINUTES OFFSET BY '00:03:00' → runs at 3, 8, 13, 18, 23, 28...
@@ -115,6 +155,9 @@ HIVE_DB="${HIVE_DB%\"}"
 
 # YARN queue for DistCp jobs (override via environment: DISTCP_QUEUE=myqueue)
 DISTCP_QUEUE="${DISTCP_QUEUE:-default}"
+
+# Failover mode: reverse replication direction (override via environment: FAILOVER_MODE=true)
+FAILOVER_MODE="${FAILOVER_MODE:-false}"
 
 # Normalize REPL_BASE_DIR to always have a trailing slash
 REPL_BASE_DIR="${REPL_BASE_DIR%/}/"
@@ -274,6 +317,7 @@ detect_and_set_kerberos_cache() {
 detect_and_set_kerberos_cache
 
 TOTAL_STEPS=7
+FAILOVER_TOTAL_STEPS=4
 
 # Check if a scheduled query exists on a given cluster.
 # Tries sys.scheduled_queries first; falls back to information_schema.scheduled_queries.
@@ -320,6 +364,28 @@ check_scheduled_query_exists() {
     return 1
   fi
   return 0
+}
+
+# disable_scheduled_query: disable a scheduled query if it exists; no-op if absent.
+# Usage: disable_scheduled_query <jdbc_url> <query_name>
+disable_scheduled_query() {
+  local jdbc_url="$1"
+  local sq_name="$2"
+
+  if ! check_scheduled_query_exists "${jdbc_url}" "${sq_name}"; then
+    echo "ERROR: Could not check existence of scheduled query '${sq_name}'"
+    exit 1
+  fi
+
+  if [[ -z "$SQ_CHECK_RESULT" ]]; then
+    echo "Scheduled query '${sq_name}' does not exist — nothing to disable."
+    return 0
+  fi
+
+  local sql="ALTER SCHEDULED QUERY ${sq_name} DISABLE;"
+  echo "Executing: ${sql}"
+  beeline -u "${jdbc_url}" -e "${sql}"
+  echo "Scheduled query '${sq_name}' disabled."
 }
 
 create_scheduled_queries() {
@@ -408,6 +474,225 @@ ${HDFS_TOKEN_EXCLUDE_PROP}
 
   echo "$SUBSEP"
   echo " Scheduled query setup completed"
+  echo ""
+}
+
+# create_reversed_scheduled_queries: create DUMP on DST and LOAD on SRC
+# (reversed direction, used after failover).
+create_reversed_scheduled_queries() {
+  local dump_schedule="${SCHEDULE_EXPR}"
+  local load_offset="${LOAD_OFFSET}"
+
+  if [[ -z "$dump_schedule" ]]; then
+    echo "No schedule expression provided; skipping reversed scheduled queries."
+    return
+  fi
+
+  echo "$SEP"
+  echo " Configuring Reversed Scheduled Queries (Post-Failover Incremental)"
+  echo "$SEP"
+  echo "New primary (DUMP source) : $DST_NAMESERVICE"
+  echo "New replica (LOAD target) : $SRC_NAMESERVICE"
+  echo "Dump schedule             : ${dump_schedule}"
+  echo "Load offset               : ${load_offset}"
+  echo ""
+
+  # Reversed query names have a _reverse suffix to avoid collision with old ones
+  local rev_dump_sq_name="sq_repl_dump_${HIVE_DB_NAME}_reverse"
+  local rev_load_sq_name="sq_repl_load_${HIVE_DB_NAME}_reverse"
+
+  # Build load schedule with offset
+  local load_schedule
+  if [[ "$dump_schedule" =~ ^EVERY ]]; then
+    load_schedule="${dump_schedule} OFFSET BY '${load_offset}'"
+  else
+    load_schedule="${dump_schedule}"
+    echo "Note: CRON schedule detected - load will use same schedule as dump (offset not applied to CRON)"
+  fi
+
+  echo "$SUBSEP"
+  # DUMP scheduled query on DST (new primary)
+  echo "Checking if reversed dump scheduled query exists on new primary (${DST_NAMESERVICE}): ${rev_dump_sq_name}"
+  if ! check_scheduled_query_exists "${DST_JDBC_URL}" "${rev_dump_sq_name}"; then
+    echo "ERROR: Scheduled query exist check failed on new primary"
+    exit 1
+  fi
+
+  if [[ -n "$SQ_CHECK_RESULT" ]]; then
+    echo "Reversed dump scheduled query '${rev_dump_sq_name}' already exists on new primary. Skipping creation."
+  else
+    local dump_sql="CREATE SCHEDULED QUERY ${rev_dump_sq_name} ${dump_schedule} AS
+REPL DUMP ${HIVE_REPL_SPEC} WITH(
+${HDFS_TOKEN_EXCLUDE_PROP}
+'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
+'hive.repl.include.external.tables'='true',
+'hive.repl.bootstrap.external.tables'='false',
+'hive.repl.dump.metadata.only.for.external.table'='false',
+'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
+);"
+
+    echo "$SUBSEP"
+    echo "Creating reversed dump scheduled query on new primary (${DST_NAMESERVICE}): ${rev_dump_sq_name}"
+    echo "Executing: ${dump_sql}"
+    echo ""
+    beeline -u "${DST_JDBC_URL}" -e "${dump_sql}"
+  fi
+  echo ""
+
+  echo "$SUBSEP"
+  # LOAD scheduled query on SRC (new replica / old primary)
+  echo "Checking if reversed load scheduled query exists on new replica (${SRC_NAMESERVICE}): ${rev_load_sq_name}"
+  if ! check_scheduled_query_exists "${SRC_JDBC_URL}" "${rev_load_sq_name}"; then
+    echo "ERROR: Scheduled query exist check failed on new replica"
+    exit 1
+  fi
+
+  if [[ -n "$SQ_CHECK_RESULT" ]]; then
+    echo "Reversed load scheduled query '${rev_load_sq_name}' already exists on new replica. Skipping creation."
+  else
+    local load_sql="CREATE SCHEDULED QUERY ${rev_load_sq_name} ${load_schedule} AS
+REPL LOAD ${HIVE_DB_NAME} INTO ${HIVE_DB_NAME} WITH(
+${HDFS_TOKEN_EXCLUDE_PROP}
+'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
+'hive.repl.include.external.tables'='true',
+'hive.repl.bootstrap.external.tables'='false',
+'hive.repl.dump.metadata.only.for.external.table'='false',
+'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
+);"
+
+    echo "$SUBSEP"
+    echo "Creating reversed load scheduled query on new replica (${SRC_NAMESERVICE}): ${rev_load_sq_name}"
+    echo "Executing: ${load_sql}"
+    echo ""
+    beeline -u "${SRC_JDBC_URL}" -e "${load_sql}"
+  fi
+  echo ""
+
+  echo "$SUBSEP"
+  echo " Reversed scheduled query setup completed"
+  echo "  DUMP: ${rev_dump_sq_name} on ${DST_NAMESERVICE}"
+  echo "  LOAD: ${rev_load_sq_name} on ${SRC_NAMESERVICE}"
+  echo ""
+}
+
+# failover_one_db: perform the 4-step failover sequence for a single DB.
+#   Step 1: Disable existing scheduled queries on both clusters
+#   Step 2: REPL DUMP with failover.start=true on DST (new primary)
+#   Step 3: REPL LOAD on SRC (old primary, now new replica)
+#   Step 4: Create reversed scheduled queries (DUMP on DST, LOAD on SRC)
+failover_one_db() {
+  local db_spec="$1"
+  local db_index="$2"
+  local db_total="$3"
+
+  derive_db_vars "$db_spec"
+
+  LOG_FILE="$LOG_DIR/hive_bdr_failover_${HIVE_DB_NAME}_$(date +%Y%m%d_%H%M%S).log"
+
+  SEP="======================================================================"
+  SUBSEP="----------------------------------------------------------------------"
+
+  echo "$SEP"
+  echo " Hive Failover Replication - DB ${db_index}/${db_total}: ${HIVE_DB_NAME}"
+  echo "$SEP"
+  echo "Timestamp        : $(date)"
+  echo "Database         : $HIVE_DB_NAME"
+  if [[ -n "$HIVE_TABLE_PATTERN" ]]; then
+    echo "Tables           : $HIVE_TABLE_PATTERN"
+  fi
+  echo "Original primary : $SRC_NAMESERVICE (now new replica)"
+  echo "Original replica : $DST_NAMESERVICE (now new primary)"
+  echo "Log File         : $LOG_FILE"
+  echo ""
+
+  ########################################
+  # Failover Step 1: Disable existing scheduled queries
+  ########################################
+  echo "$SUBSEP"
+  echo "[1/${FAILOVER_TOTAL_STEPS}] Disabling existing scheduled queries..."
+  echo ""
+
+  echo "Disabling dump scheduled query on original primary (${SRC_NAMESERVICE}): ${SRC_SCHEDULED_QUERY_NAME}"
+  disable_scheduled_query "${SRC_JDBC_URL}" "${SRC_SCHEDULED_QUERY_NAME}"
+  echo ""
+
+  echo "Disabling load scheduled query on original replica (${DST_NAMESERVICE}): ${DST_SCHEDULED_QUERY_NAME}"
+  disable_scheduled_query "${DST_JDBC_URL}" "${DST_SCHEDULED_QUERY_NAME}"
+  echo ""
+
+  ########################################
+  # Failover Step 2: REPL DUMP with failover.start=true on DST (new primary)
+  ########################################
+  echo "$SUBSEP"
+  echo "[2/${FAILOVER_TOTAL_STEPS}] Running failover REPL DUMP on new primary (${DST_NAMESERVICE})..."
+
+  local FAILOVER_DUMP_CMD="REPL DUMP ${HIVE_REPL_SPEC} WITH(
+'hive.repl.failover.start'='true',
+${HDFS_TOKEN_EXCLUDE_PROP}
+'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
+'hive.repl.include.external.tables'='true',
+'hive.repl.bootstrap.external.tables'='false',
+'hive.repl.dump.metadata.only.for.external.table'='false',
+'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
+);"
+
+  echo "Executing on ${DST_NAMESERVICE}: ${FAILOVER_DUMP_CMD}"
+  echo ""
+  beeline -u "${DST_JDBC_URL}" -e "${FAILOVER_DUMP_CMD}"
+  echo ""
+
+  ########################################
+  # Failover Step 3: REPL LOAD on SRC (old primary, now new replica)
+  # No DistCp needed — rootdir is on SRC nameservice, accessible from both clusters.
+  ########################################
+  echo "$SUBSEP"
+  echo "[3/${FAILOVER_TOTAL_STEPS}] Running failover REPL LOAD on new replica (${SRC_NAMESERVICE})..."
+
+  local FAILOVER_LOAD_CMD="REPL LOAD ${HIVE_DB_NAME} INTO ${HIVE_DB_NAME} WITH(
+${HDFS_TOKEN_EXCLUDE_PROP}
+'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
+'hive.repl.include.external.tables'='true',
+'hive.repl.bootstrap.external.tables'='false',
+'hive.repl.dump.metadata.only.for.external.table'='false',
+'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
+);"
+
+  echo "Executing on ${SRC_NAMESERVICE}: ${FAILOVER_LOAD_CMD}"
+  echo ""
+  beeline -u "${SRC_JDBC_URL}" -e "${FAILOVER_LOAD_CMD}"
+  echo ""
+
+  echo "Validating replication status on new replica (${SRC_NAMESERVICE})..."
+  beeline -u "${SRC_JDBC_URL}" -e "REPL STATUS ${HIVE_DB_NAME};"
+  echo ""
+
+  ########################################
+  # Failover Step 4: Create reversed scheduled queries
+  ########################################
+  echo "$SUBSEP"
+  echo "[4/${FAILOVER_TOTAL_STEPS}] Setting up reversed incremental replication..."
+  create_reversed_scheduled_queries
+
+  echo ""
+  echo "$SEP"
+  echo " Failover Replication Completed: ${HIVE_DB_NAME}"
+  echo "$SEP"
+  echo ""
+  echo "Database         : $HIVE_DB_NAME"
+  echo "New primary      : $DST_NAMESERVICE (writes here)"
+  echo "New replica      : $SRC_NAMESERVICE (receives replication)"
+  if [[ -n "$SCHEDULE_EXPR" ]]; then
+    echo "Reversed Scheduled Queries:"
+    echo "  - DUMP (new primary ${DST_NAMESERVICE}): sq_repl_dump_${HIVE_DB_NAME}_reverse"
+    echo "  - LOAD (new replica ${SRC_NAMESERVICE}): sq_repl_load_${HIVE_DB_NAME}_reverse"
+    echo "  - Schedule : $SCHEDULE_EXPR"
+    [[ "$SCHEDULE_EXPR" =~ ^EVERY ]] && echo "  - Load Offset: $LOAD_OFFSET"
+  fi
+  echo ""
+  echo "Completed        : $(date)"
+  echo "Log File         : $LOG_FILE"
+  echo ""
+  echo "$SEP"
   echo ""
 }
 
@@ -651,16 +936,17 @@ DB_COUNT=${#DB_SPECS[@]}
 echo "$SEP"
 echo " Hive Cluster Replication Script Started"
 echo "$SEP"
-echo "Timestamp  : $(date)"
-echo "Databases  : ${DB_COUNT} (${HIVE_DB})"
-echo "Source NS  : $SRC_NAMESERVICE"
-echo "Dest NS    : $DST_NAMESERVICE"
-echo "YARN Queue : $DISTCP_QUEUE"
-echo "Session Log: $SESSION_LOG_FILE"
+echo "Timestamp    : $(date)"
+echo "Databases    : ${DB_COUNT} (${HIVE_DB})"
+echo "Source NS    : $SRC_NAMESERVICE"
+echo "Dest NS      : $DST_NAMESERVICE"
+echo "YARN Queue   : $DISTCP_QUEUE"
+echo "Failover Mode: $FAILOVER_MODE"
+echo "Session Log  : $SESSION_LOG_FILE"
 echo ""
 
 ########################################
-# Main loop — replicate each DB spec in sequence
+# Main loop — replicate (or failover) each DB spec in sequence
 ########################################
 DB_IDX=0
 FAILED_DBS=()
@@ -670,9 +956,16 @@ for db_spec in "${DB_SPECS[@]}"; do
   echo " Processing DB ${DB_IDX}/${DB_COUNT}: ${db_spec}"
   echo "$SEP"
 
-  if ! replicate_one_db "$db_spec" "$DB_IDX" "$DB_COUNT"; then
-    echo "ERROR: Replication failed for DB spec: ${db_spec}"
-    FAILED_DBS+=("$db_spec")
+  if [[ "$FAILOVER_MODE" == "true" ]]; then
+    if ! failover_one_db "$db_spec" "$DB_IDX" "$DB_COUNT"; then
+      echo "ERROR: Failover failed for DB spec: ${db_spec}"
+      FAILED_DBS+=("$db_spec")
+    fi
+  else
+    if ! replicate_one_db "$db_spec" "$DB_IDX" "$DB_COUNT"; then
+      echo "ERROR: Replication failed for DB spec: ${db_spec}"
+      FAILED_DBS+=("$db_spec")
+    fi
   fi
 done
 
