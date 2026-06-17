@@ -100,8 +100,16 @@ def run():
         # =====================================================================
         print(f"\n[Step 7.4] Running ambari-server setup-ldap...")
         
-        # Build the setup-ldap command with all flags
-        # Explicitly pass empty values for optional secondary LDAP to avoid prompts
+        # Build the setup-ldap command with all flags.
+        #
+        # IMPORTANT: The three final y/n prompts in `ambari-server setup-ldap`
+        # ("Use LDAP authentication for Ambari", "Manage LDAP configurations
+        # for eligible services", "Manage LDAP for all services") have CLI
+        # flag equivalents that we MUST pass — otherwise the command stalls
+        # waiting on stdin over the SSH channel:
+        #   --ldap-enabled-ambari=true   -> auto-answer "Use LDAP auth for Ambari"
+        #   --ldap-manage-services=true  -> auto-answer "Manage LDAP for services"
+        #   --ldap-enabled-services=*    -> auto-answer "Manage for ALL services"
         ldap_cmd = (
             f"ambari-server setup-ldap "
             f"--ldap-url={ldap_config['ldap_url']} "
@@ -123,6 +131,9 @@ def run():
             f"--ldap-sync-username-collisions-behavior={ldap_config['ldap_sync_collision']} "
             f"--ldap-force-lowercase-usernames={ldap_config['ldap_force_lowercase']} "
             f"--ldap-pagination-enabled={ldap_config['ldap_pagination']} "
+            f"--ldap-enabled-ambari=true "
+            f"--ldap-manage-services=true "
+            f"--ldap-enabled-services=* "
             f"--ldap-force-setup "
             f"--ldap-save-settings "
             f"--ambari-admin-username={AmbariConfig.USERNAME} "
@@ -134,12 +145,23 @@ def run():
         masked_cmd = masked_cmd.replace(AmbariConfig.PASSWORD, "****")
         print(f"\n  Command:\n  {masked_cmd}")
         
-        # Execute the command
+        # Execute the command.
+        #
+        # The CLI flags above (--ldap-enabled-ambari, --ldap-manage-services,
+        # --ldap-enabled-services) should cover every prompt setup-ldap can
+        # raise. We still feed a buffer of "y" answers to stdin as
+        # defense-in-depth — if a flag is unsupported in some Ambari build,
+        # the prompt would otherwise hang the SSH channel forever in
+        # recv_exit_status(). Extra "y"s on a non-prompting command are
+        # discarded harmlessly when we close stdin.
+        ldap_prompt_answers = "y\ny\ny\ny\ny\n"
+
         print(f"\n  Executing setup-ldap...")
         exit_code, stdout, stderr = ssh.execute_sudo(
             ldap_cmd,
             timeout=120,
-            raise_on_error=False
+            raise_on_error=False,
+            stdin_input=ldap_prompt_answers,
         )
         
         # Log output
@@ -183,11 +205,17 @@ def run():
         masked_sync_cmd = sync_cmd.replace(AmbariConfig.PASSWORD, "****")
         print(f"\n  Command: {masked_sync_cmd}")
         
+        # Some Ambari builds emit a "Are you sure you want to perform sync? [y/n]"
+        # confirmation even with --all + admin creds supplied. Feed a buffer of
+        # "y" answers to avoid hanging the SSH channel if that prompt appears.
+        sync_prompt_answers = "y\ny\n"
+
         print(f"\n  Executing sync-ldap...")
         exit_code, stdout, stderr = ssh.execute_sudo(
             sync_cmd,
             timeout=120,
-            raise_on_error=False
+            raise_on_error=False,
+            stdin_input=sync_prompt_answers,
         )
         
         # Log output

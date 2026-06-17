@@ -48,7 +48,11 @@ class SSHClient:
             print(f"[SSH] Disconnected from {self.host}")
 
     def execute(
-        self, command: str, timeout: int = 300, raise_on_error: bool = True
+        self,
+        command: str,
+        timeout: int = 300,
+        raise_on_error: bool = True,
+        stdin_input: Optional[str] = None,
     ) -> Tuple[int, str, str]:
         """
         Execute a command on the remote host.
@@ -57,6 +61,8 @@ class SSHClient:
             command: Command to execute
             timeout: Command timeout in seconds
             raise_on_error: Raise exception if command fails
+            stdin_input: Optional string to feed to the command's stdin. Useful
+                for interactive prompts that have no CLI flag equivalents.
 
         Returns:
             Tuple of (exit_code, stdout, stderr)
@@ -66,6 +72,19 @@ class SSHClient:
 
         print(f"[SSH] Executing: {command}")
         stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
+
+        if stdin_input is not None:
+            try:
+                stdin.write(stdin_input)
+                stdin.flush()
+            except (OSError, EOFError):
+                # Remote side may have already closed stdin; ignore.
+                pass
+            finally:
+                try:
+                    stdin.channel.shutdown_write()
+                except Exception:
+                    pass
 
         exit_code = stdout.channel.recv_exit_status()
         stdout_str = stdout.read().decode("utf-8").strip()
@@ -85,10 +104,16 @@ class SSHClient:
         return exit_code, stdout_str, stderr_str
 
     def execute_sudo(
-        self, command: str, timeout: int = 300, raise_on_error: bool = True
+        self,
+        command: str,
+        timeout: int = 300,
+        raise_on_error: bool = True,
+        stdin_input: Optional[str] = None,
     ) -> Tuple[int, str, str]:
-        """Execute command with sudo."""
-        return self.execute(f"sudo {command}", timeout, raise_on_error)
+        """Execute command with sudo. See execute() for arg details."""
+        return self.execute(
+            f"sudo {command}", timeout, raise_on_error, stdin_input=stdin_input
+        )
 
     def upload_file(self, local_path: str, remote_path: str) -> None:
         """Upload a file to the remote host."""
