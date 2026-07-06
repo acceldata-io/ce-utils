@@ -5,24 +5,49 @@ Automated Knox enablement scripts for Ambari-managed Hadoop clusters.
 ## Project Structure
 
 ```
-knox-enablement/
-├── main.py              # Entry point - run steps from here
-├── requirements.txt     # Python dependencies
-├── env.example          # Environment config template
-├── config/
-│   └── settings.py      # Configuration from env vars
-├── modules/
-│   ├── ssh_client.py    # SSH operations via paramiko
-│   └── configs.py       # Ambari configuration manager
-└── steps/
+knox-enablement % tree
+├── env.example                     # Environment config template
+├── knox_setup
+│   ├── config
+│   │   ├── __init__.py
+│   │   └── settings.py             # Configuration from env vars
+│   ├── main.py                     # Entry point
+│   ├── modules
+│   │   ├── __init__.py
+│   │   ├── ambari_state.py
+│   │   ├── configs.py             # Ambari configuration manager
+│   │   ├── knox_state.py
+│   │   ├── service_utils.py
+│   │   └── ssh_client.py          # SSH operations via paramiko
+│   ├── steps
+│   │   ├── __init__.py
+│   │   ├── add_ranger_policy.py
+│   │   ├── ambari_ldap_setup.py
+│   │   ├── ambari_sso_setup.py
+│   │   ├── base.py
+│   │   ├── export_knox_cert.py
+│   │   ├── import_knox_cert.py
+│   │   ├── restart_ambari.py
+│   │   ├── restart_services.py
+│   │   ├── set_proxy_users.py
+│   │   ├── start_knox.py
+│   │   ├── update_topology.py
+│   │   └── update_whitelist.py
+│   └── templates
+│       └── knox-topology.j2
+├── LICENSE
+├── LICENSES
+├── pyproject.toml
+├── README.md
+└── setup.sh
 ```
 
 ## Setup
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+python3.11 -m venv venv
+. venv/bin/activate
+pip install "git+https://github.com/acceldata-io/ce-utils/@ODP-5751#egg=knox_setup&subdirectory=knox_setup"
 
 cp env.example .env
 # Edit .env with your cluster details
@@ -31,9 +56,9 @@ cp env.example .env
 ## Usage
 
 ```bash
-python main.py set_proxy_users    # Run a single step
-python main.py knox_proxy_setup   # Run the full Knox proxy setup flow
-python main.py knox_sso_setup     # Run the full Knox SSO + LDAP setup flow
+knox_setup set_proxy_users    # Run a single step
+knox_setup knox_proxy_setup   # Run the full Knox proxy setup flow
+knox_setup knox_sso_setup     # Run the full Knox SSO + LDAP setup flow
 ```
 
 ## Steps
@@ -63,7 +88,7 @@ python main.py knox_sso_setup     # Run the full Knox SSO + LDAP setup flow
 ### AmbariConfigs
 
 ```python
-from modules import AmbariConfigs
+from knox_setup.modules import AmbariConfigs
 
 configs = AmbariConfigs(host, user, password, cluster)
 value = configs.get_property("core-site", "hadoop.proxyuser.knox.hosts")
@@ -74,7 +99,7 @@ configs.set_properties("core-site", {"key1": "val1", "key2": "val2"})
 ### SSHClient
 
 ```python
-from modules import SSHClient
+from knox_setup.modules import SSHClient
 
 with SSHClient() as ssh:
     exit_code, stdout, stderr = ssh.execute("ambari-server status")

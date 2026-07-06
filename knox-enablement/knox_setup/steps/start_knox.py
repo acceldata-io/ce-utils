@@ -3,9 +3,9 @@ Step: Verify Knox is installed and ready.
 If Knox is not installed, raises an error asking user to install manually.
 """
 
-from modules import get_ambari_state
-from modules.service_utils import ServiceUtils
-from steps.base import get_ambari_configs
+from knox_setup.modules import get_ambari_state
+from knox_setup.modules.service_utils import ServiceUtils
+from knox_setup.steps.base import get_ambari_configs
 
 
 class KnoxNotInstalledError(Exception):
@@ -13,24 +13,24 @@ class KnoxNotInstalledError(Exception):
     pass
 
 
-def run():
+def run(protocol: str = "http"):
     """
     Verify Knox is installed and start it.
-    
+
     If Knox is not installed, raises KnoxNotInstalledError with instructions.
     If Knox is installed but stopped, starts it.
     After Knox is running, starts Demo LDAP.
-    
+
     Note: Service restarts are handled by the final restart_services step.
-    
+
     Idempotent: Safe to run multiple times.
     """
     print("\n[Step 0] Verifying Knox Installation")
-    
+
     state = get_ambari_state()
     configs = get_ambari_configs()
     service_utils = ServiceUtils(configs, state)
-    
+
     # Check if Knox is installed
     if not state.is_service_installed("KNOX"):
         print("\n" + "=" * 60)
@@ -44,11 +44,11 @@ def run():
         raise KnoxNotInstalledError(
             "Knox is not installed. Please install Knox manually via Ambari UI and re-run this pipeline."
         )
-    
+
     # Knox is installed - check state
     knox_state = service_utils.get_service_state("KNOX")
     print(f"  KNOX service found. State: {knox_state}")
-    
+
     # Start Knox if not started
     if knox_state == "INSTALLED":
         print("  Knox is installed but not started. Starting...")
@@ -61,7 +61,7 @@ def run():
         print("  Knox is already running.")
     else:
         print(f"  Knox is in state: {knox_state}")
-    
+
     # Start Demo LDAP
     knox_host = service_utils.get_component_host("KNOX", "KNOX_GATEWAY")
     if knox_host:
@@ -71,6 +71,6 @@ def run():
             print("  Warning: Failed to start Demo LDAP (may already be running)")
     else:
         print("  Warning: Could not find Knox host for Demo LDAP")
-    
+
     print("\n[Step 0] Complete")
 

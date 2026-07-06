@@ -2,8 +2,8 @@
 Base utilities for step functions.
 """
 
-from modules import SSHClient, AmbariConfigs, get_ambari_state
-from config.settings import SSHConfig, AmbariConfig
+from knox_setup.modules import SSHClient, AmbariConfigs, get_ambari_state
+from knox_setup.config.settings import AmbariConfig
 
 
 def get_ssh_client() -> SSHClient:
