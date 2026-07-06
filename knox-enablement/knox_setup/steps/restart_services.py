@@ -22,7 +22,7 @@ SERVICES_TO_RESTART = [
 ]
 
 
-def run():
+def run(protocol: str = "http"):
     """
     Restart all services that have stale configurations.
 

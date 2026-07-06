@@ -188,7 +188,7 @@ def get_ranger_hosts(service_utils: ServiceUtils) -> list:
     return hosts
 
 
-def run():
+def run(protocol: str = "http"):
     """
     Import Knox gateway certificate into Java cacerts truststore on Ranger hosts.
 

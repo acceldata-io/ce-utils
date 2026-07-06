@@ -10,7 +10,7 @@ from knox_setup.modules.knox_state import get_knox_state
 from .base import get_ambari_configs
 
 
-def run():
+def run(protocol: str = "http"):
     """
     Export Knox gateway certificate to PEM format.
 

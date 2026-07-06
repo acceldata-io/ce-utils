@@ -7,7 +7,7 @@ from knox_setup.modules.service_utils import ServiceUtils
 from knox_setup.steps.base import get_ambari_configs
 
 
-def run():
+def run(protocol: str = "http"):
     """
     Restart Ambari server to apply configuration changes.
 

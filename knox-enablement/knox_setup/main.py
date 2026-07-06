@@ -86,14 +86,13 @@ def run_flow(flow_name: str):
     print("=" * 60)
 
 
-
-
 def main():
     """Main entry point."""
 
     all_arg_names = list(STEPS.keys() | FLOWS.keys())
 
     epilogue_text = "\n\t- ".join(["Valid targets are: "]+sorted(all_arg_names))
+    epilogue_text += "\nSee README.md for more details on valid steps and flows."
 
     parser = argparse.ArgumentParser(description="Knox Enablement for Ambari", epilog=epilogue_text, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("--with-https", "-s", action="store_true", help="Use SSL for Ambari URLs (default: http)")
@@ -118,7 +117,6 @@ def main():
         print(f"\nCompleted: {target}")
     else:
         print(f"Unknown step or flow: {target}")
-        print_usage(sys.argv[0])
         return 1
 
 

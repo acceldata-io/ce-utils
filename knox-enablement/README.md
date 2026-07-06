@@ -5,7 +5,7 @@ Automated Knox enablement scripts for Ambari-managed Hadoop clusters.
 ## Project Structure
 
 ```
-knox-enablement % tree
+knox-enablement
 ├── env.example                     # Environment config template
 ├── knox_setup
 │   ├── config
@@ -47,7 +47,7 @@ knox-enablement % tree
 ```bash
 python3.11 -m venv venv
 . venv/bin/activate
-pip install "git+https://github.com/acceldata-io/ce-utils/@ODP-5751#egg=knox_setup&subdirectory=knox_setup"
+pip install "git+https://github.com/acceldata-io/ce-utils/#egg=knox_setup&subdirectory=knox-enablement"
 
 cp env.example .env
 # Edit .env with your cluster details
@@ -56,6 +56,7 @@ cp env.example .env
 ## Usage
 
 ```bash
+. venv/bin/activate
 knox_setup set_proxy_users    # Run a single step
 knox_setup knox_proxy_setup   # Run the full Knox proxy setup flow
 knox_setup knox_sso_setup     # Run the full Knox SSO + LDAP setup flow
