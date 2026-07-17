@@ -297,6 +297,15 @@ update_druid_configuration_for_jdk17() {
     echo -e "${GREEN}Successfully updated configurations for Ranger Druid.${NC}"
 }
 
+update_zookeeper_configuration_for_jdk17() {
+    echo -e "${YELLOW}Starting to update configurations for ZooKeeper...${NC}"
+
+    # Create the complete desired config when it is missing on upgraded clusters.
+    set_config_from_file "zookeeper-logback" "$TEMPLATE_DIR/zookeeper-logback.xml"
+
+    echo -e "${GREEN}Successfully updated configurations for ZooKeeper.${NC}"
+}
+
 #---------------------------------------------------------
 # Menu for Selecting Configuration Services
 #---------------------------------------------------------
@@ -314,6 +323,7 @@ display_service_options() {
                 echo -e "${GREEN}  5)${NC} 🌀   Oozie"
                 echo -e "${GREEN}  6)${NC} 🔑   Ranger KMS"
                 echo -e "${GREEN}  7)${NC} 📊   Druid"
+                echo -e "${GREEN}  8)${NC} 🦎   ZooKeeper (logback)"
                 ;;
             11)
                 echo -e "${GREEN}  1)${NC} 🗃️   HDFS, YARN & MapReduce"
@@ -322,6 +332,7 @@ display_service_options() {
                 echo -e "${GREEN}  4)${NC} 🐘   HBase (log4j2)"
                 echo -e "${GREEN}  5)${NC} 🌀   Oozie"
                 echo -e "${GREEN}  6)${NC} 🔑   Ranger KMS"
+                echo -e "${GREEN}  7)${NC} 🦎   ZooKeeper (logback)"
                 ;;
         esac
 
@@ -343,6 +354,7 @@ handle_selection() {
                 5) update_oozie_configuration_for_jdk17 ;;
                 6) update_kms_configuration_for_jdk17 ;;
                 7) update_druid_configuration_for_jdk17 ;;
+                8) update_zookeeper_configuration_for_jdk17 ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17
@@ -351,6 +363,7 @@ handle_selection() {
                     update_oozie_configuration_for_jdk17
                     update_kms_configuration_for_jdk17
                     update_druid_configuration_for_jdk17
+                    update_zookeeper_configuration_for_jdk17
                     ;;
                 [Qq]) return 1 ;;
                 *) echo -e "${RED}Invalid selection.${NC}" ;;
@@ -364,6 +377,7 @@ handle_selection() {
                 4) update_hbase_configuration_for_jdk17 ;;
                 5) update_oozie_configuration_for_jdk17 ;;
                 6) update_kms_configuration_for_jdk17 ;;
+                7) update_zookeeper_configuration_for_jdk17 ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17
@@ -371,6 +385,7 @@ handle_selection() {
                     update_hbase_configuration_for_jdk17
                     update_oozie_configuration_for_jdk17
                     update_kms_configuration_for_jdk17
+                    update_zookeeper_configuration_for_jdk17
                     ;;
                 [Qq]) return 1 ;;
                 *) echo -e "${RED}Invalid selection.${NC}" ;;

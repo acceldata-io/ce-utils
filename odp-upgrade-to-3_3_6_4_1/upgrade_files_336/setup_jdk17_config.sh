@@ -298,14 +298,11 @@ update_druid_configuration_for_jdk17() {
     echo -e "${GREEN}Successfully updated configurations for Ranger Druid.${NC}"
 }
 
-# Needed only in JDK 8
 update_zookeeper_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for ZooKeeper...${NC}"
 
-    # Java 8 specific configuration changes
-    if [ "$JAVA_VERSION" -eq "8" ]; then
-      set_config "zookeeper-logback" "content" "$(cat $MIGRATION_PATH/zookeeper-logback-template)"
-    fi
+    # Create the complete desired config when it is missing on upgraded clusters.
+    set_config_from_file "zookeeper-logback" "$TEMPLATE_DIR/zookeeper-logback.xml"
 
     echo -e "${GREEN}Successfully updated configurations for ZooKeeper.${NC}"
 }
@@ -336,6 +333,7 @@ display_service_options() {
                 echo -e "${GREEN}  4)${NC} 🐘   HBase (log4j2)"
                 echo -e "${GREEN}  5)${NC} 🌀   Oozie"
                 echo -e "${GREEN}  6)${NC} 🔑   Ranger KMS"
+                echo -e "${GREEN}  7)${NC} 🦎   ZooKeeper (logback)"
                 ;;
         esac
 
@@ -380,6 +378,7 @@ handle_selection() {
                 4) update_hbase_configuration_for_jdk17 ;;
                 5) update_oozie_configuration_for_jdk17 ;;
                 6) update_kms_configuration_for_jdk17 ;;
+                7) update_zookeeper_configuration_for_jdk17 ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17
@@ -387,6 +386,7 @@ handle_selection() {
                     update_hbase_configuration_for_jdk17
                     update_oozie_configuration_for_jdk17
                     update_kms_configuration_for_jdk17
+                    update_zookeeper_configuration_for_jdk17
                     ;;
                 [Qq]) return 1 ;;
                 *) echo -e "${RED}Invalid selection.${NC}" ;;
