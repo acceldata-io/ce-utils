@@ -121,6 +121,32 @@ set_config() {
     || echo -e "${RED}Failed updating ${key} in ${config_file}.${NC}" | tee -a /tmp/jdk17_update.log
 }
 
+# Create/replace an entire config type from Ambari configuration XML (configs.py -f).
+# Use this for new types (e.g. hbase-log4j2) that may not yet exist as desired configs.
+set_config_from_file() {
+    local config_type=$1
+    local xml_file=$2
+
+    if [[ ! -f "$xml_file" ]]; then
+        echo -e "${RED}Template not found: ${xml_file}${NC}" | tee -a /tmp/jdk17_update.log
+        return 1
+    fi
+
+    python /var/lib/ambari-server/resources/scripts/configs.py \
+        -u "$USER" \
+        -p "$PASSWORD" \
+        -s "$PROTOCOL" \
+        -a set \
+        -t "$PORT" \
+        -l "$AMBARISERVER" \
+        -n "$CLUSTER" \
+        -c "$config_type" \
+        -f "$xml_file" \
+        -b "Configuration updates to support JDK 17 / Log4j2" \
+    && echo -e "${GREEN}[OK]${NC} Updated ${config_type} from $(basename "$xml_file")" \
+    || echo -e "${RED}Failed updating ${config_type} from ${xml_file}.${NC}" | tee -a /tmp/jdk17_update.log
+}
+
 delete_config() {
     local config_file=$1 key=$2
 
@@ -217,9 +243,17 @@ update_hive_configuration_for_jdk17() {
     echo -e "${GREEN}Successfully updated configurations for Tez and Hive.${NC}"
 }
 
-# Needed only in JDK 8
 update_hbase_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for HBase...${NC}"
+
+    # Push Log4j2 content as hbase-log4j2 (creates the desired config type if missing).
+    # Same pattern as ZooKeeper logback / Hive-Infra JVM props via configs.py.
+    set_config_from_file "hbase-log4j2" "$TEMPLATE_DIR/hbase-log4j2.xml"
+
+    # Also refresh legacy hbase-log4j content for clusters that still use that type name.
+    if [[ -f "$TEMPLATE_DIR/hbase-log4j2-template" ]]; then
+      set_config "hbase-log4j" "content" "$(cat "$TEMPLATE_DIR/hbase-log4j2-template")"
+    fi
 
     # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
@@ -289,7 +323,7 @@ display_service_options() {
                 echo -e "${GREEN}  1)${NC} 🗃️   HDFS, YARN & MapReduce"
                 echo -e "${GREEN}  2)${NC} 🔍   Infra-Solr"
                 echo -e "${GREEN}  3)${NC} 🐝   Hive & Tez"
-                echo -e "${GREEN}  4)${NC} 🐘   HBase"
+                echo -e "${GREEN}  4)${NC} 🐘   HBase (env + log4j2)"
                 echo -e "${GREEN}  5)${NC} 🌀   Oozie"
                 echo -e "${GREEN}  6)${NC} 🔑   Ranger KMS"
                 echo -e "${GREEN}  7)${NC} 📊   Druid"
@@ -299,8 +333,9 @@ display_service_options() {
                 echo -e "${GREEN}  1)${NC} 🗃️   HDFS, YARN & MapReduce"
                 echo -e "${GREEN}  2)${NC} 🔍   Infra-Solr"
                 echo -e "${GREEN}  3)${NC} 🐝   Hive & Tez"
-                echo -e "${GREEN}  4)${NC} 🌀   Oozie"
-                echo -e "${GREEN}  5)${NC} 🔑   Ranger KMS"
+                echo -e "${GREEN}  4)${NC} 🐘   HBase (log4j2)"
+                echo -e "${GREEN}  5)${NC} 🌀   Oozie"
+                echo -e "${GREEN}  6)${NC} 🔑   Ranger KMS"
                 ;;
         esac
 
@@ -342,12 +377,14 @@ handle_selection() {
                 1) update_hdfs_configuration_for_jdk17 ;;
                 2) update_infra_configuration_for_jdk17 ;;
                 3) update_hive_configuration_for_jdk17 ;;
-                4) update_oozie_configuration_for_jdk17 ;;
-                5) update_kms_configuration_for_jdk17 ;;
+                4) update_hbase_configuration_for_jdk17 ;;
+                5) update_oozie_configuration_for_jdk17 ;;
+                6) update_kms_configuration_for_jdk17 ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17
                     update_hive_configuration_for_jdk17
+                    update_hbase_configuration_for_jdk17
                     update_oozie_configuration_for_jdk17
                     update_kms_configuration_for_jdk17
                     ;;
