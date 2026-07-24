@@ -1,7 +1,36 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
 # Hadoop Disaster Recovery Continuous Replication Script
+# Version: 4.2.0
 # Copyright (c) 2025 Acceldata Inc. All rights reserved.
+#
+# Changes in 4.2.0 (vs earlier hadoop_dr_replication.sh):
+#   - Merged the old DISTCP_FILTER_ENABLED + DISTCP_FILTER_FILE pair into a
+#     single positional argument, DISTCP_EXCLUDE_PATTERNS: empty = disabled,
+#     a non-empty value (comma-separated regex patterns, passed INLINE --
+#     not a file path) enables path-exclusion filtering. Frees up one CLI
+#     slot and removes the need for the operator to hand-create a file.
+#   - The script itself materializes the actual DistCp -filters file, keyed
+#     deterministically per replication job (SOURCE_CLUSTER + DEST_CLUSTER +
+#     SNAP_PREFIX) under /var/tmp/dr-distcp-filters/ -- unique across the
+#     hundreds of concurrently-running replication pairs, and idempotently
+#     overwritten (not uniquified) on every run of the SAME job, so reruns
+#     never pile up stray files.
+#   - Every pattern is validated at startup (each must compile as a regex)
+#     instead of failing deep inside a running DistCp/YARN job.
+#   - LOG_PATH moved from positional arg 10 to the LAST positional slot, so it
+#     no longer shifts every time a new flag is appended.
+#   - DIR_BOOTSTRAP_MODE removed entirely from the CLI/env surface and
+#     HARDCODED to "yes" (auto-bootstrap missing destination directories).
+#     No positional slot, no environment variable override.
+#   - REVERSE_DIFF_BOOTSTRAP and HDFS_STATE_DIR (previously env-var-only, no
+#     CLI slot reserved) are now also positional arguments (16 and 17), so
+#     orchestration wrappers can set them explicitly per invocation instead
+#     of only via environment variables. Env var override still works as a
+#     fallback when the CLI argument is omitted/empty.
+#   - Net result: 17 positional args -> 17 positional args (15 core args,
+#     unchanged in count from before this rework, plus these 2 previously
+#     env-only knobs now also exposed positionally).
 #
 # Description:
 #   Pull-based HDFS disaster recovery replication script.
@@ -11,7 +40,7 @@
 #   cluster free from replication workload.
 #
 # Usage:
-#   ./hadoop_dr_replication.sh \
+#   ./hadoop_dr_replication_4.2.0.sh \
 #     "<SOURCE_NN_HOST:PORT>"   \
 #     "<DEST_NN_HOST:PORT>"     \
 #     "<DIR1,DIR2,...>"         \
@@ -21,14 +50,14 @@
 #     "<DISTCP_USER>"          \
 #     "<COPY_OPTS>"            \
 #     "<YARN_QUEUE>"           \
-#     "<LOG_PATH>"             \
 #     "<AUTO_FULL_DISTCP>"     \
 #     "<ROLLBACK_ON_FAILURE>"  \
-#     "<DIR_BOOTSTRAP_MODE>"   \
 #     "<KERBEROS_ENABLED>"     \
-#     "<DISTCP_FILTER_ENABLED>" \
-#     "<DISTCP_FILTER_FILE>"   \
-#     "<REPLICATION_MODE>"
+#     "<DISTCP_EXCLUDE_PATTERNS>" \
+#     "<REPLICATION_MODE>"     \
+#     "<LOG_PATH>"             \
+#     "<REVERSE_DIFF_BOOTSTRAP>" \
+#     "<HDFS_STATE_DIR>"
 #
 # Positional arguments (order matters):
 #   1) SOURCE_NN_HOST:PORT  - Source HDFS NameNode URI (example: prod-namenode-1.example.com:8020)
@@ -57,44 +86,173 @@
 #                                    set it via the HADOOP_CLIENT_OPTS env var (see below) to avoid client OOM
 #                                    while building the copy listing / running -diff.
 #   9) YARN_QUEUE           - YARN queue name for DistCp jobs (default: "default")
-#   10) LOG_PATH            - Path to log file (default: /var/log/hadoop-dr-replicate.log)
-#   11) AUTO_FULL_DISTCP    - Auto-run full DistCp on initial baseline (optional, default: "no")
+#   10) AUTO_FULL_DISTCP    - Auto-run full DistCp on initial baseline (optional, default: "no")
 #                              Values: "yes" or "no"
-#   12) ROLLBACK_ON_FAILURE - Enable automatic rollback on snapshot-modified errors (optional, default: "no")
+#   11) ROLLBACK_ON_FAILURE - Enable automatic rollback on snapshot-modified errors (optional, default: "no")
 #                              Values: "yes" or "no"
-#   13) DIR_BOOTSTRAP_MODE  - Auto-bootstrap missing directories (optional, default: "yes")
-#                              Values: "yes" (auto-create) or "no" (manual instructions)
-#   14) KERBEROS_ENABLED     - Explicit Kerberos mode (REQUIRED)
+#   12) KERBEROS_ENABLED     - Explicit Kerberos mode (REQUIRED)
 #                              Values: "yes" (Kerberos enabled) or "no" (Kerberos disabled / sudo mode)
 #                              This script does NOT auto-detect Kerberos.
 #                              Must be provided via CLI argument or KERBEROS_ENABLED env var.
-#   15) DISTCP_FILTER_ENABLED - Enable DistCp path exclusion filter (optional, default: "no")
-#                              Values: "yes" or "no"
-#                              When "yes", DistCp uses -filters flag to exclude paths matching
-#                              regex patterns in the filter file.
-#   16) DISTCP_FILTER_FILE   - Path to local filter file with regex patterns (optional)
-#                              Default: /etc/hadoop-dr/exclude-paths.txt
-#                              One Java regex per line. Only used when DISTCP_FILTER_ENABLED="yes".
-#                              Example content: .*dir4/sub2.*
-#   17) REPLICATION_MODE      - Replication direction mode (optional, default: "pull")
+#   13) DISTCP_EXCLUDE_PATTERNS - DistCp path-exclusion regex pattern(s) (optional).
+#                              Pass the regex pattern(s) THEMSELVES, inline, comma-separated
+#                              -- NOT a file path. The script generates and manages the
+#                              actual DistCp -filters file itself (job-keyed, idempotent;
+#                              see DISTCP_EXCLUDE_DIR notes below), so there is nothing for
+#                              the operator to pre-create:
+#                                empty/omitted -> filtering DISABLED
+#                                non-empty value -> filtering ENABLED using these pattern(s)
+#                              Multiple comma-separated patterns = multiple exclude rules
+#                              (each is ORed - a path matching ANY pattern is excluded).
+#                              Each pattern is validated at startup and the run fails fast with the
+#                              offending pattern if it does not compile as a regex.
+#                              Example value:
+#                                ".*dir4/sub2.*,.*\.tmp$,.*/staging/.*"
+#   14) REPLICATION_MODE      - Replication direction mode (optional, default: "pull")
 #                              Values: "pull" or "push"
 #                              "pull" = YARN runs on DR/target cluster, source has no compute overhead
 #                              "push" = YARN runs on source/production cluster
+#   15) LOG_PATH            - Path to log file (default: /var/log/hadoop-dr-replicate.log)
+#   16) REVERSE_DIFF_BOOTSTRAP - Attempt incremental reverse-diff bootstrap on a detected
+#                              failover/failback direction reversal (optional, default: "no")
+#                              Values: "yes" or "no". Also settable via the
+#                              REVERSE_DIFF_BOOTSTRAP environment variable (used as fallback
+#                              when this argument is omitted/empty). See Notes below.
+#   17) HDFS_STATE_DIR      - HDFS-mirrored directory for cross-node DR state (optional,
+#                              default: "/tmp/pulse_replication_action")
+#                              Also settable via the HDFS_STATE_DIR environment variable
+#                              (used as fallback when this argument is omitted/empty).
+#                              See Environment Variables section below for full rationale.
 #
 # Notes:
 #   - AUTO_FULL_DISTCP controls whether full DistCp runs automatically on initial run.
-#     Can be set via: 11th argument, environment variable, or defaults to "no".
+#     Can be set via: 10th argument, environment variable, or defaults to "no".
 #     WARNING: For large datasets, DistCp can take significant time to complete.
 #   - ROLLBACK_ON_FAILURE controls automatic rollback on snapshot-modified errors.
-#     Can be set via: 12th argument, environment variable, or defaults to "no".
-#   - DIR_BOOTSTRAP_MODE controls how missing destination dirs are handled.
-#     Can be set via: 13th argument, environment variable, or defaults to "yes".
-#     Values: "yes" (auto-create dirs) or "no" (show manual instructions).
+#     Can be set via: 11th argument, environment variable, or defaults to "no".
+#   - DIR_BOOTSTRAP_MODE is HARDCODED to "yes" (auto-bootstrap missing destination
+#     directories). It is NOT a CLI argument and NOT an environment variable --
+#     there is no override. Missing destination directories are always created
+#     automatically with the same owner/permissions as the source directory.
 #   - Kerberos mode is explicit and mandatory. The script does not auto-detect Kerberos.
-#     Operators must specify the mode using the 14th argument or the KERBEROS_ENABLED
+#     Operators must specify the mode using the 12th argument or the KERBEROS_ENABLED
 #     environment variable to ensure deterministic behavior.
+#   - REVERSE_DIFF_BOOTSTRAP controls whether a detected direction reversal (failover/failback)
+#     attempts an incremental reverse-diff bootstrap instead of a full baseline re-copy.
+#     Can be set via: 16th argument, environment variable, or defaults to "no".
+#     Requires SNAP_PREFIX to be a FIXED identity for the replicated pair (not rotated across
+#     failover), so snapshot indices keep incrementing across role swaps.
+#   - LIVE-SNAPSHOT-DERIVED DIRECTION DETECTION (applies regardless of REVERSE_DIFF_BOOTSTRAP):
+#     replication direction (forward continuation / reversed / split-brain) is derived FRESH,
+#     every run, from live "hdfs dfs -ls <dir>/.snapshot" listings on BOTH clusters (see
+#     derive_direction_state) -- it is never read from a cached label. State files at
+#     /var/tmp/dr-last-snap-<sanitized_dir>.txt are written as a SINGLE line (the last common
+#     snapshot name only) and serve ONLY as an optimistic performance-hint cache to skip the
+#     full live listing on the common case where nothing changed (see
+#     verify_cached_snap_fast_path); the hint is always re-verified live before being trusted,
+#     and a missing/stale/absent hint never causes an incorrect direction verdict -- only a
+#     slower run that falls through to the full live listing-and-intersection algorithm. Any
+#     external tooling that reads this file should read only line 1 (`head -n 1`); older 2-line
+#     files (snapshot name + a now-deprecated recorded-source-cluster line) are read the same
+#     way (only line 1 is ever consulted) and self-migrate to the 1-line format on their next
+#     write. Pre-existing state files at the old path
+#     (/var/tmp/dr-last-snap-<sanitized_dir>-<SNAP_PREFIX>.txt, used before the state-file-path
+#     format change) are still recognized as a fallback so already-replicating directories are
+#     not mistaken for brand-new ones.
+#   - HDFS STATE MIRROR (see HDFS_STATE_DIR env var below): in addition to the
+#     local state file described above, the same 1-line content is mirrored to
+#     HDFS on both clusters after every successful state write, to support
+#     failover invocations from a node that has never run this script before.
+#     This mirror write is best-effort/non-fatal (see HDFS_STATE_DIR docs) and is
+#     purely a performance-hint cache (see above) -- it is never the sole basis
+#     for a direction/safety decision.
+#     IMPORTANT: forcing a full re-baseline by deleting the state file now
+#     requires clearing the HDFS mirror copies too, not just the local file --
+#     not because direction safety depends on it (it doesn't: direction is
+#     always derived live), but because a stale local/mirror hint would still
+#     cause resolve_state_file_and_check_new() to report an already-replicating
+#     directory as not brand-new, preventing Stage 3 from re-baselining it. See
+#     the operator guidance printed at the relevant failure points (direction
+#     reversal, split-brain, reverse-diff-bootstrap divergent writes) for the
+#     exact commands.
 #
 # Environment Variables (Optional):
+#   - REVERSE_DIFF_BOOTSTRAP - Attempt incremental reverse-diff bootstrap on failover (default: "no")
+#     Values: "yes" or "no". Settable via the 16th CLI argument (preferred for orchestration
+#     wrappers) or this environment variable (used as fallback when the argument is
+#     omitted/empty).
+#     Only takes effect when a state file ALREADY EXISTS for a directory AND the live
+#     snapshot-state derivation (derive_direction_state, or its verified fast-path) detects a
+#     direction reversal -- i.e. DEST_CLUSTER has snapshot indices beyond the last common index
+#     that SOURCE_CLUSTER lacks (typical after a DR failover/failback role swap).
+#     "yes": attempt a one-time incremental reverse `distcp -diff` bootstrap
+#       (reconcile_reverse_diff_bootstrap) instead of forcing a fresh full Stage 3 baseline.
+#       Fails the directory cleanly (NOT a destructive rollback) if the reverse diff detects
+#       the new destination was modified since its own last snapshot from this pair.
+#     "no" (default): behavior is unchanged from today for non-reversed directories; a detected
+#       direction reversal fails the directory cleanly with operator guidance instead of risking
+#       the normal incremental path (see Stage 4 notes).
+#     Brand-new directories (no state file at all) ALWAYS go through Stage 3's full baseline
+#     path regardless of this flag.
+#     Example: export REVERSE_DIFF_BOOTSTRAP=yes
+#   - HDFS_STATE_DIR - HDFS-mirrored directory for cross-node DR state (default:
+#     "/tmp/pulse_replication_action"). Settable via the 17th CLI argument (preferred
+#     for orchestration wrappers) or this environment variable (used as fallback when
+#     the argument is omitted/empty), same pattern as REVERSE_DIFF_BOOTSTRAP above.
+#     WHY THIS FEATURE EXISTS: the on-disk state file (/var/tmp/dr-last-snap-*.txt)
+#     is local to whichever host runs the script. Forward replication normally
+#     runs on the DR node; a failover requires running the script on what WAS
+#     the source node (now the new destination) -- a node that has never run
+#     this script before and has no local state file, so its fast-path
+#     performance-hint cache is cold and it must fall through to the full live
+#     listing-and-intersection algorithm (still fully correct, just slower) for
+#     this run. HDFS_STATE_DIR mitigates the "cold cache" cost: after every
+#     successful state write, the same 1-line state content (the last common
+#     snapshot name only) is ALSO written to
+#     ${HDFS_STATE_DIR}/dr-last-snap-<sanitized_dir>.txt on BOTH the source and
+#     destination cluster's HDFS (via "hdfs dfs -fs hdfs://<cluster>"). Because
+#     this lives in HDFS rather than on local disk, it is readable from
+#     whichever physical host you invoke the script from, regardless of which
+#     cluster you pass as SOURCE_CLUSTER/DEST_CLUSTER that run.
+#     As of the live-snapshot-direction-derivation rework, this mirror is an
+#     OPTIONAL PERFORMANCE HINT ONLY -- the actual last common snapshot index is
+#     derived fresh from live ".snapshot" listings on both clusters whenever the
+#     mirror is absent, stale, or cannot be confirmed via a cheap existence
+#     check. A stale or missing mirror degrades performance (forces the slower
+#     full-listing path) but can NEVER cause an incorrect direction/safety
+#     verdict.
+#     RESOLUTION ORDER on read (see resolve_state_file): local new-format path,
+#     then local old-format path (pre-existing back-compat), then the HDFS
+#     mirror(s). Both clusters' mirrors are read (not a simple source-then-dest
+#     fallback): if only one is usable, that one is used; if both are usable
+#     and agree, either is used; if both are usable and DISAGREE, the mirror
+#     with the HIGHER snapshot index wins (state only ever advances forward,
+#     so a higher index is more recent -- SOURCE_CLUSTER's mirror is used only
+#     as a last-resort tie-break when the index comparison is inconclusive).
+#     If neither cluster has a usable mirror, the directory is "truly brand
+#     new" as far as this cache goes (live snapshot listings may still find
+#     real history -- see the direction-derivation notes above). If found only
+#     in HDFS, the local state file is self-healed (hydrated) from the HDFS
+#     content so subsequent runs on that node hit the fast local path -- the
+#     same self-migration philosophy already used for the old-path ->
+#     new-path format migration.
+#     FAILURE HANDLING: the HDFS mirror write is best-effort. If it fails
+#     (cluster unreachable, permission denied, path not yet created), a [WARN]
+#     is logged and the run continues completely normally using local state --
+#     this NEVER fails a directory's sync or the overall run. A failed mirror
+#     write/read affects ONLY the fast-path performance optimization -- the run
+#     always falls through to a live, verified snapshot listing before making
+#     any direction/safety decision.
+#     NAMING: the default directory name "/tmp/pulse_replication_action" is
+#     intentionally NOT a dotfile/hidden path, and intentionally contains the
+#     literal token "pulse_replication_action". This is Pulse's own
+#     replication-action state (not customer data, not disposable scratch
+#     space); a visible, clearly-branded name ensures any operator who runs a
+#     plain "hdfs dfs -ls /tmp" immediately recognizes it as belonging to
+#     Acceldata Pulse's DR replication tooling and does not mistake it for
+#     generic scratch space safe to delete. Do not rename this to a generic
+#     or hidden (dotfile) name.
+#     Example: export HDFS_STATE_DIR=/tmp/pulse_replication_action
 #   - HADOOP_CLIENT_OPTS    - JVM options for the DistCp DRIVER/client (NOT the YARN mappers).
 #     Default applied by this script if unset: -Xmx5g
 #     The client builds the copy listing and computes snapshot diffs in-process; the Hadoop
@@ -129,30 +287,31 @@
 #       * Works for homogeneous clusters with standard HDFS configuration
 #
 # Example:
-#   ./hadoop_dr_replication.sh \
+#   ./hadoop_dr_replication_4.2.0.sh \
 #     "prod-namenode-1.example.com:8020" \
 #     "dr-namenode-1.example.com:8020" \
 #     "/data/warehouse,/data/analytics" \
 #     "dr_snap" 3 "hdfs" "hdfs" "-strategy dynamic -direct -update -pugptx" \
 #     "default" \
-#     "/var/log/hadoop-dr-replicate.log" \
-#     "no" "no" "yes" \
+#     "no" "no" \
 #     "no" \
-#     "no" "" \
-#     "pull"
+#     "" \
+#     "pull" \
+#     "/var/log/hadoop-dr-replicate.log"
 #
-#   With path exclusion filter and push mode:
-#   ./hadoop_dr_replication.sh \
+#   With path exclusion filter and push mode (patterns passed inline, NOT a
+#   file path -- the script generates and manages the actual filter file):
+#   ./hadoop_dr_replication_4.2.0.sh \
 #     "prod-namenode-1.example.com:8020" \
 #     "dr-namenode-1.example.com:8020" \
 #     "/data/warehouse,/data/analytics" \
 #     "dr_snap" 3 "hdfs" "hdfs" "-strategy dynamic -direct -update -pugptx" \
 #     "default" \
-#     "/var/log/hadoop-dr-replicate.log" \
-#     "no" "no" "yes" \
+#     "no" "no" \
 #     "no" \
-#     "yes" "/etc/hadoop-dr/exclude-paths.txt" \
-#     "push"
+#     ".*dir4/sub2.*,.*/staging/.*" \
+#     "push" \
+#     "/var/log/hadoop-dr-replicate.log"
 #
 # Purpose & properties:
 #   - Idempotent and safe for repeated runs.
@@ -188,16 +347,38 @@
 #                * If AUTO_FULL_DISTCP="no" (default): Script exits and instructs
 #                  operator to run a **full DistCp** for each directory (manual step)
 #   Stage 4: Incremental sync loop (per-directory)
-#            For each directory:
+#            For each directory, FIRST determines direction/continuation state:
+#              - resolve_state_file_and_check_new: resolve local/HDFS-mirrored last_snap
+#                cache (brand-new-directory gate); see HDFS_STATE_DIR notes above.
+#              - verify_cached_snap_fast_path: cheap, LIVE-VERIFIED check of the cached
+#                last_snap against both clusters before trusting it (avoids a full
+#                listing in the common unchanged-direction case).
+#              - derive_direction_state (full path, only when the fast path can't
+#                confirm): lists actual snapshots on BOTH clusters, finds the last
+#                common index, and determines from LIVE snapshot existence (never a
+#                cached label) whether this is normal forward continuation, a
+#                direction reversal, or split-brain (both sides advanced past the
+#                last common index independently) -- split-brain is detected
+#                PROACTIVELY here, before any DistCp is attempted.
+#            Then, for a normal (non-reversed, non-split-brain) directory:
 #              4a) Ensure last known snapshot exists on destination (create if missing)
 #              4b) Create the next snapshot on the source (next snapshot name)
-#              4c) Run DistCp with -diff from last -> next (stderr captured to temp file
+#              4c) Baseline transition self-heal (runs ONCE per directory, only when
+#                  last_snap is the ${SNAP_PREFIX}_0 baseline): reconcile_and_rebaseline_dest
+#                  backfills any gap between the baseline snapshot and destination live data.
+#              4d) Run DistCp with -diff from last -> next (stderr captured to temp file
 #                  for error analysis, and displayed in real-time via global redirection)
-#              4d) On success, create the next snapshot on destination
-#              4e) Advance internal state (persist next snapshot name)
-#              4f) Cleanup old snapshots on source (retain SNAP_RETAIN most recent)
-#              4g) Cleanup old snapshots on destination (retain SNAP_RETAIN most recent)
-#            If snapshot-modified error detected and ROLLBACK_ON_FAILURE="yes":
+#              4e) On success, create the next snapshot on destination
+#              4f) Advance internal state (persist next snapshot name; also mirrors to
+#                  HDFS on both clusters as a best-effort performance-cache update)
+#              4g) Cleanup old snapshots on source (retain SNAP_RETAIN most recent)
+#              4h) Cleanup old snapshots on destination (retain SNAP_RETAIN most recent)
+#            If a direction reversal is detected: either runs an incremental reverse-diff
+#            bootstrap (REVERSE_DIFF_BOOTSTRAP=yes) or fails cleanly with operator guidance
+#            (default) -- never falls through to the normal path above, since doing so
+#            could reach the destructive rollback path against real data on the new
+#            destination. See REVERSE_DIFF_BOOTSTRAP notes above.
+#            If snapshot-modified error detected during 4d and ROLLBACK_ON_FAILURE="yes":
 #              - Attempt one-time automatic rollback (per-failure marker prevents retries)
 #              - After rollback, retry DistCp once
 #   Stage 5: Completion and logging
@@ -224,7 +405,7 @@
 #          Monitor logs as this can take significant time for large datasets.
 #        - If AUTO_FULL_DISTCP="no" (default): Run the full DistCp commands
 #          printed by the script for each directory, then re-run the script.
-#   8. Monitor the log file specified (10th positional argument: LOG_PATH).
+#   8. Monitor the log file specified (15th/last positional argument: LOG_PATH).
 #
 # Pre-requisites:
 #   • This script must run on the TARGET/DR cluster (pull-based replication).
@@ -236,7 +417,7 @@
 #   • YARN queue for DistCp jobs must exist on the target cluster.
 #
 # -----------------------------------------------------------------------------
-# ./hadoop_dr_replication.sh "prod-namenode-1.example.com:8020" "dr-namenode-1.example.com:8020" "/data/warehouse,/data/analytics" "dr_snap" 3 "hdfs" "hdfs" "-update -pugpx" "default" "/var/log/hadoop-dr-replicate.log" "no" "no" "yes" "no" "no" "" "pull"
+# ./hadoop_dr_replication_4.2.0.sh "prod-namenode-1.example.com:8020" "dr-namenode-1.example.com:8020" "/data/warehouse,/data/analytics" "dr_snap" 3 "hdfs" "hdfs" "-update -pugpx" "default" "no" "no" "no" "" "pull" "/var/log/hadoop-dr-replicate.log"
 #
 
 set -euo pipefail
@@ -308,32 +489,105 @@ HDFS_USER="${6:-hdfs}"
 DISTCP_USER="${7:-$HDFS_USER}"
 COPY_OPTS="${8:--strategy dynamic -direct -update -pugptx -skipcrccheck}"
 YARN_QUEUE="${9:-default}"
-LOG="${10:-/var/log/hadoop-dr-replicate.log}"
 
 #
-# Configuration flags (can be set via CLI args 11-13, environment variables, or defaults)
+# Configuration flags (can be set via CLI args 10-11, environment variables, or defaults)
 # Priority: 1) CLI argument, 2) Environment variable, 3) Default value
-AUTO_FULL_DISTCP_ARG="${11:-}"
-ROLLBACK_ON_FAILURE_ARG="${12:-}"
-DIR_BOOTSTRAP_MODE_ARG="${13:-}"
+AUTO_FULL_DISTCP_ARG="${10:-}"
+ROLLBACK_ON_FAILURE_ARG="${11:-}"
 
 ###############################################################################
-# Kerberos control source (priority: CLI arg 14 -> env var -> default)
+# Directory bootstrap mode: HARDCODED, not a CLI argument and not an
+# environment variable. Missing destination directories are always
+# auto-created (same owner/permissions as source). See DIR_BOOTSTRAP_MODE
+# section below for details -- there is intentionally no override.
+###############################################################################
+DIR_BOOTSTRAP_MODE="yes"
+
+###############################################################################
+# Kerberos control source (priority: CLI arg 12 -> env var -> default)
 # Default is "no" to ensure safe sudo-based execution unless explicitly enabled
 ###############################################################################
-KERBEROS_ENABLED_ARG="${14:-${KERBEROS_ENABLED:-no}}"
+KERBEROS_ENABLED_ARG="${12:-${KERBEROS_ENABLED:-no}}"
 
 ###############################################################################
-# DistCp path exclusion filter (priority: CLI args 15-16 -> env var -> default)
+# DistCp path exclusion filter (priority: CLI arg 13 -> env var -> default)
+# Operator passes the actual regex PATTERNS inline (comma-separated, like
+# SOURCE_DIRS) -- NOT a pre-made file path. empty/omitted = disabled.
+# The script itself materializes a job-keyed filter file (see
+# resolve_distcp_exclude_file / DISTCP_EXCLUDE_DIR below); no file for the
+# operator to create, own, or clean up.
 ###############################################################################
-DISTCP_FILTER_ENABLED_ARG="${15:-}"
-DISTCP_FILTER_FILE_ARG="${16:-}"
+DISTCP_EXCLUDE_PATTERNS_ARG="${13:-}"
 
 ###############################################################################
-# Replication mode (priority: CLI arg 17 -> env var -> default)
+# Replication mode (priority: CLI arg 14 -> env var -> default)
 # Default is "pull" for backward compatibility.
 ###############################################################################
-REPLICATION_MODE_ARG="${17:-}"
+REPLICATION_MODE_ARG="${14:-}"
+
+###############################################################################
+# LOG_PATH (priority: CLI arg 15 -> default)
+# Kept ahead of REVERSE_DIFF_BOOTSTRAP (arg 16) so existing arg-15 invocations
+# of this script don't shift; new flags get appended after it instead.
+###############################################################################
+LOG="${15:-/var/log/hadoop-dr-replicate.log}"
+
+###############################################################################
+# Reverse-diff bootstrap for failover/failback (priority: CLI arg 16 -> env var -> default)
+# Default is "no" for full backward compatibility.
+###############################################################################
+REVERSE_DIFF_BOOTSTRAP_ARG="${16:-}"
+if [[ -n "$REVERSE_DIFF_BOOTSTRAP_ARG" ]]; then
+    REVERSE_DIFF_BOOTSTRAP="$REVERSE_DIFF_BOOTSTRAP_ARG"
+else
+    REVERSE_DIFF_BOOTSTRAP="${REVERSE_DIFF_BOOTSTRAP:-no}"
+fi
+
+###############################################################################
+# HDFS-mirrored state directory for cross-node failover state
+# (priority: CLI arg 17 -> env var -> default)
+#
+# WHAT IT IS: a directory ON HDFS (not local disk) where this script mirrors
+# its per-directory replication state (the last common snapshot name) after
+# every successful run. It is a PERFORMANCE-HINT CACHE ONLY -- the real
+# direction/safety decision always comes from a live ".snapshot" listing on
+# both clusters (see derive_direction_state). Losing or clearing this mirror
+# never causes an incorrect result, only a slower fallback run.
+#
+# WHY IT EXISTS: the primary state file (/var/tmp/dr-last-snap-*.txt) lives on
+# local disk, so it is only visible to whichever host ran the script. Forward
+# replication normally runs on the DR node. A failover/failback flips that: you
+# must run the script on what WAS the source node (now the new destination) --
+# a node that has never run this script before and therefore has no local
+# state file, forcing a slow full live-listing fallback on that first run.
+# Mirroring the same 1-line state to HDFS (readable from either node, via
+# "hdfs dfs -fs hdfs://$CLUSTER") lets that first failover run hit the fast
+# cached path too, instead of starting cold. See the HDFS_STATE_DIR entry in
+# the "Environment Variables" section above for the full read/write and
+# conflict-resolution rules.
+#
+# DEFAULT PATH: "/tmp/pulse_replication_action" -- this is a cluster-RELATIVE
+# HDFS path, always resolved against a specific cluster via
+# "hdfs dfs -fs hdfs://$CLUSTER", never containing a host/NameService itself.
+#
+# NAMING RATIONALE (why the default is NOT a dotfile): this directory holds
+# Pulse's own replication-action state (a mirror of the local DR state file)
+# -- it is not customer data and not disposable scratch space. A hidden
+# dotfile name (e.g. "/tmp/.dr_replication_state") would make it invisible to
+# a plain "hdfs dfs -ls /tmp", inviting an operator or a cleanup cron to treat
+# it as safe-to-delete scratch, or to miss it entirely during an audit. The
+# visible, branded name "pulse_replication_action" ensures anyone who runs
+# "hdfs dfs -ls /tmp" immediately attributes the directory to Acceldata
+# Pulse's DR replication tooling and does not casually delete it.
+# Do NOT rename this back to a generic or hidden name.
+###############################################################################
+HDFS_STATE_DIR_ARG="${17:-}"
+if [[ -n "$HDFS_STATE_DIR_ARG" ]]; then
+    HDFS_STATE_DIR="$HDFS_STATE_DIR_ARG"
+else
+    HDFS_STATE_DIR="${HDFS_STATE_DIR:-/tmp/pulse_replication_action}"
+fi
 
 #
 # ROLLBACK_ON_FAILURE for DR Cluster is a safeguard for handling the common snapshot-modified error
@@ -346,7 +600,7 @@ REPLICATION_MODE_ARG="${17:-}"
 #   - Marker format: ${ROLLBACK_MARKER_DIR}/${dir_key}__from_${from_snap}__to_${to_snap}.marker
 # If set to "no" (default), the script will just log the error and stop.
 # Acceptable values: "yes" or "no".
-# Priority: 1) CLI argument (12th arg), 2) Environment variable, 3) Default value
+# Priority: 1) CLI argument (11th arg), 2) Environment variable, 3) Default value
 if [[ -n "$ROLLBACK_ON_FAILURE_ARG" ]]; then
     ROLLBACK_ON_FAILURE="$ROLLBACK_ON_FAILURE_ARG"
 else
@@ -380,31 +634,18 @@ export HADOOP_CLIENT_OPTS="${HADOOP_CLIENT_OPTS:--Xmx5g}"
 SNAP_LOCK_DIR="/var/tmp/dr-snapshot-setup-locks"
 
 ###############################################################################
-# Directory bootstrap strategy for missing DR dirs: "yes" or "no"
+# Directory bootstrap strategy for missing DR dirs: HARDCODED to "yes"
+# (see DIR_BOOTSTRAP_MODE="yes" assignment in Stage 0 above -- no CLI argument,
+# no environment variable, no override of any kind).
 #
-# Supported modes:
-#   - "yes" (auto-bootstrap):
-#       * If the destination directory is missing, it will be created automatically
-#         with the same owner and permissions as the source directory.
-#       * If the destination directory already exists, it will NOT be recreated,
-#         and no chown/chmod is performed.
-#       * allowSnapshot will be applied automatically to the destination
-#         directory as part of Stage 2.
-#   - "no" (manual mode):
-#       * If the destination directory is missing, the operator is instructed to
-#         run a full DistCp for each directory, then manually re-enable allowSnapshot
-#         on each destination directory before rerunning the script.
-#       * If the destination directory already exists, allowSnapshot will be applied
-#         automatically by the script.
-#
-# Set DIR_BOOTSTRAP_MODE to either "yes" or "no" as desired.
-# Priority: 1) CLI argument (13th arg), 2) Environment variable, 3) Default value
+# Behavior in "yes" (auto-bootstrap) mode:
+#   - If the destination directory is missing, it will be created automatically
+#     with the same owner and permissions as the source directory.
+#   - If the destination directory already exists, it will NOT be recreated,
+#     and no chown/chmod is performed.
+#   - allowSnapshot will be applied automatically to the destination
+#     directory as part of Stage 2.
 ###############################################################################
-if [[ -n "$DIR_BOOTSTRAP_MODE_ARG" ]]; then
-    DIR_BOOTSTRAP_MODE="$DIR_BOOTSTRAP_MODE_ARG"
-else
-    DIR_BOOTSTRAP_MODE="${DIR_BOOTSTRAP_MODE:-yes}"
-fi
 
 ###############################################################################
 # Automatic full DistCp execution on initial run: "yes" or "no"
@@ -428,7 +669,7 @@ fi
 #       * Operator must re-run the script after completing manual DistCp.
 #
 # Set AUTO_FULL_DISTCP to either "yes" or "no" as desired.
-# Priority: 1) CLI argument (11th arg), 2) Environment variable, 3) Default value
+# Priority: 1) CLI argument (10th arg), 2) Environment variable, 3) Default value
 ###############################################################################
 if [[ -n "$AUTO_FULL_DISTCP_ARG" ]]; then
     AUTO_FULL_DISTCP="$AUTO_FULL_DISTCP_ARG"
@@ -488,6 +729,16 @@ FAILURE_REASON=""
 METRICS_SUCCESSFUL_DIRECTORIES=0
 METRICS_FAILED_DIRECTORIES=0
 
+# Counter for HDFS state-mirror write/mkdir failures (ensure_hdfs_state_dir,
+# mirror_state_file_to_hdfs / _mirror_one_cluster). These are all best-effort/
+# non-fatal by design (see HDFS_STATE_DIR docs) and never fail a directory's
+# sync, but a mirror that has been silently broken for a long time (e.g. a
+# permissions change on one cluster) would otherwise be invisible until the
+# exact moment of a real failover. Surfaced in the Stage 5 summary so an
+# operator sees it during routine, non-emergency runs instead of only
+# discovering it mid-disaster.
+METRICS_HDFS_MIRROR_FAILURES=0
+
 
 # Print a summary of failure reasons and context if script failed
 print_failure_summary() {
@@ -521,7 +772,7 @@ fail_kerberos_config() {
     log "[ERROR] Invalid Kerberos configuration"
     log "[ERROR] KERBEROS_ENABLED must be set to: yes | no"
     log "[ERROR] Source (in priority order):"
-    log "[ERROR]   1) 14th CLI argument"
+    log "[ERROR]   1) 12th CLI argument"
     log "[ERROR]   2) KERBEROS_ENABLED environment variable"
     log "[ERROR]   3) Default: no"
     exit 1
@@ -710,7 +961,7 @@ log_cmd() {
 
 # Sanitize directory path for safe filenames/keys
 sanitize() {
-    echo "$1" | sed 's|/|_|g; s|^_||' || echo "$1"
+    echo "$1" | sed 's|/|_|g; s|:|_|g; s|^_||' || echo "$1"
 }
 
 # Check if required commands exist
@@ -743,18 +994,384 @@ cleanup_temp_files() {
     fi
 }
 
-# Atomic state file write to prevent corruption
+# Resolve the on-disk state file path for a directory, with backward-compatible
+# fallback to the pre-patch path that included "-${SNAP_PREFIX}" in the filename.
+#
+# Historically (pre reverse-diff-bootstrap patch) the state file path was:
+#   /var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt
+# The current path is:
+#   /var/tmp/dr-last-snap-${key}.txt
+# Without this fallback, any directory already under replication before this
+# patch would have its real state file become invisible: Stage 3 would
+# misclassify an already-baselined, already-syncing directory as brand-new
+# and attempt to recreate ${SNAP_PREFIX}_0, which already exists on both
+# clusters and fails loudly.
+#
+# Resolution order (as of the HDFS_STATE_DIR cross-node-resilience patch):
+#   (a) New-format local path, if it exists (already migrated / first run on this patch)
+#   (b) Old-format local path, if it exists (pre-patch directory; use as-is, do NOT
+#       silently rewrite the path here -- callers that write state always use
+#       the new path going forward, which naturally migrates the file on next write)
+#   (c) Neither exists locally, but an HDFS mirror exists on SOURCE_CLUSTER or
+#       DEST_CLUSTER (see HDFS_STATE_DIR) -> hydrate the local new-path from HDFS,
+#       then use the (now-populated) local new-path. NEW in the HDFS_STATE_DIR patch.
+#   (d) Nothing anywhere -> truly brand new; new-format path is returned (does not
+#       exist), so the caller's own "-f" test correctly reports absence.
+#
+# This function has ALWAYS been safe to call repeatedly (idempotent, side-effect-free
+# for cases (a)/(b)/(d)). It NOW has a side effect for case (c): it writes the local
+# new-path file as a hydration/self-heal step, mirroring the existing old-path ->
+# new-path self-migration philosophy already in place for (a)/(b). Callers that need
+# to distinguish "truly brand new" from "hydrated from HDFS" MUST call
+# resolve_state_file_and_check_new() (below), not just stat the path themselves.
+#
+# CALLING CONVENTION (load-bearing, do not violate): this function calls log()
+# internally (e.g. the [HDFS-STATE-MIRROR] diagnostic lines below), and log()
+# writes to stdout via echo. Calling this function via command substitution,
+# e.g. state="$(resolve_state_file "$key")", would capture those log lines as
+# part of the "return value" and corrupt it (multi-line garbage instead of a
+# path -- this exact bug was hit in production: it caused resolve_state_file's
+# own successful HDFS-mirror hydration to appear as a failure to the caller,
+# which then misclassified an already-replicating directory as brand new and
+# re-created a baseline snapshot on top of real data). This function instead
+# sets the global RESOLVED_STATE_PATH as its result. ALWAYS call it as a plain
+# statement, e.g.:
+#     resolve_state_file "$key"
+#     state="$RESOLVED_STATE_PATH"
+# and NEVER as state="$(resolve_state_file "$key")".
+resolve_state_file() {
+    local key="$1"
+    local new_path="/var/tmp/dr-last-snap-${key}.txt"
+    local old_path="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
+    RESOLVED_STATE_PATH=""
+
+    if [[ -f "$new_path" ]]; then
+        RESOLVED_STATE_PATH="$new_path"
+        return 0
+    fi
+    if [[ -f "$old_path" ]]; then
+        RESOLVED_STATE_PATH="$old_path"
+        return 0
+    fi
+
+    # Neither local path exists. Before concluding "brand new", check the HDFS
+    # mirror on BOTH clusters (not just one) and reconcile:
+    #
+    # NOTE: mirror_state_file_to_hdfs's "-put -f" is non-atomic (documented
+    # KNOWN LIMITATION there), so a read can race an in-flight write and observe
+    # a truncated/empty file. This is no longer the safety concern it once was:
+    # since direction is derived live from snapshot listings every run (see
+    # derive_direction_state), a truncated hydration here can only ever cost a
+    # fast-path skip on a later run, never an incorrect direction verdict.
+    # _hdfs_mirror_content_is_complete still filters out empty/unreadable
+    # content so hydration doesn't write garbage to the local cache.
+    #
+    # IMPORTANT (divergence): the two clusters' mirrors can also legitimately
+    # disagree (not just be truncated) if a prior write's mirror-to-one-cluster
+    # step failed (best-effort, logged as [WARN], see mirror_state_file_to_hdfs)
+    # or the process died between the two _mirror_one_cluster calls. Simply
+    # trusting "whichever cluster we check first" (previously always
+    # SOURCE_CLUSTER) could silently pick a STALE mirror over a fresher one on
+    # the other cluster, which would only degrade the fast-path hint (never
+    # direction safety, which is always re-derived live). Since state only ever
+    # advances forward (snapshot index strictly increases on every successful
+    # write), when both mirrors are usable and disagree we deterministically
+    # prefer whichever one has the HIGHER snapshot index -- no clock/timestamp
+    # comparison needed, and this requires reading both mirrors rather than
+    # short-circuiting on the first.
+    local hydrated_content="" source_candidate="" dest_candidate=""
+    local source_usable=false dest_usable=false
+    if source_candidate="$(_read_hdfs_state_mirror "$key" "$SOURCE_CLUSTER")" && _hdfs_mirror_content_is_complete "$source_candidate"; then
+        source_usable=true
+    elif [[ -n "${source_candidate:-}" ]]; then
+        log "[WARN] [HDFS-STATE-MIRROR] HDFS mirror on SOURCE_CLUSTER ($SOURCE_CLUSTER) for key=$key looks empty/unreadable (likely raced an in-flight write). Ignoring it rather than hydrating a bogus fast-path hint."
+    fi
+    if dest_candidate="$(_read_hdfs_state_mirror "$key" "$DEST_CLUSTER")" && _hdfs_mirror_content_is_complete "$dest_candidate"; then
+        dest_usable=true
+    elif [[ -n "${dest_candidate:-}" ]]; then
+        log "[WARN] [HDFS-STATE-MIRROR] HDFS mirror on DEST_CLUSTER ($DEST_CLUSTER) for key=$key looks truncated/incomplete. Ignoring it."
+    fi
+
+    if [[ "$source_usable" == "true" ]] && [[ "$dest_usable" == "true" ]]; then
+        if [[ "$source_candidate" == "$dest_candidate" ]]; then
+            hydrated_content="$source_candidate"
+            log "[INFO] [HDFS-STATE-MIRROR] No local state file for key=$key; found matching HDFS mirrors on both SOURCE_CLUSTER and DEST_CLUSTER. Hydrating local state file from HDFS (self-heal, same philosophy as old-path->new-path migration)."
+        else
+            local source_idx dest_idx source_snap dest_snap
+            source_snap=$(printf '%s' "$source_candidate" | sed -n '1p')
+            dest_snap=$(printf '%s' "$dest_candidate" | sed -n '1p')
+            source_idx=${source_snap##*_}
+            dest_idx=${dest_snap##*_}
+            if [[ "$source_idx" =~ ^[0-9]+$ ]] && [[ "$dest_idx" =~ ^[0-9]+$ ]] && ((dest_idx > source_idx)); then
+                hydrated_content="$dest_candidate"
+                log "[WARN] [HDFS-STATE-MIRROR] Divergent HDFS mirrors for key=$key: SOURCE_CLUSTER has '$source_snap', DEST_CLUSTER has '$dest_snap'. Preferring DEST_CLUSTER's mirror (higher snapshot index = more recent state; state only ever advances forward)."
+            else
+                hydrated_content="$source_candidate"
+                log "[WARN] [HDFS-STATE-MIRROR] Divergent HDFS mirrors for key=$key: SOURCE_CLUSTER has '$source_snap', DEST_CLUSTER has '$dest_snap'. Preferring SOURCE_CLUSTER's mirror (index comparison inconclusive or SOURCE_CLUSTER's index is >= DEST_CLUSTER's)."
+            fi
+        fi
+    elif [[ "$source_usable" == "true" ]]; then
+        hydrated_content="$source_candidate"
+        log "[INFO] [HDFS-STATE-MIRROR] No local state file for key=$key; found HDFS mirror on SOURCE_CLUSTER ($SOURCE_CLUSTER) (not found/usable on DEST_CLUSTER). Hydrating local state file from HDFS."
+    elif [[ "$dest_usable" == "true" ]]; then
+        hydrated_content="$dest_candidate"
+        log "[INFO] [HDFS-STATE-MIRROR] No local state file for key=$key; found HDFS mirror on DEST_CLUSTER ($DEST_CLUSTER) (not found/usable on SOURCE_CLUSTER). Hydrating local state file from HDFS."
+    fi
+
+    if [[ -n "$hydrated_content" ]]; then
+        if write_state_file "$new_path" "$hydrated_content" "$key" >/dev/null 2>&1; then
+            log "[INFO] [HDFS-STATE-MIRROR] Local state file hydrated at $new_path for key=$key. Subsequent runs on this node will use the fast local path."
+        else
+            log "[ERROR] [HDFS-STATE-MIRROR] Found HDFS mirror for key=$key but failed to hydrate local file $new_path (local disk write failed -- check disk space/permissions on $(dirname "$new_path")). Proceeding this run using in-memory HDFS content only would be unsafe (caller reads via file path); treating as brand-new would be UNSAFE (would misclassify a directory with real replication history as brand new and re-baseline it). Failing loudly instead."
+            echo "[ERROR] Could not hydrate local state file $new_path from HDFS mirror for key=$key (local disk write failed -- check disk space/permissions on $(dirname "$new_path")). Refusing to continue for this key rather than risk misclassifying it as brand-new." >&2
+            # Do NOT echo new_path / fall through here: the caller's "-f" check
+            # would see it absent (the hydration write just failed) and would
+            # misclassify a directory with real history as brand-new, which is
+            # exactly the data-loss scenario this whole function exists to
+            # prevent. Returning non-zero here instead aborts the run (via
+            # set -e at call sites, since RESOLVED_STATE_PATH is left empty
+            # below and the caller never reaches a valid path) rather than
+            # silently proceeding on a false "brand new" verdict.
+            return 1
+        fi
+    fi
+
+    RESOLVED_STATE_PATH="$new_path"
+}
+
+# Read the state mirror content for a given key from a specific cluster's HDFS.
+# Returns the raw content (1-line: last common snapshot name) on stdout if
+# found and readable; returns non-zero / empty stdout if not found,
+# unreachable, or permission denied.
+# NEVER hard-fails the script -- all failure modes are treated as "not found here,
+# try the other cluster / conclude brand new".
+_read_hdfs_state_mirror() {
+    local key="$1"
+    local cluster="$2"
+    local uri_path="${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+    local out
+    if out=$(run_as_hdfs hdfs dfs -fs "hdfs://${cluster}" -cat "$uri_path" 2>/dev/null); then
+        if [[ -n "$out" ]]; then
+            printf '%s' "$out"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Validate that HDFS-mirror content read by _read_hdfs_state_mirror is usable
+# before it is trusted for hydration.
+#
+# HISTORICAL NOTE: this function previously required BOTH lines of the old
+# 2-line format (snapshot name + recorded SOURCE_CLUSTER) to guard against the
+# documented non-atomic "-put -f" race in mirror_state_file_to_hdfs, where a
+# read could observe a truncated, partial write (e.g. only line 1) and silently
+# disable direction-reversal protection by hydrating a 1-line file. Now that
+# the state file format is 1-line-only by design (last common snapshot name;
+# see the live-snapshot-direction-derivation rework), that specific truncation
+# race no longer applies: there is no second line to lose, so a non-empty read
+# is exactly as complete as this format ever gets. Direction is derived live
+# from snapshot listings every run regardless of what this mirror contains, so
+# a merely-stale (but non-empty) mirror content here can only ever cost a
+# fast-path skip, never a wrong safety decision. Returns 0 if content is
+# non-empty.
+_hdfs_mirror_content_is_complete() {
+    local content="$1"
+    local first_line
+    first_line=$(printf '%s' "$content" | sed -n '1p')
+    [[ -n "$first_line" ]]
+}
+
+# Resolve the state file path AND explicitly report whether this directory is
+# "truly brand new" (case (d): no local file, no HDFS mirror on either cluster)
+# vs. "has history somewhere" (cases (a)/(b)/(c)). Stage 3's baseline gate and
+# any other "is this brand new" decision point MUST use this function instead
+# of a bare "[[ ! -f \"$state\" ]]" check on resolve_state_file's return value,
+# because after the HDFS_STATE_DIR patch a directory can have ZERO local
+# presence and still be a real, already-replicating directory (case (c)).
+#
+# Sets the globals IS_BRAND_NEW_DIR ("true"/"false") and RESOLVED_STATE_FILE
+# (the resolved state file path) as side effects (bash has no multi-return
+# without globals/nameref gymnastics; a global is the simplest, most auditable
+# option here given the rest of the script's existing style, e.g.
+# DISTCP_SUCCESS, ALL_OK, etc. are all similarly global).
+#
+# IMPORTANT: this function MUST be called as a plain statement, e.g.:
+#     resolve_state_file_and_check_new "$key"
+#     state="$RESOLVED_STATE_FILE"
+# and NEVER as a command substitution, e.g. state="$(resolve_state_file_and_check_new "$key")",
+# which would run the entire function body (including the IS_BRAND_NEW_DIR
+# assignment) inside a subshell -- the assignment would then be discarded when
+# the subshell exits and never reach the caller, leaving IS_BRAND_NEW_DIR
+# unset/stale in the parent shell (an unbound-variable abort under `set -u`).
+#
+# Important correctness note on hydration ordering: after resolve_state_file
+# runs, if hydration happened, $new_path now exists on local disk with the
+# HDFS-sourced content, so the "-f" check below correctly reports
+# IS_BRAND_NEW_DIR=false -- this is the load-bearing mechanic. The hydration
+# write happens inside resolve_state_file itself, which runs first here.
+resolve_state_file_and_check_new() {
+    local key="$1"
+    local state_file
+    resolve_state_file "$key"
+    state_file="$RESOLVED_STATE_PATH"
+    if [[ -n "$state_file" ]] && [[ -f "$state_file" ]]; then
+        IS_BRAND_NEW_DIR="false"
+    else
+        IS_BRAND_NEW_DIR="true"
+    fi
+    RESOLVED_STATE_FILE="$state_file"
+}
+
+# Idempotently ensure ${HDFS_STATE_DIR} exists on the given cluster. Best-effort:
+# logs [WARN] and returns 0 (never aborts the script) on any failure -- an
+# unreachable cluster, permission denied, or any other mkdir error just means
+# the cross-node LAST-SNAP PERFORMANCE-HINT CACHE mirror is degraded for this
+# run; local-disk operation is entirely unaffected and continues normally.
+#
+# NOTE (post live-direction-derivation rework): this directory no longer
+# holds any value used for safety-critical direction determination. It only
+# caches the last common snapshot NAME as an optimistic fast-path hint (see
+# verify_cached_snap_fast_path / derive_direction_state) to avoid a live
+# double-listing of .snapshot on both clusters on every run. A missing or
+# stale mirror here never produces a wrong direction verdict -- it only means
+# this run falls through to the full live listing-and-intersection algorithm,
+# which is slower but always correct and always attempted before any
+# safety-critical decision.
+ensure_hdfs_state_dir() {
+    local cluster="$1"
+    local label="$2"
+    local mkdir_err="/tmp/pulse_replication_action_mkdir_err_$$.log"
+    if run_as_hdfs hdfs dfs -fs "hdfs://${cluster}" -mkdir -p "${HDFS_STATE_DIR}" 2>"$mkdir_err"; then
+        log "[DEBUG] [HDFS-STATE-MIRROR] Confirmed/created ${HDFS_STATE_DIR} on $label cluster ($cluster)"
+    else
+        log "[WARN] [HDFS-STATE-MIRROR] Could not create/confirm ${HDFS_STATE_DIR} on $label cluster ($cluster). HDFS state mirroring will be unavailable for this run on this cluster (cross-node failover convenience degraded); LOCAL state file operation is unaffected and this run continues normally."
+        [[ -s "$mkdir_err" ]] && log "[WARN] [HDFS-STATE-MIRROR] mkdir stderr: $(tr '\n' ' ' <"$mkdir_err")"
+        METRICS_HDFS_MIRROR_FAILURES=$((METRICS_HDFS_MIRROR_FAILURES + 1))
+    fi
+    rm -f "$mkdir_err" 2>/dev/null || true
+    return 0
+}
+
+# Atomic state file write to prevent corruption, PLUS best-effort HDFS mirror
+# on both clusters for cross-node failover resilience.
+#
+# Local write remains the authoritative, synchronous, atomic operation and is
+# unchanged in behavior/semantics from before this patch: if it fails, this
+# function fails (return 1) exactly as before, and callers treat that exactly
+# as before (log [ERROR], do not advance in-memory expectations further).
+#
+# The HDFS mirror write is DELIBERATELY best-effort and non-fatal: it runs
+# only after the local write has already succeeded, and any failure there
+# (network partition, permission issue, path not yet created) is logged as
+# [WARN] and swallowed. It must NEVER cause this function to return non-zero,
+# and it must NEVER cause the calling directory's sync to be marked failed --
+# the local state file is still fully authoritative for continued operation
+# on THIS node. The HDFS copy is a cross-node convenience mirror only.
+#
+# Requires: $key (state file key, same value used to build $state_file's
+# basename by the caller) to be passed explicitly, since HDFS mirror paths are
+# keyed the same way as local paths but live in a different directory.
 write_state_file() {
     local state_file="$1"
     local content="$2"
+    local key="$3"
     local tmp_file="${state_file}.tmp.$$"
     if echo "$content" >"$tmp_file" && mv "$tmp_file" "$state_file"; then
-        : # success
+        : # local write success
     else
         log "[ERROR] Failed to write state file $state_file"
         rm -f "$tmp_file" 2>/dev/null || true
         return 1
     fi
+
+    # Best-effort HDFS mirror on BOTH clusters. Never fails the caller.
+    mirror_state_file_to_hdfs "$key" "$content"
+    return 0
+}
+
+# Mirror state content to the HDFS-side state directory on BOTH SOURCE_CLUSTER
+# and DEST_CLUSTER. Best-effort: every failure is a [WARN], never a hard error.
+# Uses a local temp file + "hdfs dfs -put -f" (overwrite) per cluster, since
+# HDFS has no atomic rename-based overwrite equivalent to local `mv` that we
+# rely on elsewhere; -put -f is the accepted (non-atomic) tradeoff here.
+#
+# PURPOSE (post live-direction-derivation rework): this mirror is a
+# performance hint only -- a cross-node cache of the last common snapshot
+# name, consulted by verify_cached_snap_fast_path to avoid a live
+# double-listing of .snapshot on both clusters when nothing has changed. It is
+# NOT a source of truth for direction/safety decisions; those are always
+# derived live from .snapshot listings on both clusters (derive_direction_state).
+# KNOWN LIMITATION: a reader could observe a truncated/partial file on the
+# HDFS side if a read races an in-flight -put on that exact path. This is
+# considered acceptable: the local state file remains authoritative for the
+# node that just wrote it, and the HDFS mirror is a convenience path used only
+# when local state is ABSENT (a different node), not concurrently written by
+# two nodes for the same directory in normal operation. Since the mirrored
+# content is now 1-line-only, a truncated read is simply empty/short, not
+# "missing the second line" -- see _hdfs_mirror_content_is_complete.
+mirror_state_file_to_hdfs() {
+    local key="$1"
+    local content="$2"
+    local mirror_tmp="/tmp/pulse_replication_action_mirror_${key}_$$.tmp"
+    TEMP_FILES+=("$mirror_tmp")
+
+    if ! printf '%s' "$content" >"$mirror_tmp" 2>/dev/null; then
+        log "[WARN] [HDFS-STATE-MIRROR] Could not create local temp file $mirror_tmp for HDFS mirror write (key=$key). Skipping HDFS mirror this run; local state is unaffected."
+        METRICS_HDFS_MIRROR_FAILURES=$((METRICS_HDFS_MIRROR_FAILURES + 1))
+        return 0
+    fi
+
+    _mirror_one_cluster "$key" "$mirror_tmp" "$SOURCE_CLUSTER" "SOURCE"
+    _mirror_one_cluster "$key" "$mirror_tmp" "$DEST_CLUSTER" "DEST"
+
+    rm -f "$mirror_tmp" 2>/dev/null || true
+}
+
+# Single-cluster helper for mirror_state_file_to_hdfs. Split into two plain
+# calls (rather than a colon-packed "$cluster:$label" pair looped over)
+# because SOURCE_CLUSTER/DEST_CLUSTER are typically "host:port" -- packing
+# "$cluster:$label" into one string and splitting on ":" would break on the
+# port's own colon. Two explicit calls avoid that fragility entirely.
+_mirror_one_cluster() {
+    local key="$1" mirror_tmp="$2" cluster="$3" label="$4"
+    local dest_uri="hdfs://${cluster}${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+    local put_err="/tmp/mirror_put_err_${key}_$$.log"
+    if run_as_hdfs hdfs dfs -fs "hdfs://${cluster}" -put -f "$mirror_tmp" "${HDFS_STATE_DIR}/dr-last-snap-${key}.txt" 2>"$put_err"; then
+        log "[DEBUG] [HDFS-STATE-MIRROR] Mirrored state for key=$key to $label cluster ($cluster): $dest_uri"
+    else
+        log "[WARN] [HDFS-STATE-MIRROR] Failed to mirror state for key=$key to $label cluster ($cluster) at $dest_uri. NON-FATAL: local state file remains authoritative; this directory's sync is unaffected. Cross-node failover convenience is degraded for this directory until a mirror write succeeds."
+        [[ -s "$put_err" ]] && log "[WARN] [HDFS-STATE-MIRROR] hdfs -put stderr: $(tr '\n' ' ' <"$put_err")"
+        METRICS_HDFS_MIRROR_FAILURES=$((METRICS_HDFS_MIRROR_FAILURES + 1))
+    fi
+    rm -f "$put_err" 2>/dev/null || true
+}
+
+# Read snapshot name (line 1) from a state file. Works for old (1-line) and new (2-line) formats
+# -- only ever reads line 1, by construction, so it is agnostic to whatever else may follow it.
+read_state_snapshot() {
+    local state_file="$1"
+    head -n 1 "$state_file"
+}
+
+# DEPRECATED / REMOVED: read_state_last_source() used to read line 2 (a cached
+# "recorded SOURCE_CLUSTER at last write" label) so Stage 4 could compare it
+# against the current SOURCE_CLUSTER to detect a direction reversal. That
+# mechanism is exactly the staleness-prone cache this rework replaces: a node
+# with a stale local/mirrored copy of this field could report "not reversed"
+# when the live snapshot state on both clusters said otherwise. Direction is
+# now derived live every run from actual .snapshot listings/existence checks
+# on both clusters (see derive_direction_state / verify_cached_snap_fast_path),
+# never from a cached label. This function has been deleted; nothing calls it.
+
+# Build the state file content: last common snapshot name only (1 line).
+# The previously-included second line (recorded SOURCE_CLUSTER at write time)
+# has been removed -- direction is now derived live from snapshot state on
+# both clusters every run (see derive_direction_state), never cached, so
+# writing it here would be actively misleading to a future maintainer.
+build_state_content() {
+    local snap_name="$1"
+    printf '%s' "$snap_name"
 }
 
 # Cleanup old snapshots on a cluster (reduces code duplication)
@@ -792,6 +1409,202 @@ cleanup_old_snapshots() {
     else
         log "[DEBUG] No snapshots to remove on $cluster_name for $d"
     fi
+}
+
+# -----------------------------------------------------------------------------
+# derive_direction_state: derive replication-direction state for directory $d
+# purely from LIVE snapshot listings on both clusters -- never from a cached
+# label. Ground truth: a snapshot either exists on a cluster or it does not.
+#
+# Sets (globals, plain-statement calling convention -- see bug #1 note, this
+# function calls log() internally and MUST NOT be invoked via command
+# substitution):
+#   LAST_COMMON_SNAP_INDEX   - integer, highest snapshot index present on BOTH
+#                              clusters, or -1 if no common index exists.
+#   LAST_COMMON_SNAP_NAME    - "${SNAP_PREFIX}_${LAST_COMMON_SNAP_INDEX}", or ""
+#                              if LAST_COMMON_SNAP_INDEX=-1.
+#   DIRECTION_REVERSED       - "true"/"false". true iff DEST_CLUSTER has
+#                              indices > LAST_COMMON_SNAP_INDEX that
+#                              SOURCE_CLUSTER lacks, and SOURCE_CLUSTER has
+#                              none beyond it.
+#   SPLIT_BRAIN_DETECTED     - "true"/"false". true iff BOTH clusters have
+#                              indices > LAST_COMMON_SNAP_INDEX that the other
+#                              lacks.
+#   DIRECTION_STATE_OK       - "true"/"false". false means the live listing
+#                              itself failed/was unreachable on either
+#                              cluster -- caller MUST fail closed (abort this
+#                              directory) rather than use any other global
+#                              above, all of which are UNDEFINED when this is
+#                              "false".
+#
+# Returns 0 always (errors are reported via DIRECTION_STATE_OK, not via exit
+# status), so callers must check DIRECTION_STATE_OK explicitly and not rely on
+# `if derive_direction_state ...; then`.
+#
+# CALLING CONVENTION: plain statement only, e.g.:
+#     derive_direction_state "$d"
+#     if [[ "$DIRECTION_STATE_OK" != "true" ]]; then ...abort... fi
+# -----------------------------------------------------------------------------
+derive_direction_state() {
+    local d="$1"
+    LAST_COMMON_SNAP_INDEX=-1
+    LAST_COMMON_SNAP_NAME=""
+    DIRECTION_REVERSED="false"
+    SPLIT_BRAIN_DETECTED="false"
+    DIRECTION_STATE_OK="false"
+
+    local src_ls_err="/tmp/pulse_replication_action_snaplist_src_$$.log"
+    local dst_ls_err="/tmp/pulse_replication_action_snaplist_dst_$$.log"
+    TEMP_FILES+=("$src_ls_err" "$dst_ls_err")
+
+    # Fail-closed check: distinguish "-ls succeeded, zero snapshots matched
+    # prefix" (legitimately empty directory listing / no snapshots yet) from
+    # "the underlying hdfs dfs -ls itself errored" (unreachable cluster,
+    # permission denied, directory missing). We check hdfs dfs -ls's OWN exit
+    # code via PIPESTATUS[0] -- NOT stderr content/emptiness, which is
+    # unreliable (a hung connection, timeout, or some failure modes can
+    # produce empty stderr, which would let a masked failure slip through as
+    # "zero snapshots" and silently mislead the safety-critical derivation
+    # below). PIPESTATUS[0] is bash's array of each pipeline stage's exit
+    # code, captured immediately after the pipeline runs, so it reflects
+    # hdfs dfs -ls's real exit status regardless of what stderr contains.
+    # This path is safety-critical and must NOT silently tolerate a masked
+    # -ls failure the way cleanup_old_snapshots's cosmetic cleanup path can.
+    local src_snaps=() dst_snaps=()
+    local src_ls_rc dst_ls_rc
+    mapfile -t src_snaps < <(
+        run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -ls "$d/.snapshot" 2>"$src_ls_err" |
+            awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' |
+            grep "^${SNAP_PREFIX}_" || true
+    )
+    src_ls_rc="${PIPESTATUS[0]}"
+
+    mapfile -t dst_snaps < <(
+        run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>"$dst_ls_err" |
+            awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' |
+            grep "^${SNAP_PREFIX}_" || true
+    )
+    dst_ls_rc="${PIPESTATUS[0]}"
+
+    if [[ "$src_ls_rc" -ne 0 ]]; then
+        log "[ERROR] [DIRECTION-DERIVE] Could not list snapshots on SOURCE_CLUSTER ($SOURCE_CLUSTER) for $d (hdfs dfs -ls exit code $src_ls_rc). stderr: $(tr '\n' ' ' <"$src_ls_err")"
+        log "[ERROR] [DIRECTION-DERIVE] Cannot safely determine replication direction for $d without a live snapshot listing on both clusters. Failing closed."
+        return 0
+    fi
+    if [[ "$dst_ls_rc" -ne 0 ]]; then
+        log "[ERROR] [DIRECTION-DERIVE] Could not list snapshots on DEST_CLUSTER ($DEST_CLUSTER) for $d (hdfs dfs -ls exit code $dst_ls_rc). stderr: $(tr '\n' ' ' <"$dst_ls_err")"
+        log "[ERROR] [DIRECTION-DERIVE] Cannot safely determine replication direction for $d without a live snapshot listing on both clusters. Failing closed."
+        return 0
+    fi
+
+    # Build index sets (numeric suffix after last underscore).
+    local -A src_idx_set=() dst_idx_set=()
+    local s idx
+    for s in "${src_snaps[@]}"; do
+        idx="${s##*_}"
+        [[ "$idx" =~ ^[0-9]+$ ]] && src_idx_set["$idx"]=1
+    done
+    for s in "${dst_snaps[@]}"; do
+        idx="${s##*_}"
+        [[ "$idx" =~ ^[0-9]+$ ]] && dst_idx_set["$idx"]=1
+    done
+
+    # Last common index = highest index present in both sets.
+    local common_max=-1
+    for idx in "${!src_idx_set[@]}"; do
+        if [[ -n "${dst_idx_set[$idx]:-}" ]] && ((idx > common_max)); then
+            common_max=$idx
+        fi
+    done
+
+    # Indices strictly beyond common_max, per side.
+    local src_beyond=false dst_beyond=false
+    for idx in "${!src_idx_set[@]}"; do
+        ((idx > common_max)) && src_beyond=true
+    done
+    for idx in "${!dst_idx_set[@]}"; do
+        ((idx > common_max)) && dst_beyond=true
+    done
+
+    LAST_COMMON_SNAP_INDEX=$common_max
+    if ((common_max >= 0)); then
+        LAST_COMMON_SNAP_NAME="${SNAP_PREFIX}_${common_max}"
+    fi
+
+    if [[ "$src_beyond" == "true" ]] && [[ "$dst_beyond" == "true" ]]; then
+        SPLIT_BRAIN_DETECTED="true"
+        log "[ERROR] [DIRECTION-DERIVE] Split-brain for $d: both SOURCE_CLUSTER and DEST_CLUSTER have snapshot indices beyond the last common index ($common_max) that the other side lacks."
+    elif [[ "$dst_beyond" == "true" ]]; then
+        DIRECTION_REVERSED="true"
+        log "[INFO] [DIRECTION-DERIVE] Direction reversal signal for $d: DEST_CLUSTER ($DEST_CLUSTER) has snapshot indices beyond the last common index ($common_max) that SOURCE_CLUSTER ($SOURCE_CLUSTER) lacks -- DEST_CLUSTER was acting as source more recently."
+    elif [[ "$src_beyond" == "true" ]]; then
+        log "[DEBUG] [DIRECTION-DERIVE] Normal forward continuation for $d: SOURCE_CLUSTER has snapshot indices beyond the last common index ($common_max); DEST_CLUSTER has none beyond it."
+    else
+        log "[DEBUG] [DIRECTION-DERIVE] No advancement beyond last common index ($common_max) for $d on either side."
+    fi
+
+    DIRECTION_STATE_OK="true"
+    rm -f "$src_ls_err" "$dst_ls_err" 2>/dev/null || true
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# verify_cached_snap_fast_path: optimistic, LIVE-VERIFIED fast path to avoid a
+# full derive_direction_state double-listing when the cached last_snap is
+# still confirmed current. NEVER trusted blindly -- every field it reports is
+# backed by a live "hdfs dfs -test -e" check performed THIS run, not by
+# assuming the cache is correct. See derive_direction_state for the fallback
+# full algorithm this defers to when the fast path cannot confirm safety.
+#
+# Sets (plain-statement calling convention, same rules as derive_direction_state):
+#   FAST_PATH_CONFIRMED   - "true"/"false". true only if the cached snapshot
+#                           exists on BOTH clusters AND dest has not advanced
+#                           beyond it. false means "fall through to
+#                           derive_direction_state" (this is a normal, expected,
+#                           non-error outcome, e.g. first run after a real
+#                           advance -- NOT a failure).
+#   LAST_COMMON_SNAP_INDEX, LAST_COMMON_SNAP_NAME - set to the cached snapshot's
+#                           values ONLY when FAST_PATH_CONFIRMED="true";
+#                           otherwise left unset/stale and MUST NOT be read by
+#                           the caller (caller must call derive_direction_state
+#                           next, which overwrites them properly).
+#
+# Takes the cached snapshot name (already read from local state file line 1
+# by the caller) as $2. Fails safe: any -test error/timeout is treated
+# identically to "cache not confirmed" (FAST_PATH_CONFIRMED=false), NEVER as
+# "assume the cache was right."
+# -----------------------------------------------------------------------------
+verify_cached_snap_fast_path() {
+    local d="$1"
+    local cached_snap="$2"
+    FAST_PATH_CONFIRMED="false"
+
+    [[ -z "$cached_snap" ]] && return 0
+
+    if ! run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -test -e "$d/.snapshot/$cached_snap" 2>/dev/null; then
+        return 0
+    fi
+    if ! run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -test -e "$d/.snapshot/$cached_snap" 2>/dev/null; then
+        return 0
+    fi
+
+    local idx next_on_dest
+    idx="${cached_snap##*_}"
+    [[ "$idx" =~ ^[0-9]+$ ]] || return 0
+    next_on_dest="${SNAP_PREFIX}_$((idx + 1))"
+    if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -test -e "$d/.snapshot/$next_on_dest" 2>/dev/null; then
+        # DEST has advanced beyond the cached common point -- possible
+        # reversal. Do NOT confirm the fast path; force the full algorithm.
+        return 0
+    fi
+
+    # shellcheck disable=SC2034 # LAST_COMMON_SNAP_INDEX is part of this function's documented
+    # global-output contract (mirrors derive_direction_state); Stage 4 currently only consumes
+    # LAST_COMMON_SNAP_NAME, but callers/diagnostics are entitled to rely on the index too.
+    LAST_COMMON_SNAP_INDEX=$idx
+    LAST_COMMON_SNAP_NAME="$cached_snap"
+    FAST_PATH_CONFIRMED="true"
+    return 0
 }
 
 # Backup existing log file and create a new one for this execution
@@ -882,48 +1695,164 @@ enable_debug_if_needed() {
     fi
 }
 
+# -----------------------------------------------------------------------------
+# Validate that every non-blank, non-comment line in the DistCp filter file
+# compiles as a regex, BEFORE it is ever handed to DistCp's -filters option.
+# Fails fast with the offending line number/content instead of letting the
+# error surface deep inside a running DistCp/YARN job.
+#
+# Uses python3's `re` module if available, falling back to perl (PCRE) --
+# both are close enough supersets of Java regex syntax for this sanity check.
+# If neither interpreter is present, validation is skipped with a [WARN]
+# rather than failing the run (best-effort, non-fatal).
+# -----------------------------------------------------------------------------
+validate_exclude_regex_patterns() {
+    local filter_file="$1"
+    local checker=""
+
+    if command -v python3 >/dev/null 2>&1; then
+        checker="python3"
+    elif command -v perl >/dev/null 2>&1; then
+        checker="perl"
+    else
+        log "[WARN] Neither python3 nor perl found; skipping filter regex validation for $filter_file"
+        return 0
+    fi
+
+    local line_num=0 bad_count=0 pattern
+    while IFS= read -r pattern || [[ -n "$pattern" ]]; do
+        line_num=$((line_num + 1))
+        [[ -z "$pattern" || "$pattern" == \#* ]] && continue
+
+        if [[ "$checker" == "python3" ]]; then
+            if ! python3 -c 'import re,sys; re.compile(sys.argv[1])' "$pattern" 2>/dev/null; then
+                echo "[ERROR] Invalid regex on line $line_num of $filter_file: '$pattern'" >&2
+                bad_count=$((bad_count + 1))
+            fi
+        else
+            if ! perl -e 'eval { qr/$ARGV[0]/ }; exit($@ ? 1 : 0)' "$pattern" 2>/dev/null; then
+                echo "[ERROR] Invalid regex on line $line_num of $filter_file: '$pattern'" >&2
+                bad_count=$((bad_count + 1))
+            fi
+        fi
+    done < "$filter_file"
+
+    if [[ "$bad_count" -gt 0 ]]; then
+        echo "[ERROR] $bad_count invalid regex pattern(s) found in filter file: $filter_file" >&2
+        echo "[ERROR] Fix the pattern(s) above (one Java regex per line) before rerunning" >&2
+        exit 14
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Materialize the DistCp -filters file for this job from DISTCP_EXCLUDE_PATTERNS
+# (inline regex patterns, comma or newline separated -- never a pre-made file
+# path from the operator).
+#
+# The file path is DETERMINISTIC per replication job:
+#   ${DISTCP_EXCLUDE_DIR}/<job_key>.filters
+# where job_key = sanitize(SOURCE_CLUSTER)__sanitize(DEST_CLUSTER)__sanitize(SNAP_PREFIX)
+#
+# This guarantees:
+#   - Uniqueness across concurrently-running jobs (different cluster pairs or
+#     different SNAP_PREFIX lineages between the same pair never share a file).
+#   - Idempotent reuse across repeated runs of the SAME job: the file is
+#     overwritten (not appended, not uniquified with a PID/timestamp) every
+#     run, so re-running never leaves behind extra files to clean up.
+#
+# Sets the global DISTCP_EXCLUDE_FILE to the generated path, then validates
+# every pattern compiles as a regex before it is ever handed to DistCp.
+# -----------------------------------------------------------------------------
+resolve_distcp_exclude_file() {
+    local job_key
+    job_key="$(sanitize "$SOURCE_CLUSTER")__$(sanitize "$DEST_CLUSTER")__$(sanitize "$SNAP_PREFIX")"
+
+    mkdir -p "$DISTCP_EXCLUDE_DIR"
+    DISTCP_EXCLUDE_FILE="${DISTCP_EXCLUDE_DIR}/${job_key}.filters"
+
+    # Explode comma-separated (and/or newline-separated) patterns into
+    # one-per-line, skipping blank entries -- overwrite, never append.
+    local IFS=','
+    local -a patterns=()
+    read -r -a patterns <<< "$DISTCP_EXCLUDE_PATTERNS"
+    : > "$DISTCP_EXCLUDE_FILE"
+    local p
+    for p in "${patterns[@]}"; do
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            echo "$line" >> "$DISTCP_EXCLUDE_FILE"
+        done <<< "$p"
+    done
+
+    if [[ ! -s "$DISTCP_EXCLUDE_FILE" ]]; then
+        echo "[ERROR] DISTCP_EXCLUDE_PATTERNS was set but produced no usable patterns" >&2
+        echo "[ERROR] Pass one or more regexes, comma-separated (arg 13)" >&2
+        exit 14
+    fi
+
+    validate_exclude_regex_patterns "$DISTCP_EXCLUDE_FILE"
+}
+
 ###############################################################################
-# DistCp path exclusion filter: "yes" or "no" (default: "no")
+# DistCp path exclusion filter (single merged arg -- default: disabled)
 #
 # When enabled, DistCp will use the -filters flag to exclude paths matching
-# regex patterns defined in the filter file. This reduces data volume and
-# improves replication SLA by skipping unwanted subdirectories.
+# regex patterns. This reduces data volume and improves replication SLA by
+# skipping unwanted subdirectories.
 #
-# To enable:
-#   1. Set DISTCP_FILTER_ENABLED="yes" via CLI arg 15, environment variable, or below
-#   2. Set DISTCP_FILTER_FILE to the local path of the filter file via CLI arg 16,
-#      environment variable, or below
-#   3. Ensure the filter file exists and contains one Java regex pattern per line
+# DISTCP_EXCLUDE_PATTERNS takes the regex patterns THEMSELVES inline (like
+# SOURCE_DIRS takes a comma-separated directory list) -- NOT a pre-made file
+# path. The script generates the actual DistCp -filters file itself:
+#   - empty/unset    -> filtering DISABLED
+#   - non-empty value -> filtering ENABLED using these pattern(s)
 #
-# Priority: 1) CLI argument (15th/16th arg), 2) Environment variable, 3) Default value
+# Why not a file path (as in earlier versions): with hundreds of concurrent
+# DR replication pairs on the same node, requiring each operator/orchestration
+# wrapper to hand-create and own a distinct local file per pair is error-prone
+# (path collisions, stale files, cleanup). Instead the script derives a STABLE
+# per-job key from SOURCE_CLUSTER + DEST_CLUSTER + SNAP_PREFIX (see
+# resolve_distcp_exclude_file below) and (re)writes
+# ${DISTCP_EXCLUDE_DIR}/<job_key>.filters on every run:
+#   - unique per replication job -> concurrent different jobs never collide
+#   - same path every run of the SAME job -> idempotent overwrite, no
+#     ever-growing pile of one-off files to clean up
 #
-# Filter file format (one regex per line, matched against full relative path):
-#   .*dir4/sub2.*
-#   .*\.tmp$
-#   .*/staging/.*
+# Priority: 1) CLI argument (13th arg), 2) Environment variable, 3) Default value (disabled)
+#
+# Pattern format (comma-separated on the CLI/env; matched against full
+# relative path; multiple patterns = multiple exclude rules, ORed together):
+#   ".*dir4/sub2.*,.*\.tmp$,.*/staging/.*"
 #
 # Example: To exclude /new03/dir4/sub2 when replicating /new03:
-#   echo '.*dir4/sub2.*' > /etc/hadoop-dr/exclude-paths.txt
+#   DISTCP_EXCLUDE_PATTERNS='.*dir4/sub2.*'
 #
-# NOTE: The filter file must be a LOCAL file on the node running the script
-#       (not an HDFS path). It is passed to DistCp's -filters option.
 # NOTE: Filters apply to both full DistCp (Stage 3) and incremental (Stage 4).
 # NOTE: Rollback DistCp (ROLLBACK_ON_FAILURE) does NOT use filters, as rollback
 #       must restore the complete snapshot state.
 ###############################################################################
-if [[ -n "$DISTCP_FILTER_ENABLED_ARG" ]]; then
-    DISTCP_FILTER_ENABLED="$DISTCP_FILTER_ENABLED_ARG"
+if [[ -n "$DISTCP_EXCLUDE_PATTERNS_ARG" ]]; then
+    DISTCP_EXCLUDE_PATTERNS="$DISTCP_EXCLUDE_PATTERNS_ARG"
 else
-    DISTCP_FILTER_ENABLED="${DISTCP_FILTER_ENABLED:-no}"
-fi
-if [[ -n "$DISTCP_FILTER_FILE_ARG" ]]; then
-    DISTCP_FILTER_FILE="$DISTCP_FILTER_FILE_ARG"
-else
-    DISTCP_FILTER_FILE="${DISTCP_FILTER_FILE:-/etc/hadoop-dr/exclude-paths.txt}"
+    DISTCP_EXCLUDE_PATTERNS="${DISTCP_EXCLUDE_PATTERNS:-}"
 fi
 
+# Derived internal toggle: enabled iff non-empty patterns were provided.
+if [[ -n "$DISTCP_EXCLUDE_PATTERNS" ]]; then
+    DISTCP_EXCLUDE_ENABLED="yes"
+else
+    DISTCP_EXCLUDE_ENABLED="no"
+fi
+
+# Directory holding generated, job-keyed filter files (one stable file per
+# replication job, overwritten idempotently -- never a new file per run).
+DISTCP_EXCLUDE_DIR="/var/tmp/dr-distcp-filters"
+
+# Resolved at runtime once SOURCE_CLUSTER/DEST_CLUSTER/SNAP_PREFIX are known
+# and validated (see resolve_distcp_exclude_file, called from main()).
+DISTCP_EXCLUDE_FILE=""
+
 # Build filter opts (validated later in main() after output redirection)
-DISTCP_FILTER_OPTS=""
+DISTCP_EXCLUDE_OPTS=""
 
 ###############################################################################
 # Replication mode: "pull" or "push"
@@ -943,7 +1872,7 @@ DISTCP_FILTER_OPTS=""
 #       * Destination cluster is excluded from token renewal
 #       * Source cluster bears YARN + DistCp MapReduce overhead
 #
-# Priority: 1) CLI argument (17th arg), 2) Environment variable, 3) Default value
+# Priority: 1) CLI argument (14th arg), 2) Environment variable, 3) Default value
 ###############################################################################
 if [[ -n "$REPLICATION_MODE_ARG" ]]; then
     REPLICATION_MODE="$REPLICATION_MODE_ARG"
@@ -1271,10 +2200,10 @@ reconcile_and_rebaseline_dest() {
     local reconcile_err="/tmp/distcp_reconcile_err_${key}_$$.log"
     TEMP_FILES+=("$reconcile_err")
     log_cmd "Baseline Reconcile DistCp Command"
-    echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS $src_base_uri $dst_uri"
+    echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS $src_base_uri $dst_uri"
     echo ""
     # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
-    if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS "$src_base_uri" "$dst_uri" 2> >(tee "$reconcile_err" >&2); then
+    if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS "$src_base_uri" "$dst_uri" 2> >(tee "$reconcile_err" >&2); then
         log "[INFO] Baseline reconcile DistCp succeeded for $d"
     else
         echo "[ERROR] Baseline reconcile DistCp FAILED for $d (see $reconcile_err)"
@@ -1314,6 +2243,218 @@ reconcile_and_rebaseline_dest() {
 }
 
 # -----------------------------------------------------------------------------
+# reconcile_reverse_diff_bootstrap: one-time incremental reverse-diff bootstrap
+# for a directory whose replication direction has reversed (failover/failback),
+# used only when REVERSE_DIFF_BOOTSTRAP="yes" AND a state file already exists.
+#
+# Preconditions (all checked by caller in Stage 4 before invoking):
+#   - $state file exists for $d (i.e. NOT a brand-new directory)
+#   - derive_direction_state (or its verified fast-path) has determined
+#     DIRECTION_REVERSED=true for $d, from LIVE snapshot listings on both
+#     clusters (never from a cached label)
+#   - REVERSE_DIFF_BOOTSTRAP=yes
+#
+# Diffs the COMMON ancestor snapshot ($last_snap, present on both clusters from
+# the last successful run in either direction) against a NEW incremental
+# snapshot created on the CURRENT $SOURCE_CLUSTER (physically the old
+# destination), and applies that diff onto the CURRENT $DEST_CLUSTER
+# (physically the old source, which may have taken writes during the outage).
+#
+# Uses an INCREMENTAL `distcp -diff`, NOT a full distcp, as the primary (and
+# only automatic) attempt -- avoids re-copying the entire dataset on failover.
+#
+# On "target modified/changed since snapshot" from the incremental diff: does
+# NOT perform any destructive rollback/rdiff. Fails cleanly with operator
+# guidance, consistent with the baseline-snapshot split-brain philosophy in
+# Stage 4 (see the last_snap==baseline_snap branch around line 2157).
+#
+# Returns 0 on success (state file already advanced by this function).
+# Returns 1 on failure (no state mutation; caller marks directory failed).
+# -----------------------------------------------------------------------------
+reconcile_reverse_diff_bootstrap() {
+    local d="$1"
+    local last_snap="$2"
+    local key state
+    key=$(sanitize "$d")
+    resolve_state_file "$key"
+    state="$RESOLVED_STATE_PATH"
+
+    local idx reverse_next_snap
+    idx=${last_snap##*_}
+    reverse_next_snap="${SNAP_PREFIX}_$((idx + 1))"
+
+    log_substage "Reverse-diff bootstrap: $d ($last_snap -> $reverse_next_snap, new source=$SOURCE_CLUSTER)"
+    log "[REVERSE-BOOTSTRAP] Direction reversal for $d: attempting incremental reverse diff $last_snap -> $reverse_next_snap"
+
+    # --- Precondition: common ancestor snapshot must exist on BOTH clusters ---
+    if ! run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${last_snap}\$"; then
+        echo "[ERROR] Reverse-diff bootstrap: common snapshot '$last_snap' NOT FOUND on new source ($SOURCE_CLUSTER) for $d"
+        log "[ERROR] [REVERSE-BOOTSTRAP] Missing '$last_snap' on new source for $d. Cannot compute incremental diff."
+        log "[ERROR] This can happen if snapshot retention (SNAP_RETAIN) pruned '$last_snap' on this cluster. Manual reconciliation or full DistCp required."
+        return 1
+    fi
+    if ! run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${last_snap}\$"; then
+        echo "[ERROR] Reverse-diff bootstrap: common snapshot '$last_snap' NOT FOUND on new destination ($DEST_CLUSTER) for $d"
+        log "[ERROR] [REVERSE-BOOTSTRAP] Missing '$last_snap' on new destination for $d. Cannot compute incremental diff."
+        log "[ERROR] This can happen if snapshot retention (SNAP_RETAIN) pruned '$last_snap' on this cluster. Manual reconciliation or full DistCp required."
+        return 1
+    fi
+
+    # --- Step 1: create the next snapshot on the NEW source (idempotent) ---
+    log_substage "Reverse-diff bootstrap Step 1: creating $reverse_next_snap on new source ($SOURCE_CLUSTER)"
+    local out_src
+    out_src=$(run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -createSnapshot "$d" "$reverse_next_snap" 2>&1 | grep -v "^SLF4J:" || true) || true
+    if echo "$out_src" | grep -q "already a snapshot with the same name"; then
+        log "[WARN] [REVERSE-BOOTSTRAP] Snapshot $reverse_next_snap already exists on new source for $d"
+    elif echo "$out_src" | grep -q "Created snapshot"; then
+        log "[INFO] [REVERSE-BOOTSTRAP] Snapshot $reverse_next_snap created on new source for $d"
+    else
+        echo "[ERROR] Reverse-diff bootstrap: FAILED to create $reverse_next_snap on new source ($SOURCE_CLUSTER): $d"
+        log "[ERROR] [REVERSE-BOOTSTRAP] Source snapshot creation failed: $out_src"
+        return 1
+    fi
+
+    # --- Step 2: incremental distcp -diff from new-source to new-destination ---
+    local src_uri dst_uri copy_opts_no_update
+    src_uri="hdfs://$SOURCE_CLUSTER${d}"
+    dst_uri="hdfs://$DEST_CLUSTER${d}"
+    copy_opts_no_update=$(echo "$COPY_OPTS" | sed 's/-update\s*/ /g' | sed 's/\s\+/ /g' | sed 's/^\s*//;s/\s*$//' || echo "$COPY_OPTS")
+
+    local bootstrap_err="/tmp/distcp_reverse_bootstrap_err_${key}_$$.log"
+    TEMP_FILES+=("$bootstrap_err")
+    log_cmd "Reverse-Diff Bootstrap DistCp Command"
+    echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $copy_opts_no_update -update -diff $last_snap $reverse_next_snap $src_uri $dst_uri"
+    echo ""
+    local bootstrap_distcp_success
+    # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
+    if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $copy_opts_no_update -update -diff "$last_snap" "$reverse_next_snap" "$src_uri" "$dst_uri" 2> >(tee "$bootstrap_err" >&2); then
+        bootstrap_distcp_success=true
+    else
+        bootstrap_distcp_success=false
+    fi
+
+    if [[ "$bootstrap_distcp_success" != "true" ]]; then
+        echo ""
+        echo "=========================================================================================================================================="
+        echo ">>> [ERROR] REVERSE-DIFF BOOTSTRAP DISTCP FAILED for: $d <<<"
+        echo "=========================================================================================================================================="
+        log "[ERROR] [REVERSE-BOOTSTRAP] Incremental reverse diff failed for $d (see $bootstrap_err)"
+        if [[ -f "$bootstrap_err" ]] && [[ -s "$bootstrap_err" ]]; then
+            analyze_error "$bootstrap_err"
+        fi
+
+        # --- Split-brain safety: NEVER auto-discard data on the new destination ---
+        if grep -q "The target has been modified since snapshot" "$bootstrap_err" 2>/dev/null ||
+           grep -q "target has changed since snapshot" "$bootstrap_err" 2>/dev/null; then
+            echo ""
+            echo "=========================================================================================================================================="
+            echo ">>> [ERROR] DIVERGENT WRITES DETECTED DURING REVERSE-DIFF BOOTSTRAP for $d <<<"
+            echo "=========================================================================================================================================="
+            echo ""
+            echo "  The new destination ($DEST_CLUSTER, the pre-failover source) has data that does"
+            echo "  NOT match its own '$last_snap' snapshot. This typically means writes landed on"
+            echo "  $DEST_CLUSTER (directly or via lingering jobs) after the outage/failover began."
+            echo ""
+            echo "  This script will NOT automatically discard or overwrite data on $DEST_CLUSTER."
+            echo "  Automatic destructive rollback is intentionally never attempted in this path."
+            echo ""
+            echo "  --- Option 1: Manually reconcile divergent writes on $DEST_CLUSTER ---"
+            echo "    Inspect what changed since '$last_snap':"
+            echo "      hdfs snapshotDiff -fs hdfs://$DEST_CLUSTER $d $last_snap ."
+            echo "    Reconcile or archive the divergent files, then re-run this script."
+            echo ""
+            echo "  --- Option 2: force a full re-baseline (explicit, discards diff optimization) ---"
+            echo "    Confirm which side holds authoritative data, then clear ALL state (local AND"
+            echo "    the HDFS-mirrored copies on both clusters) to force Stage 3 to re-baseline"
+            echo "    from scratch in the CURRENT direction:"
+            echo ""
+            echo "      rm -f $state"
+            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo ""
+            echo "    IMPORTANT: Deleting only the local file ($state) is NOT sufficient and will"
+            echo "    NOT work as expected -- an HDFS-mirrored copy of this state (written on both"
+            echo "    clusters after every successful sync) will still exist, and the next run"
+            echo "    will automatically rehydrate the local file from it, silently undoing this"
+            echo "    step. All three locations above must be cleared together."
+            echo ""
+            echo "    ALSO REQUIRED: delete every existing ${SNAP_PREFIX}_* snapshot for $d on BOTH"
+            echo "    clusters BEFORE re-running. Direction/continuation is now derived live from"
+            echo "    actual snapshot indices on both clusters (see [DIRECTION-DERIVE] in the logs) --"
+            echo "    if old numbered snapshots from before this recovery are left in place, a LATER"
+            echo "    run could find one of them as a coincidental \"last common index\" between the"
+            echo "    two clusters and treat it as valid continuation history, instead of the fresh"
+            echo "    ${SNAP_PREFIX}_0 baseline Stage 3 is about to create. That would let a future"
+            echo "    run attempt an incremental diff against data that has already moved past this"
+            echo "    recovery, which (if ROLLBACK_ON_FAILURE=yes) risks a rollback that reverts the"
+            echo "    destination to a state from BEFORE this recovery completed, discarding it."
+            echo "    List and delete them explicitly, e.g.:"
+            echo ""
+            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
+            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -ls $d/.snapshot"
+            echo "      # for each ${SNAP_PREFIX}_<N> snapshot listed on EITHER cluster:"
+            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo ""
+            echo "    Then re-run. This performs a FULL distcp (not incremental) and creates a new"
+            echo "    ${SNAP_PREFIX}_0 baseline in the CURRENT direction ($SOURCE_CLUSTER -> $DEST_CLUSTER)."
+            echo "    WARNING: confirm which side holds authoritative data before doing this --"
+            echo "    a full re-baseline copies $SOURCE_CLUSTER over $DEST_CLUSTER and will overwrite"
+            echo "    whatever divergent data exists on $DEST_CLUSTER."
+            echo ""
+            echo "  --- Option 3: Inspect .snapshot dirs on both clusters ---"
+            echo "    hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
+            echo "    hdfs dfs -fs hdfs://$DEST_CLUSTER -ls $d/.snapshot"
+            echo ""
+            echo "=========================================================================================================================================="
+            log "[ERROR] [REVERSE-BOOTSTRAP] Divergent writes detected on $DEST_CLUSTER for $d. Manual reconciliation required. No automatic rollback attempted (by design)."
+        else
+            log "[ERROR] [REVERSE-BOOTSTRAP] Non-snapshot-modified failure for $d. Manual inspection required (see $bootstrap_err)."
+        fi
+
+        # Best-effort cleanup: remove the snapshot we created on the new source this
+        # attempt, so a re-run doesn't see a stale "already exists" and skip re-checking it.
+        # (Left in place is also safe; harmless either way. Removing keeps retry semantics
+        # closest to "nothing happened yet".)
+        run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -deleteSnapshot "$d" "$reverse_next_snap" 2>/dev/null || true
+
+        return 1
+    fi
+
+    log "[INFO] [REVERSE-BOOTSTRAP] Incremental reverse diff succeeded for $d"
+
+    # --- Step 3: create matching snapshot on the NEW destination ---
+    log_substage "Reverse-diff bootstrap Step 3: creating $reverse_next_snap on new destination ($DEST_CLUSTER)"
+    local out_dst
+    out_dst=$(run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$reverse_next_snap" 2>&1 | grep -v "^SLF4J:" || true) || true
+    if echo "$out_dst" | grep -q "already a snapshot with the same name"; then
+        log "[WARN] [REVERSE-BOOTSTRAP] Snapshot $reverse_next_snap already exists on new destination for $d"
+    elif echo "$out_dst" | grep -q "Created snapshot"; then
+        log "[INFO] [REVERSE-BOOTSTRAP] Snapshot $reverse_next_snap created on new destination for $d"
+    else
+        echo "[ERROR] Reverse-diff bootstrap: FAILED to create $reverse_next_snap on new destination ($DEST_CLUSTER): $d"
+        log "[ERROR] [REVERSE-BOOTSTRAP] Destination snapshot creation failed: $out_dst. Data was copied but state NOT advanced -- re-run will retry snapshot creation."
+        return 1
+    fi
+
+    # --- Step 4: advance state, recording the NEW direction ---
+    if write_state_file "$state" "$(build_state_content "$reverse_next_snap")" "$key"; then
+        log "[REVERSE-BOOTSTRAP] State advanced to $reverse_next_snap for $d (direction now: $SOURCE_CLUSTER -> $DEST_CLUSTER)"
+    else
+        log "[ERROR] [REVERSE-BOOTSTRAP] Failed to write state file $state after successful bootstrap for $d"
+        return 1
+    fi
+
+    METRICS_SUCCESSFUL_DIRECTORIES=$((METRICS_SUCCESSFUL_DIRECTORIES + 1))
+
+    # --- Step 5: cleanup old snapshots on both clusters (same as normal Stage 4 4g/4h) ---
+    cleanup_old_snapshots "$SOURCE_CLUSTER" "$d" "source" "$SNAP_RETAIN" "$SNAP_PREFIX"
+    cleanup_old_snapshots "$DEST_CLUSTER" "$d" "destination" "$SNAP_RETAIN" "$SNAP_PREFIX"
+
+    return 0
+}
+
+# -----------------------------------------------------------------------------
 # main()
 # -----------------------------------------------------------------------------
 main() {
@@ -1330,27 +2471,15 @@ main() {
     # regardless of whether hadoop/hdfs/curl are installed.
     # -------------------------------------------------------------------------
 
-    # Validate DISTCP_FILTER_ENABLED and DISTCP_FILTER_FILE
-    case "${DISTCP_FILTER_ENABLED,,}" in
-        yes)
-            if [[ -f "$DISTCP_FILTER_FILE" ]] && [[ -s "$DISTCP_FILTER_FILE" ]]; then
-                DISTCP_FILTER_OPTS="-filters $DISTCP_FILTER_FILE"
-            else
-                echo "[ERROR] DISTCP_FILTER_ENABLED=yes but filter file not found or empty: $DISTCP_FILTER_FILE" >&2
-                echo "[ERROR] Create the filter file with regex patterns (one per line) or set DISTCP_FILTER_ENABLED=no" >&2
-                exit 14
-            fi
-            ;;
-        ""|no)
-            DISTCP_FILTER_OPTS=""
-            ;;
-        *)
-            echo "[ERROR] Invalid value for DISTCP_FILTER_ENABLED (arg 15): '${DISTCP_FILTER_ENABLED}'" >&2
-            echo "[ERROR] Accepted values: 'yes' or 'no'" >&2
-            echo "[ERROR] If you intended to pass a filter file path, use arg 16 for the path and set arg 15 to 'yes'" >&2
-            exit 15
-            ;;
-    esac
+    # Materialize + validate the DistCp exclusion file from DISTCP_EXCLUDE_PATTERNS
+    # (job-keyed, idempotent -- see resolve_distcp_exclude_file). No pre-made
+    # file is ever expected from the operator.
+    if [[ "${DISTCP_EXCLUDE_ENABLED,,}" == "yes" ]]; then
+        resolve_distcp_exclude_file
+        DISTCP_EXCLUDE_OPTS="-filters $DISTCP_EXCLUDE_FILE"
+    else
+        DISTCP_EXCLUDE_OPTS=""
+    fi
 
     # Validate REPLICATION_MODE
     case "${REPLICATION_MODE,,}" in
@@ -1358,9 +2487,21 @@ main() {
             : # valid
             ;;
         *)
-            echo "[ERROR] Invalid value for REPLICATION_MODE (arg 17): '${REPLICATION_MODE}'" >&2
+            echo "[ERROR] Invalid value for REPLICATION_MODE (arg 14): '${REPLICATION_MODE}'" >&2
             echo "[ERROR] Accepted values: 'pull' or 'push'" >&2
             exit 16
+            ;;
+    esac
+
+    # Validate REVERSE_DIFF_BOOTSTRAP
+    case "${REVERSE_DIFF_BOOTSTRAP,,}" in
+        ""|no|yes)
+            : # valid
+            ;;
+        *)
+            echo "[ERROR] Invalid value for REVERSE_DIFF_BOOTSTRAP (arg 16): '${REVERSE_DIFF_BOOTSTRAP}'" >&2
+            echo "[ERROR] Accepted values: 'yes' or 'no'" >&2
+            exit 17
             ;;
     esac
 
@@ -1380,13 +2521,13 @@ main() {
     enable_debug_if_needed
 
     # Log filter details (after validation passed above)
-    if [[ "${DISTCP_FILTER_ENABLED,,}" == "yes" ]]; then
-        log "[INFO] DistCp path exclusion filter ENABLED: $DISTCP_FILTER_FILE"
+    if [[ "${DISTCP_EXCLUDE_ENABLED,,}" == "yes" ]]; then
+        log "[INFO] DistCp path exclusion filter ENABLED: $DISTCP_EXCLUDE_FILE"
         log "[INFO] Filter patterns:"
         while IFS= read -r pattern; do
             [[ -z "$pattern" || "$pattern" == \#* ]] && continue
             log "[INFO]   - $pattern"
-        done < "$DISTCP_FILTER_FILE"
+        done < "$DISTCP_EXCLUDE_FILE"
     fi
 
     # Extract hostnames without ports for JMX checks
@@ -1430,17 +2571,18 @@ main() {
     echo "  Arg 7  (DISTCP_USER)         : $DISTCP_USER"
     echo "  Arg 8  (COPY_OPTS)           : $COPY_OPTS"
     echo "  Arg 9  (YARN_QUEUE)          : $YARN_QUEUE"
-    echo "  Arg 10 (LOG_PATH)            : $LOG"
-    echo "  Arg 11 (AUTO_FULL_DISTCP)    : $AUTO_FULL_DISTCP"
-    echo "  Arg 12 (ROLLBACK_ON_FAILURE) : $ROLLBACK_ON_FAILURE"
-    echo "  Arg 13 (DIR_BOOTSTRAP_MODE)  : $DIR_BOOTSTRAP_MODE"
-    echo "  Arg 14 (KERBEROS_ENABLED)    : $KERBEROS_ENABLED"
-    echo "  Arg 15 (DISTCP_FILTER)       : $DISTCP_FILTER_ENABLED"
-    echo "  Arg 16 (FILTER_FILE)         : $DISTCP_FILTER_FILE"
-    echo "  Arg 17 (REPLICATION_MODE)    : $REPLICATION_MODE"
+    echo "  Arg 10 (AUTO_FULL_DISTCP)    : $AUTO_FULL_DISTCP"
+    echo "  Arg 11 (ROLLBACK_ON_FAILURE) : $ROLLBACK_ON_FAILURE"
+    echo "  Arg 12 (KERBEROS_ENABLED)    : $KERBEROS_ENABLED"
+    echo "  Arg 13 (DISTCP_EXCLUDE_PATTERNS) : ${DISTCP_EXCLUDE_PATTERNS:-<disabled>}"
+    echo "  Arg 14 (REPLICATION_MODE)    : $REPLICATION_MODE"
+    echo "  Arg 15 (LOG_PATH)            : $LOG"
+    echo "  Arg 16 (REVERSE_DIFF_BOOTSTRAP) : $REVERSE_DIFF_BOOTSTRAP"
+    echo "  Arg 17 (HDFS_STATE_DIR)      : $HDFS_STATE_DIR"
+    echo "  DIR_BOOTSTRAP_MODE (fixed)   : $DIR_BOOTSTRAP_MODE (hardcoded, not configurable)"
     echo "  YARN App Tags                : $YARN_APP_TAGS"
-    if [[ "${DISTCP_FILTER_ENABLED,,}" == "yes" ]]; then
-        echo "  DistCp Filter                : ENABLED ($DISTCP_FILTER_FILE)"
+    if [[ "${DISTCP_EXCLUDE_ENABLED,,}" == "yes" ]]; then
+        echo "  DistCp Exclude Filter        : ENABLED (generated: $DISTCP_EXCLUDE_FILE)"
     else
         echo "  DistCp Filter                : DISABLED"
     fi
@@ -1491,7 +2633,7 @@ main() {
             log "[INFO] Push mode: Excluding destination ($DST_NAMESERVICE) from token renewal (YARN runs on source)"
             ;;
         *)
-            echo "[ERROR] Invalid value for REPLICATION_MODE (arg 17): '${REPLICATION_MODE}'" >&2
+            echo "[ERROR] Invalid value for REPLICATION_MODE (arg 14): '${REPLICATION_MODE}'" >&2
             echo "[ERROR] Accepted values: 'pull' or 'push'" >&2
             exit 16
             ;;
@@ -1562,11 +2704,21 @@ main() {
     # -----------------------------------------------------------------------------
     log_stage "2" "Enable Snapshot Capability (Per-Directory)"
     mkdir -p "$SNAP_LOCK_DIR"
+
+    # Ensure the HDFS-mirrored state directory exists on BOTH clusters (idempotent,
+    # once per invocation, not per-directory -- same idempotency philosophy as
+    # SNAP_LOCK_DIR above, just extended to two remote filesystems). Best-effort:
+    # failure here does NOT abort the run. It only means HDFS state mirroring will
+    # be unavailable this run (mirror_state_file_to_hdfs's own -put calls will then
+    # also fail and log [WARN], but local-only operation continues normally).
+    ensure_hdfs_state_dir "$SOURCE_CLUSTER" "SOURCE"
+    ensure_hdfs_state_dir "$DEST_CLUSTER" "DEST"
+
     log "[DEBUG] Enabling snapshots on source and destination directories"
     for d in "${SOURCE_DIRS[@]}"; do
         dir_start_ts=$(date +%s)
         key=$(sanitize "$d")
-        dir_lock="${SNAP_LOCK_DIR}/${key}-${SNAP_PREFIX}.lock"
+        dir_lock="${SNAP_LOCK_DIR}/${key}.lock"
         
         if [[ ! -f "$dir_lock" ]]; then
             log "[DEBUG] Enabling snapshots for directory: $d"
@@ -1654,33 +2806,49 @@ main() {
     for d in "${SOURCE_DIRS[@]}"; do
         log "[DEBUG] Checking baseline snapshot for directory: $d"
         key=$(sanitize "$d")
-        state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
-        if [[ ! -f "$state" ]]; then
+        resolve_state_file_and_check_new "$key"
+        state="$RESOLVED_STATE_FILE"
+        if [[ "$IS_BRAND_NEW_DIR" == "true" ]]; then
             need_init=true
             base="${SNAP_PREFIX}_0"
             local src_snap_created=false
             local dst_snap_created=false
-            
+            local out_base_src out_base_dst
+
             log_substage "Creating on SOURCE ($SOURCE_CLUSTER): $d"
             log "[INIT] Creating baseline snapshot '$base' on source: $d"
-            if run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -createSnapshot "$d" "$base"; then
+            out_base_src=$(run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -createSnapshot "$d" "$base" 2>&1 | grep -v "^SLF4J:" || true) || true
+            if echo "$out_base_src" | grep -q "already a snapshot with the same name"; then
+                [[ -n "$out_base_src" ]] && echo "$out_base_src"
+                log "[WARN] Baseline snapshot '$base' already exists on source for $d (idempotent re-run, e.g. after 'rm -f' state-file recovery guidance)"
+                src_snap_created=true
+            elif echo "$out_base_src" | grep -q "Created snapshot"; then
+                [[ -n "$out_base_src" ]] && echo "$out_base_src"
                 log "[INFO] Baseline snapshot '$base' created on source for $d"
                 src_snap_created=true
             else
+                [[ -n "$out_base_src" ]] && echo "$out_base_src"
                 echo "[ERROR] FAILED to create baseline snapshot '$base' on SOURCE: $d"
-                log "[ERROR] Failed to create baseline snapshot on source for $d"
+                log "[ERROR] Failed to create baseline snapshot on source for $d: $out_base_src"
                 log "[ERROR] Ensure snapshot capability is enabled and the directory exists on source cluster."
                 src_snap_created=false
             fi
 
             log_substage "Creating on DESTINATION ($DEST_CLUSTER): $d"
             log "[INIT] Creating baseline snapshot '$base' on destination: $d"
-            if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$base"; then
+            out_base_dst=$(run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$base" 2>&1 | grep -v "^SLF4J:" || true) || true
+            if echo "$out_base_dst" | grep -q "already a snapshot with the same name"; then
+                [[ -n "$out_base_dst" ]] && echo "$out_base_dst"
+                log "[WARN] Baseline snapshot '$base' already exists on destination for $d (idempotent re-run, e.g. after 'rm -f' state-file recovery guidance)"
+                dst_snap_created=true
+            elif echo "$out_base_dst" | grep -q "Created snapshot"; then
+                [[ -n "$out_base_dst" ]] && echo "$out_base_dst"
                 log "[INFO] Baseline snapshot '$base' created on destination for $d"
                 dst_snap_created=true
             else
+                [[ -n "$out_base_dst" ]] && echo "$out_base_dst"
                 echo "[ERROR] FAILED to create baseline snapshot '$base' on DESTINATION: $d"
-                log "[ERROR] Failed to create baseline snapshot on destination for $d"
+                log "[ERROR] Failed to create baseline snapshot on destination for $d: $out_base_dst"
                 log "[ERROR] Ensure snapshot capability is enabled and the directory exists on destination cluster."
                 dst_snap_created=false
             fi
@@ -1688,7 +2856,7 @@ main() {
             # Only create state file if BOTH snapshots were created successfully
             # This prevents the script from thinking baseline is done when it's not
             if [[ "$src_snap_created" == "true" ]] && [[ "$dst_snap_created" == "true" ]]; then
-                if write_state_file "$state" "$base"; then
+                if write_state_file "$state" "$(build_state_content "$base")" "$key"; then
                     log "[INIT] Recorded baseline snapshot state in $state"
                 else
                     log "[ERROR] Failed to write state file $state"
@@ -1754,10 +2922,11 @@ main() {
             DISTCP_ALL_OK=true
             for d in "${SOURCE_DIRS[@]}"; do
                 key=$(sanitize "$d")
-                state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
+                resolve_state_file_and_check_new "$key"
+                state="$RESOLVED_STATE_FILE"
 
                 # Skip directories that don't have state files (baseline creation failed)
-                if [[ ! -f "$state" ]]; then
+                if [[ "$IS_BRAND_NEW_DIR" == "true" ]]; then
                     echo ""
                     echo "=========================================================================================================================================="
                     echo ">>> [WARNING] SKIPPING DistCp for directory: $d <<<"
@@ -1773,7 +2942,7 @@ main() {
                 
                 src_uri="hdfs://$SOURCE_CLUSTER${d}"
                 dst_uri="hdfs://$DEST_CLUSTER${d}"
-                distcp_cmd="hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS $src_uri $dst_uri"
+                distcp_cmd="hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS $src_uri $dst_uri"
 
                 echo ""
                 log_cmd "Running Full DistCp for Directory: $d"
@@ -1791,7 +2960,7 @@ main() {
                 DISTCP_STDERR_FILE="/tmp/full_distcp_err_$(sanitize "$d")_$$.log"
                 TEMP_FILES+=("$DISTCP_STDERR_FILE")
                 # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
-                if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
+                if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
                     echo ""
                     echo "------------------------------------------------------------------------------------------------------------------------------------------"
                     echo "[SUCCESS] Full DistCp completed successfully for $d"
@@ -1936,10 +3105,11 @@ main() {
             local has_valid_dirs=false
             for d in "${SOURCE_DIRS[@]}"; do
                 key=$(sanitize "$d")
-                state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
+                resolve_state_file_and_check_new "$key"
+                state="$RESOLVED_STATE_FILE"
 
                 # Skip directories that don't have state files (baseline creation failed)
-                if [[ ! -f "$state" ]]; then
+                if [[ "$IS_BRAND_NEW_DIR" == "true" ]]; then
                     echo "📁 Directory: $d"
                     echo ""
                     echo "   [WARNING] SKIPPED: Baseline snapshot creation failed for this directory"
@@ -1953,7 +3123,7 @@ main() {
                 has_valid_dirs=true
                 src_uri="hdfs://$SOURCE_CLUSTER${d}"
                 dst_uri="hdfs://$DEST_CLUSTER${d}"
-                distcp_cmd="hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS $src_uri $dst_uri"
+                distcp_cmd="hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS $src_uri $dst_uri"
                 echo "📁 Directory: $d"
                 echo ""
                 echo "   Run this command to sync baseline snapshots:"
@@ -2013,8 +3183,284 @@ main() {
         log_cmd "Processing Directory: $d"
         log "[DEBUG] Starting incremental sync for directory: $d"
         key=$(sanitize "$d")
-        state="/var/tmp/dr-last-snap-${key}-${SNAP_PREFIX}.txt"
-        last_snap=$(<"$state")
+        resolve_state_file_and_check_new "$key"
+        state="$RESOLVED_STATE_FILE"
+
+        # --- Direction / bootstrap decision -------------------------------------
+        # (a) No state file at all (local OR HDFS-mirrored) -> impossible here:
+        #     Stage 3 guarantees state (local, migrated, or HDFS-hydrated) exists
+        #     for every directory that reached Stage 4 successfully. (Directories
+        #     whose Stage 3 baseline failed `continue`d out of Stage 3 and are
+        #     simply absent from processing; see existing behavior.) The check
+        #     below is defense-in-depth only, to catch a future regression of
+        #     that invariant rather than silently mis-processing the directory.
+        if [[ "$IS_BRAND_NEW_DIR" == "true" ]]; then
+            log "[ERROR] [Stage 4] Invariant violated: directory $d has no state file (local or HDFS-mirrored) at Stage 4 entry. This should be impossible -- Stage 3 must have created or hydrated state for every directory reaching here. Failing this directory defensively."
+            METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
+            ALL_OK=false
+            continue
+        fi
+
+        # --- Direction determination: live-snapshot-derived, never cached ------
+        # Optimistic fast path first (avoids a full double-listing on the common
+        # unchanged-direction case), falling through to the full live
+        # listing-and-intersection algorithm whenever the fast path cannot
+        # confirm safety. See derive_direction_state / verify_cached_snap_fast_path.
+        cached_snap=""
+        [[ -f "$state" ]] && cached_snap=$(read_state_snapshot "$state")
+        verify_cached_snap_fast_path "$d" "$cached_snap"
+        if [[ "$FAST_PATH_CONFIRMED" == "true" ]]; then
+            log "[DEBUG] [DIRECTION-DERIVE] Fast-path confirmed for $d: cached last-common snapshot '$cached_snap' verified present on both clusters with no further advancement on DEST_CLUSTER. Skipping full snapshot listing this run."
+            DIRECTION_REVERSED="false"
+            SPLIT_BRAIN_DETECTED="false"
+            DIRECTION_STATE_OK="true"
+        else
+            log "[DEBUG] [DIRECTION-DERIVE] Fast-path not confirmed for $d (cache absent, stale, or DEST_CLUSTER has advanced). Falling through to full live snapshot listing on both clusters."
+            derive_direction_state "$d"
+        fi
+
+        if [[ "$DIRECTION_STATE_OK" != "true" ]]; then
+            echo ""
+            echo "=========================================================================================================================================="
+            echo ">>> [ERROR] CANNOT SAFELY DETERMINE REPLICATION DIRECTION for $d <<<"
+            echo "=========================================================================================================================================="
+            echo ""
+            echo "  A live snapshot listing on SOURCE_CLUSTER and/or DEST_CLUSTER failed for this"
+            echo "  directory (network issue, permission denied, or another unexpected error --"
+            echo "  see [ERROR] [DIRECTION-DERIVE] lines above for details)."
+            echo ""
+            echo "  This script will NOT fall back to any cached or assumed direction for a"
+            echo "  safety-critical decision. Proceeding without a live-confirmed direction could"
+            echo "  misclassify a reversed-direction directory as a normal forward continuation,"
+            echo "  which can reach a destructive rollback path (ROLLBACK_ON_FAILURE=yes) against"
+            echo "  real data. Failing this directory closed instead."
+            echo ""
+            echo "  --- To recover ---"
+            echo "    1. Resolve the underlying issue (connectivity, permissions) reported above."
+            echo "    2. Verify manually:"
+            echo "         hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
+            echo "         hdfs dfs -fs hdfs://$DEST_CLUSTER   -ls $d/.snapshot"
+            echo "    3. Re-run this script; the live check will be retried."
+            echo ""
+            echo "=========================================================================================================================================="
+            log "[ERROR] [Stage 4] Cannot safely determine replication direction for $d (live snapshot listing failed on one or both clusters). Failing closed rather than trusting any cached value. See guidance above."
+            METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
+            dir_end_ts=$(date +%s)
+            log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds (direction determination failed)"
+            ALL_OK=false
+            continue
+        fi
+
+        last_snap="$LAST_COMMON_SNAP_NAME"
+        if [[ -z "$last_snap" ]]; then
+            echo ""
+            echo "=========================================================================================================================================="
+            echo ">>> [ERROR] NO COMMON SNAPSHOT FOUND for $d <<<"
+            echo "=========================================================================================================================================="
+            echo ""
+            echo "  Neither SOURCE_CLUSTER ($SOURCE_CLUSTER) nor DEST_CLUSTER ($DEST_CLUSTER) has a"
+            echo "  '${SNAP_PREFIX}_*' snapshot that also exists on the other side. This directory"
+            echo "  reached Stage 4 with a state file present, but its baseline snapshot appears to"
+            echo "  have been pruned (e.g. SNAP_RETAIN too low combined with missed runs) or removed"
+            echo "  out-of-band on one cluster."
+            echo ""
+            echo "  This cannot be safely auto-resolved. Manual reconciliation required:"
+            echo "    1. Inspect snapshots on both clusters:"
+            echo "         hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
+            echo "         hdfs dfs -fs hdfs://$DEST_CLUSTER   -ls $d/.snapshot"
+            echo "    2. Decide which side holds authoritative data."
+            echo "    3. Clear local AND HDFS-mirrored state to force a full re-baseline:"
+            echo "         rm -f $state"
+            echo "         hdfs dfs -fs hdfs://$SOURCE_CLUSTER -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "         hdfs dfs -fs hdfs://$DEST_CLUSTER   -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "    4. Re-run this script."
+            echo ""
+            echo "=========================================================================================================================================="
+            log "[ERROR] [Stage 4] No common snapshot index found for $d despite an existing state file. Likely retention pruning removed all shared history. Manual reconciliation required."
+            METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
+            dir_end_ts=$(date +%s)
+            log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds (no common snapshot)"
+            ALL_OK=false
+            continue
+        fi
+
+        if [[ "$SPLIT_BRAIN_DETECTED" == "true" ]]; then
+            echo ""
+            echo "=========================================================================================================================================="
+            echo ">>> [ERROR] SPLIT-BRAIN DETECTED for $d — BOTH CLUSTERS HAVE DIVERGED INDEPENDENTLY <<<"
+            echo "=========================================================================================================================================="
+            echo ""
+            echo "  Snapshot state on BOTH clusters shows independent advancement beyond the last"
+            echo "  point they agree on:"
+            echo ""
+            echo "    Last common snapshot                 : $last_snap"
+            echo "    SOURCE_CLUSTER ($SOURCE_CLUSTER) has snapshots beyond it that DEST_CLUSTER lacks"
+            echo "    DEST_CLUSTER ($DEST_CLUSTER) has snapshots beyond it that SOURCE_CLUSTER lacks"
+            echo ""
+            echo "  This means BOTH clusters took independent snapshot-advancing actions (each"
+            echo "  cluster acted as a source at some point) since '$last_snap' -- most likely two"
+            echo "  replication pairs/directions were run concurrently, or a failover and a manual"
+            echo "  operation both advanced state independently. This is detected PROACTIVELY here,"
+            echo "  from live snapshot listings on both clusters, BEFORE any DistCp was attempted --"
+            echo "  it is a stronger and earlier signal than the reactive 'target modified since"
+            echo "  snapshot' DistCp error message this script also handles elsewhere."
+            echo ""
+            echo "  This script will NOT automatically discard or choose between the two divergent"
+            echo "  histories. Automatic resolution is never attempted for this condition."
+            echo ""
+            echo "  --- Option 1: Manually inspect both clusters' snapshot history ---"
+            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
+            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -ls $d/.snapshot"
+            echo "    Identify which snapshots exist only on one side, and inspect the underlying"
+            echo "    data changes with snapshotDiff, e.g.:"
+            echo "      hdfs snapshotDiff -fs hdfs://$SOURCE_CLUSTER $d $last_snap ."
+            echo "      hdfs snapshotDiff -fs hdfs://$DEST_CLUSTER   $d $last_snap ."
+            echo ""
+            echo "  --- Option 2: Decide authoritative side and force a full re-baseline ---"
+            echo "    Confirm which cluster's post-'$last_snap' history is authoritative, then"
+            echo "    clear ALL state (local AND the HDFS-mirrored copies on both clusters) to force"
+            echo "    Stage 3 to re-baseline from scratch in the CURRENT direction"
+            echo "    ($SOURCE_CLUSTER -> $DEST_CLUSTER):"
+            echo ""
+            echo "      rm -f $state"
+            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo ""
+            echo "    ALSO REQUIRED: delete every existing ${SNAP_PREFIX}_* snapshot for $d on BOTH"
+            echo "    clusters BEFORE re-running -- direction/continuation is derived live from actual"
+            echo "    snapshot indices (see [DIRECTION-DERIVE] in the logs); leaving old numbered"
+            echo "    snapshots in place risks a LATER run finding a coincidental \"last common index\""
+            echo "    from before this recovery instead of the fresh ${SNAP_PREFIX}_0 baseline, and"
+            echo "    (if ROLLBACK_ON_FAILURE=yes) rolling back to a pre-recovery state:"
+            echo ""
+            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
+            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -ls $d/.snapshot"
+            echo "      # for each ${SNAP_PREFIX}_<N> snapshot listed on EITHER cluster:"
+            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo ""
+            echo "    WARNING: this performs a FULL distcp that OVERWRITES $DEST_CLUSTER with"
+            echo "    $SOURCE_CLUSTER's data, discarding whatever independent history existed only"
+            echo "    on $DEST_CLUSTER. Confirm authoritative data BEFORE doing this."
+            echo ""
+            echo "  --- Option 3: Manually reconcile the divergent snapshots, then clear state ---"
+            echo "    If the divergent changes on each side should both be preserved (merged),"
+            echo "    reconcile the data out-of-band (e.g. manual copy of the missing pieces),"
+            echo "    THEN clear state as in Option 2 to re-baseline from the now-reconciled data."
+            echo ""
+            echo "=========================================================================================================================================="
+            log "[ERROR] [Stage 4] Split-brain detected for $d: both SOURCE_CLUSTER and DEST_CLUSTER have snapshot indices beyond the last common index ($last_snap) that the other lacks. Detected proactively from live snapshot listings, before any DistCp was attempted. No automatic resolution attempted (by design). See operator guidance above."
+            METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
+            dir_end_ts=$(date +%s)
+            log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds (split-brain detected)"
+            ALL_OK=false
+            continue
+        fi
+
+        if [[ "$DIRECTION_REVERSED" == "true" ]] && [[ "${REVERSE_DIFF_BOOTSTRAP,,}" == "yes" ]]; then
+            # (c) direction reversed + REVERSE_DIFF_BOOTSTRAP=yes -> new bootstrap path
+            log "[INFO] Direction reversal detected for $d: snapshot state shows DEST_CLUSTER ($DEST_CLUSTER) has advanced beyond the last common snapshot ($last_snap) that SOURCE_CLUSTER ($SOURCE_CLUSTER) lacks -- DEST_CLUSTER was acting as source more recently. Attempting reverse-diff bootstrap."
+            if reconcile_reverse_diff_bootstrap "$d" "$last_snap"; then
+                # Bootstrap function itself advances state + snapshots + logs metrics on success;
+                # nothing further to do for this directory this iteration.
+                dir_end_ts=$(date +%s)
+                log "[METRIC] [STAGE 4] Directory '$d' completed in $((dir_end_ts - dir_start_ts)) seconds (reverse-diff bootstrap)"
+                continue
+            else
+                # Bootstrap function already logged the failure, incremented
+                # METRICS_FAILED_DIRECTORIES via caller below, and printed operator guidance.
+                METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
+                dir_end_ts=$(date +%s)
+                log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds (reverse-diff bootstrap)"
+                ALL_OK=false
+                continue
+            fi
+        fi
+
+        if [[ "$DIRECTION_REVERSED" == "true" ]]; then
+            # REVERSE_DIFF_BOOTSTRAP is "no" (or unset). Do NOT fall through to the
+            # normal incremental path below: last_snap/next_snap on a reversed-direction
+            # cluster pair does NOT mean "unchanged snapshot state" the way it does for
+            # a normal forward run -- the current SOURCE_CLUSTER is the OLD destination,
+            # which may hold nothing but the stale replicated snapshot, while the current
+            # DEST_CLUSTER is the OLD source / DR-promoted cluster, which may now hold
+            # real production writes made since the last replicated snapshot.
+            #
+            # If this directory were allowed to proceed into the normal Stage 4 incremental
+            # logic, an "idx>0" DistCp "target has been modified since snapshot" failure
+            # (expected and likely here) combined with ROLLBACK_ON_FAILURE=yes would trigger
+            # rollback_once_for_failure(), which runs a destructive `distcp -rdiff` restore
+            # against DEST_CLUSTER -- i.e. against what is now the REAL PRODUCTION dataset,
+            # discarding any writes made there since the last replicated snapshot. That is
+            # never acceptable, so this directory is failed cleanly instead.
+            echo ""
+            echo "=========================================================================================================================================="
+            echo ">>> [ERROR] DIRECTION REVERSAL DETECTED for $d — REFUSING TO RUN NORMAL INCREMENTAL SYNC <<<"
+            echo "=========================================================================================================================================="
+            echo ""
+            echo "  Snapshot state on both clusters indicates a reversal:"
+            echo ""
+            echo "    Last common snapshot                     : $last_snap"
+            echo "    DEST_CLUSTER  ($DEST_CLUSTER) has snapshots beyond it"
+            echo "    SOURCE_CLUSTER ($SOURCE_CLUSTER) has none beyond it"
+            echo ""
+            echo "  This means \$DEST_CLUSTER ($DEST_CLUSTER) has been acting as a SOURCE more"
+            echo "  recently than \$SOURCE_CLUSTER ($SOURCE_CLUSTER) was -- i.e. \$DEST_CLUSTER"
+            echo "  (arg 2) currently holds newer snapshot history than \$SOURCE_CLUSTER (arg 1)."
+            echo "  This looks like a failover/failback role swap. This determination comes"
+            echo "  directly from live snapshot listings on both clusters (primary evidence), not"
+            echo "  from any cached label."
+            echo ""
+            echo "  Proceeding with the normal incremental sync path here is UNSAFE: \$DEST_CLUSTER"
+            echo "  may now hold real production writes made since the last replicated snapshot,"
+            echo "  and (if ROLLBACK_ON_FAILURE=yes) an expected 'target modified since snapshot'"
+            echo "  error would trigger a DESTRUCTIVE rollback against that data. This script will"
+            echo "  NOT do that automatically."
+            echo ""
+            echo "  --- Option 1 (recommended): enable the reverse-diff bootstrap ---"
+            echo "    Re-run with REVERSE_DIFF_BOOTSTRAP=yes (16th CLI argument, or the"
+            echo "    REVERSE_DIFF_BOOTSTRAP environment variable) to attempt a one-time"
+            echo "    incremental reverse-diff bootstrap for this directory instead."
+            echo ""
+            echo "  --- Option 2: force a full re-baseline (explicit, discards diff optimization) ---"
+            echo "    Confirm which side holds authoritative data, then clear ALL state (local AND"
+            echo "    the HDFS-mirrored copies on both clusters) to force Stage 3 to re-baseline"
+            echo "    from scratch in the CURRENT direction:"
+            echo ""
+            echo "      rm -f $state"
+            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo ""
+            echo "    NOTE: clearing state here only forces Stage 3's brand-new-directory gate; it"
+            echo "    is no longer what determines direction safety (that is now derived live from"
+            echo "    snapshot listings every run) -- but it is still required to make Stage 3"
+            echo "    re-baseline instead of Stage 4 continuing to detect the same reversal."
+            echo ""
+            echo "    ALSO REQUIRED: delete every existing ${SNAP_PREFIX}_* snapshot for $d on BOTH"
+            echo "    clusters BEFORE re-running. Since direction is derived live from actual"
+            echo "    snapshot indices, leaving old numbered snapshots in place risks a LATER run"
+            echo "    finding a coincidental \"last common index\" from before this re-baseline instead"
+            echo "    of the fresh ${SNAP_PREFIX}_0 baseline, and (if ROLLBACK_ON_FAILURE=yes) rolling"
+            echo "    back to a pre-re-baseline state:"
+            echo ""
+            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
+            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -ls $d/.snapshot"
+            echo "      # for each ${SNAP_PREFIX}_<N> snapshot listed on EITHER cluster:"
+            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo ""
+            echo "    WARNING: this performs a FULL distcp that overwrites $DEST_CLUSTER with"
+            echo "    $SOURCE_CLUSTER's data."
+            echo ""
+            echo "=========================================================================================================================================="
+            log "[ERROR] Direction reversal detected for $d (snapshot state: DEST_CLUSTER has advanced beyond last common snapshot '$last_snap', SOURCE_CLUSTER has not) but REVERSE_DIFF_BOOTSTRAP=no. Refusing to run the normal incremental path (would risk a destructive rollback against production data on \$DEST_CLUSTER). See operator guidance above."
+            METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
+            dir_end_ts=$(date +%s)
+            log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds (direction reversal, bootstrap disabled)"
+            ALL_OK=false
+            continue
+        fi
+
         idx=${last_snap##*_}
         next_snap="${SNAP_PREFIX}_$((idx + 1))"
 
@@ -2106,7 +3552,7 @@ main() {
         # Remove -update from COPY_OPTS and place it before -diff (required by DistCp)
         # All other options must come before -diff to avoid being treated as source paths
         COPY_OPTS_NO_UPDATE=$(echo "$COPY_OPTS" | sed 's/-update\s*/ /g' | sed 's/\s\+/ /g' | sed 's/^\s*//;s/\s*$//' || echo "$COPY_OPTS")
-        echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
+        echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
         echo "======================"
         echo ""
         echo "[DEBUG MARKER] Starting DistCp execution for $d"
@@ -2116,7 +3562,7 @@ main() {
         # global redirection to LOG and console). Since stderr is redirected to stdout
         # via exec 2>&1, this ensures real-time output without buffering delays.
         # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
-        if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
+        if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
             DISTCP_SUCCESS=true
         else
             DISTCP_SUCCESS=false
@@ -2189,11 +3635,11 @@ main() {
                         # Use tee to write retry distcp stderr to temp file AND to stderr
                         # Reuse COPY_OPTS_NO_UPDATE from earlier in the function
                         log_cmd "DistCp Retry Command (post-rollback)"
-                        echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
+                        echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
                         echo "======================"
                         echo ""
                         # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
-                        if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_RETRY_STDERR" >&2); then
+                        if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_RETRY_STDERR" >&2); then
                             DISTCP_RETRY_SUCCESS=true
                         else
                             DISTCP_RETRY_SUCCESS=false
@@ -2231,7 +3677,7 @@ main() {
                             echo ""
                             echo "  --- Option 1: Full DistCp (force full re-sync, no snapshot diff) ---"
                             echo ""
-                            echo "    hadoop distcp $DISTCP_FULL_OPTS $DISTCP_FILTER_OPTS $COPY_OPTS $src_uri $dst_uri"
+                            echo "    hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS $src_uri $dst_uri"
                             echo ""
                             echo "    After it completes:"
                             echo "      - Delete the 'next' snapshot from source (if created this run):"
@@ -2313,7 +3759,7 @@ main() {
         fi
 
         # 4f) Advance state (persist the last successful snapshot name)
-        if write_state_file "$state" "$next_snap"; then
+        if write_state_file "$state" "$(build_state_content "$next_snap")" "$key"; then
             log "[SYNC] State advanced to $next_snap for $d"
         else
             log "[ERROR] Failed to write state file $state"
@@ -2404,9 +3850,18 @@ main() {
         echo "  Execution Mode    : sudo (${HDFS_USER}/${DISTCP_USER})"
     fi
     echo "  Log File          : $LOG"
+    if [[ "$METRICS_HDFS_MIRROR_FAILURES" -gt 0 ]]; then
+        echo "────────────────────────────────────────────────────────────────────────────"
+        echo "  [WARN] HDFS State Mirror : $METRICS_HDFS_MIRROR_FAILURES failure(s) this run"
+        echo "                            Cross-node failover state mirroring (HDFS_STATE_DIR=$HDFS_STATE_DIR)"
+        echo "                            is degraded. Local state/replication itself is unaffected,"
+        echo "                            but a fresh/failover node may misclassify an already-"
+        echo "                            replicating directory as brand-new if this persists."
+        echo "                            Search this log for '[HDFS-STATE-MIRROR]' [WARN] lines."
+    fi
     echo "────────────────────────────────────────────────────────────────────────────"
     echo ""
-    
+
     log_stage_complete "5" "Completion"
     if [[ "$OVERALL_STATUS" == "FAILED" || "$OVERALL_STATUS" == "PARTIAL" ]]; then
         exit 1
