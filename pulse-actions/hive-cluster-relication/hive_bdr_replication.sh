@@ -400,7 +400,7 @@ SRC_NAMESERVICE="${2:-}"
 DST_NAMESERVICE="${3:-}"
 SRC_JDBC_URL="${4:-}"
 DST_JDBC_URL="${5:-}"
-YARN_QUEUE="${6:-${YARN_QUEUE:-testqueue}}"
+YARN_QUEUE="${6:-${YARN_QUEUE:-default}}"
 REPL_BASE_DIR="${7:-/user/hive/repl/}"
 LOG_DIR="${8:-/var/log/hive-replication}"
 HDFS_USER="${9:-${HDFS_USER:-hdfs}}"
@@ -409,12 +409,17 @@ HIVE_LDAP_ENABLED="${11:-${HIVE_LDAP_ENABLED:-false}}"
 USE_SCHEDULED_QUERIES="${12:-${USE_SCHEDULED_QUERIES:-false}}"
 SCHEDULE_EXPR="${13:-}"
 LOAD_OFFSET="${14:-00:03:00}"
-# "true" (default): append ${HIVE_DB_NAME} to REPL_EXTERNAL_BASE_DIR_ROOT (option 1, the
-# tested/working shape). "false": use REPL_EXTERNAL_BASE_DIR_ROOT bare, with no per-DB
-# suffix (option 2) - comparison-testing knob only; the doubled/nested-path failure mode
-# documented in compute_repl_external_base_dir() was observed with this shape.
-REPL_EXTERNAL_BASE_DIR_APPEND_DB="${15:-${REPL_EXTERNAL_BASE_DIR_APPEND_DB:-true}}"
-REPL_EXTERNAL_BASE_DIR_ROOT="${16:-/user/hive/external/}"
+# "false" (default): use REPL_EXTERNAL_BASE_DIR_ROOT bare, with no per-DB suffix. Combined
+# with REPL_EXTERNAL_BASE_DIR_ROOT="/" (its default, below), this makes the destination
+# external-table path Hive constructs (REPL_EXTERNAL_BASE_DIR + the source table's own
+# nested path) equal to the source path itself, modulo nameservice/host. Verified against a
+# real bootstrap: with APPEND_DB=true the destination path came out prefixed with
+# /<db_name> instead of matching source. "true": append ${HIVE_DB_NAME} to
+# REPL_EXTERNAL_BASE_DIR_ROOT, giving each DB its own isolated relocation root - use this if
+# REPL_EXTERNAL_BASE_DIR_ROOT is NOT "/" (e.g. /user/hive/external/) and per-DB isolation
+# under that shared root is wanted.
+REPL_EXTERNAL_BASE_DIR_APPEND_DB="${15:-${REPL_EXTERNAL_BASE_DIR_APPEND_DB:-false}}"
+REPL_EXTERNAL_BASE_DIR_ROOT="${16:-/}"
 FAILOVER_MODE="${FAILOVER_MODE:-false}"
 
 # Strip surrounding double-quotes that some callers (e.g. Pulse Actions) inject literally
@@ -628,9 +633,13 @@ parse_db_specs() {
 # run (confirmed via testing: each cycle appended the PREVIOUS cycle's already-relocated
 # full path onto the same base dir shape again).
 #
-# REPL_EXTERNAL_BASE_DIR_APPEND_DB=false is a comparison-testing knob only: it drops the
-# ${HIVE_DB_NAME} suffix, giving a bare per-nameservice root shared by every DB. Left at the
-# default "true" for routine use.
+# REPL_EXTERNAL_BASE_DIR_APPEND_DB=false (env var; default) drops the ${HIVE_DB_NAME} suffix,
+# giving a bare per-nameservice root shared by every DB. Combined with the default
+# REPL_EXTERNAL_BASE_DIR_ROOT="/", this is what makes the destination external-table path
+# mirror the source path exactly (aside from nameservice/host) - confirmed via testing:
+# with APPEND_DB=true the destination path came out prefixed with /<db_name>, not matching
+# source. Set APPEND_DB=true only if REPL_EXTERNAL_BASE_DIR_ROOT is a shared non-root path
+# (e.g. /user/hive/external/) and per-DB isolation under it is wanted instead of path parity.
 compute_repl_external_base_dir() {
   local load_target_nameservice="$1"
   if [[ "${REPL_EXTERNAL_BASE_DIR_APPEND_DB,,}" == "false" ]]; then
@@ -1274,6 +1283,21 @@ failover_one_db() {
   local db_total="$3"
 
   derive_db_vars "$db_spec"
+
+  # Failover reverses direction: REPL DUMP now runs against DST_JDBC_URL (the new primary),
+  # not SRC_JDBC_URL. derive_db_vars() unconditionally rooted REPL_ROOT_DIR_SRC/DST at
+  # SRC_NAMESERVICE (the normal-direction dump source) - re-root them at the actual dump
+  # source for this failover (DST_NAMESERVICE), or REPL DUMP writes its dump dir (including
+  # the external-table file-list manifest) onto the WRONG cluster's HDFS. Confirmed via
+  # testing: with the stale SRC_NAMESERVICE-rooted value, REPL LOAD's DirCopyTask read a
+  # manifest whose paths were rooted at the old primary and copied "old primary -> old
+  # primary" (a no-op), while metadata/partition events (small, embedded in the dump itself)
+  # still replicated fine - so REPL STATUS/partition counts looked correct and REPL LOAD
+  # logged "Data copy at load enabled: true" / "REPL::DATA_COPY_END: Completed all external
+  # table copy tasks" as if it succeeded, but the actual new external-table row data (living
+  # only on the new primary, DST_NAMESERVICE) never crossed clusters.
+  REPL_ROOT_DIR_SRC="hdfs://${DST_NAMESERVICE}${REPL_BASE_DIR}${HIVE_DB_NAME}"
+  REPL_ROOT_DIR_DST="${REPL_ROOT_DIR_SRC}"
 
   # Failover reverses direction: REPL LOAD now runs against SRC_JDBC_URL (old primary, now
   # new replica) instead of DST_JDBC_URL. derive_db_vars() computed REPL_EXTERNAL_BASE_DIR
