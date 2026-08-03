@@ -1,20 +1,55 @@
 #!/bin/bash
-# -----------------------------------------------------------------------------
-# Hive Cluster Replication Script
-# Copyright (c) 2025 Acceldata Inc. All rights reserved.
+# ==============================================================================
+#  Hive Cluster Replication Script (Hive BDR)
+#  Version : 4.2.0
+#  Purpose : Replicate one or more Hive databases from a source cluster to a
+#            destination cluster using Hive's native REPL DUMP / REPL LOAD
+#            commands, and manage direction reversal (failover / failback)
+#            between the two clusters.
+# ==============================================================================
 #
-# Description:
-#   This script automates Hive metastore and data replication between clusters
-#   using Hive REPL DUMP/LOAD commands (REPL LOAD performs its own internal DistCp).
-#   Supports:
-#     - Bootstrap mode: Full initial replication when destination DB doesn't exist
-#     - Incremental mode: Scheduled queries for ongoing replication when DB exists
-#     - If schedule_expr is provided, creates scheduled queries for incremental replication
-#     - Multi-database mode: Replicate multiple DBs in one invocation (pipe-delimited)
-#     - Failover mode: Reverse replication direction after a cluster failover
+# WHAT THIS SCRIPT DOES
+# ----------------------------------------------------------------------------
+#   Hive's built-in replication (REPL DUMP on the source, REPL LOAD on the
+#   destination) keeps a destination database in sync with a source database,
+#   including both metadata and table data. REPL LOAD copies data itself, so
+#   this script does not run any separate `hadoop distcp` step.
 #
-# Usage:
-#   ./hive_bdr.sh \
+#   This script wraps that workflow so it can be run unattended (e.g. from
+#   cron or an orchestration tool) and gives you:
+#
+#     1. Bootstrap replication
+#        The first time a database is replicated, the destination database
+#        does not exist yet. The script detects this and runs a full
+#        REPL DUMP + REPL LOAD (bootstrap) cycle to create it.
+#
+#     2. Incremental replication
+#        On every later run, the script detects that the destination
+#        database already exists and runs a lightweight incremental
+#        REPL DUMP + REPL LOAD cycle instead - only the changes made on the
+#        source since the last run are copied. There is no separate
+#        "incremental mode" to configure; the script always decides this
+#        for you by checking whether the destination database exists.
+#        To get incremental replication on a schedule, re-run this script
+#        periodically (cron, systemd timer, or any external scheduler).
+#
+#     3. Multiple databases in one invocation
+#        Pass more than one database (or table pattern) separated by "|" and
+#        the script replicates each one in turn, reporting success/failure
+#        per database.
+#
+#     4. Failover and failback (direction reversal)
+#        If the source cluster becomes unavailable and the destination
+#        cluster is promoted to take live traffic, this script can reverse
+#        the replication direction so the (former) destination now dumps and
+#        the (former) source now loads. The same reversal can be repeated
+#        back and forth any number of times without ever having to swap
+#        which cluster's connection details are passed to the script - see
+#        "FAILOVER AND FAILBACK" below.
+#
+# HOW TO RUN IT
+# ----------------------------------------------------------------------------
+#   ./hive_bdr_replication.sh \
 #     "<HIVE_DB>" \
 #     "<SRC_NAMESERVICE>" \
 #     "<DST_NAMESERVICE>" \
@@ -25,376 +60,377 @@
 #     "<LOG_DIR>" \
 #     "<HDFS_USER>" \
 #     "<HIVE_USER>" \
-#     "<HIVE_LDAP_ENABLED>" \
-#     "<USE_SCHEDULED_QUERIES>" \
-#     "<SCHEDULE_EXPR>" \
-#     "<LOAD_OFFSET>" \
-#     "<REPL_EXTERNAL_BASE_DIR_APPEND_DB>" \
-#     "<REPL_EXTERNAL_BASE_DIR_ROOT>"
+#     "<FAILOVER_MODE>"
 #
-# Positional arguments (order matters):
-#   1) HIVE_DB              - One or more Hive DB specs to replicate, separated by | (pipe)
-#                              Single DB:    "sales"
-#                              Multi DB:     "sales|analytics|hr"
-#                              With tables:  "sales.'(t1|t2)'|analytics|hr.'orders'"
-#                              Single table: "sales.'t1'"
-#                              Exclude:      "sales.'(?!t1$).*'"
-#                              NOTE: | inside single-quoted table patterns is NOT a separator
-#   2) SRC_NAMESERVICE      - Source cluster nameservice (original primary)
-#   3) DST_NAMESERVICE      - Destination cluster nameservice (original replica)
-#   4) SRC_JDBC_URL         - Source HiveServer2 JDBC connection URL (original primary)
-#   5) DST_JDBC_URL         - Destination HiveServer2 JDBC connection URL (original replica)
-#   6) YARN_QUEUE           - YARN Capacity Scheduler queue for REPL LOAD's internal
-#                              data-copy job (default: testqueue). See notes below.
-#   7) REPL_BASE_DIR        - Base replication directory (default: /user/hive/repl/)
-#   8) LOG_DIR              - Log directory path (default: /var/log/hive-replication)
-#   9) HDFS_USER            - User to run `hdfs dfs` / `hdfs dfsadmin` commands as when
-#                              Kerberos is NOT detected (default: hdfs). See notes below.
-#   10) HIVE_USER            - Beeline username when Kerberos is NOT detected (default: hdfs).
-#                              See notes below.
-#   11) HIVE_LDAP_ENABLED    - "true" or "false" (default: false). See notes below.
-#   12) USE_SCHEDULED_QUERIES - "true" or "false" (default: false). See notes below.
-#   13) SCHEDULE_EXPR        - Optional Hive SCHEDULED QUERY expression for incremental runs
-#                              Example: "CRON '0 */10 * * * ? *'" or "EVERY 30 MINUTES"
-#   14) LOAD_OFFSET          - Time offset for LOAD schedule (default: 00:03:00)
-#                              Applies only to EVERY schedules, not CRON
-#                              Example: "00:05:00" for 5 minute delay
-#   15) REPL_EXTERNAL_BASE_DIR_APPEND_DB - "true" or "false" (default: true). "true" appends
-#                              ${HIVE_DB_NAME} to REPL_EXTERNAL_BASE_DIR_ROOT (option 1, the
-#                              tested/working shape). "false" uses REPL_EXTERNAL_BASE_DIR_ROOT
-#                              bare, with no per-DB suffix (option 2) - comparison-testing
-#                              knob only; see compute_repl_external_base_dir().
-#   16) REPL_EXTERNAL_BASE_DIR_ROOT - Base directory (per LOAD-target nameservice) under which
-#                              replicated EXTERNAL table data is relocated on the destination
-#                              (default: /user/hive/external/). Actual per-DB value is
-#                              hdfs://<load-target-nameservice><this>/<db> (or just
-#                              hdfs://<load-target-nameservice><this> when arg 15 is
-#                              "false"). This is a RELOCATION root, not a mirror of the
-#                              source's real external warehouse path - see
-#                              compute_repl_external_base_dir().
+#   All 11 arguments are positional - the order matters. Trailing arguments
+#   may be omitted and will fall back to their defaults (shown below).
 #
-#   NOTE: FAILOVER_MODE is NOT a positional argument - it is deliberately excluded from
-#   routine positional invocation (failover is an operational decision, not a routine
-#   invocation parameter) and can only be set via environment variable: FAILOVER_MODE=true.
-#   Args 6 and 9-12 (YARN_QUEUE, HDFS_USER, HIVE_USER, HIVE_LDAP_ENABLED,
-#   USE_SCHEDULED_QUERIES) can also be set via the identically-named environment variable
-#   (e.g. HDFS_USER=hdfs ./hive_bdr.sh ...) for backward compatibility. If both are set, the
-#   positional argument takes precedence.
+# POSITIONAL ARGUMENTS
+# ----------------------------------------------------------------------------
+#   1. HIVE_DB            (required)
+#        The database(s) to replicate. Separate multiple entries with "|".
+#          Single database    : "sales"
+#          Multiple databases : "sales|analytics|hr"
+#          Specific tables    : "sales.'(orders|customers)'"
+#          Single table        : "sales.'orders'"
+#          Exclude a table     : "sales.'(?!orders$).*'"
+#        Note: a "|" written inside single quotes (i.e. inside a table
+#        pattern) is treated as part of the pattern, not as a database
+#        separator.
 #
-# Environment variable overrides (YARN_QUEUE, HDFS_USER, HIVE_USER, HIVE_LDAP_ENABLED, and
-# USE_SCHEDULED_QUERIES can also be set via positional args above; the positional argument
-# takes precedence if both are set. FAILOVER_MODE is environment-only - see note above):
-#   HDFS_USER               - (also positional arg 9) User to run `hdfs dfs` / `hdfs dfsadmin` commands as (mkdir,
-#                              chmod on the external table base dir; allowSnapshot when
-#                              HIVE_REPL_SNAPSHOT_COPY=true) when Kerberos is NOT detected
-#                              (default: hdfs). MUST be an HDFS superuser (or a member of
-#                              the HDFS supergroup) - allowSnapshot and chmod/mkdir on
-#                              other users' (e.g. hive's) directories require superuser
-#                              privileges; a non-superuser will fail these operations with
-#                              AccessControlException. The script auto-detects Kerberos via
-#                              klist; if no valid ticket cache is found, these commands are
-#                              run via `sudo -u $HDFS_USER` instead. When Kerberos is
-#                              detected, commands run as the current user to preserve
-#                              tickets and HDFS_USER is not used. Note: this script no
-#                              longer runs `hadoop distcp` itself - REPL LOAD performs its
-#                              own internal data copy (see notes on
-#                              hive.repl.run.data.copy.tasks.on.target below).
-#                              Example: HDFS_USER=hdfs ./hive_bdr.sh ...
-#   HIVE_USER               - (also positional arg 10) Beeline username (default: hdfs). Only
-#                              used when Kerberos is NOT detected; passed as `-n $HIVE_USER`
-#                              on every beeline call to avoid HiveServer2 authenticating the
-#                              connection as "anonymous". When Kerberos is detected, beeline
-#                              authenticates via the active ticket and HIVE_USER is not used.
-#   HIVE_LDAP_ENABLED       - (also positional arg 11) "true" or "false" (default: false).
-#                              Controls what is passed as
-#                              the beeline password (`-p`) alongside HIVE_USER, when Kerberos
-#                              is NOT detected:
-#                                - "false": HS2 is using pass-through/NONE auth (password not
-#                                  actually validated). Password = HIVE_USER value.
-#                                - "true": HS2 is backed by real LDAP auth. Password = the
-#                                  actual credential in HIVE_PASSWORD. Script exits with an
-#                                  error if HIVE_LDAP_ENABLED=true but HIVE_PASSWORD is unset.
-#   HIVE_PASSWORD           - Real LDAP password for HIVE_USER. Required only when
-#                              HIVE_LDAP_ENABLED=true and Kerberos is NOT detected.
-#   USE_SCHEDULED_QUERIES   - (also positional arg 12) "true" or "false" (default: false).
-#                              Controls how incremental replication is driven after the first
-#                              (bootstrap) run:
-#                                - "false" (default): Hive Scheduled Queries are NOT created
-#                                  (step 7 is skipped regardless of SCHEDULE_EXPR). Instead,
-#                                  once bootstrap has completed, every subsequent script
-#                                  invocation runs a real incremental REPL DUMP -> REPL LOAD
-#                                  cycle directly (REPL LOAD copies data itself - no separate
-#                                  DistCp is needed or run). Requires an external scheduler
-#                                  (Pulse Actions, cron) to re-invoke this script on its own
-#                                  interval per DB - incremental replication only happens
-#                                  when this script runs again.
-#                                - "true": step 7 creates Hive Scheduled Queries (requires
-#                                  SCHEDULE_EXPR) that run DUMP on source / LOAD on
-#                                  destination on Hive's own cron. Once bootstrap has
-#                                  completed, subsequent script invocations detect the DB
-#                                  already exists and simply skip - Hive itself is driving
-#                                  incremental replication, not this script.
-#                              Hive tracks replication state (repl.last.id) server-side, so
-#                              each incremental DUMP only contains events since the last one
-#                              regardless of which mode drives it.
-#                              Example: USE_SCHEDULED_QUERIES=true ./hive_bdr.sh ...
-#   INCREMENTAL_LOCK_DIR    - Directory for per-DB lock files used to prevent overlapping
-#                              incremental cycles when USE_SCHEDULED_QUERIES=false (default:
-#                              /var/tmp/hive-bdr-incremental-locks).
-#   HIVE_REPL_SNAPSHOT_COPY - "true" or "false" (default: true; Hive's own default for
-#                              hive.repl.externaltable.snapshotdiff.copy is false). When
-#                              "true" (default here), REPL DUMP/LOAD WITH clauses add
-#                              hive.repl.externaltable.snapshotdiff.copy=true (+
-#                              external.warehouse.single.copy.task and
-#                              externaltable.snapshot.overwrite.target=true), so REPL LOAD's
-#                              internal external-table data copy uses HDFS snapshot-diff
-#                              based DistCp (only changed blocks since the last snapshot)
-#                              instead of a full listing-based copy - the scaling mechanism
-#                              for large (e.g. 1TB+) external table bootstraps/incrementals.
-#                              The script automatically runs `hdfs dfsadmin -allowSnapshot`
-#                              (idempotent, per-DB lock file, checked/skipped on repeat runs)
-#                              on the SOURCE external warehouse dir before every DUMP when
-#                              this is "true" - no manual snapshot setup needed there. The
-#                              DESTINATION side is intentionally NOT pre-enabled: Hive's
-#                              DirCopyTask nests the source table's full path under
-#                              hive.repl.replica.external.table.base.dir and enables
-#                              snapshot on that nested path itself at copy time - HDFS does
-#                              not allow a directory to be snapshottable if an ancestor
-#                              already is, so pre-enabling the base dir would block Hive's
-#                              own allowSnapshot call and fail the LOAD (confirmed via
-#                              testing). When "false", none of the above properties are set
-#                              and no snapshot setup runs; external table copy uses Hive's
-#                              normal listing-based copy.
-#                              NOTE: forced to "false" whenever FAILOVER_MODE=true, regardless
-#                              of what is requested here - snapshot-diff copy is untested
-#                              across a failover cycle (see HIVE_REPL_SNAPSHOT_COPY notes
-#                              further below).
+#   2. SRC_NAMESERVICE     (required)
+#        The source cluster's HDFS nameservice (or "host:port" for a
+#        non-HA NameNode). This is a fixed label for this cluster and does
+#        not change when the replication direction is reversed - see
+#        "FAILOVER AND FAILBACK" below.
 #
-#                              Snapshot lifecycle / no cleanup needed (verified via testing
-#                              and against HiveConf.java 
-#                              Hive creates and manages exactly TWO rotating named snapshots
-#                              per DB under this feature - "<db>replOld" and "<db>replNew" -
-#                              NOT one new snapshot per replication cycle. Each cycle: a fresh
-#                              "replNew" snapshot is taken, diffed against the previous
-#                              "replOld" to find only what changed, that diff is copied, then
-#                              "replOld" is rotated to become "replNew"'s state for next time.
-#                              Confirmed empirically: after 4 script runs (4 incremental
-#                              inserts) against the same table, `hdfs dfs -ls -R .../.snapshot`
-#                              still showed exactly these 2 snapshot names, never
-#                              replOld2/replOld3/etc. - the snapshot COUNT stays flat forever;
-#                              only the underlying data files grow (normal table growth, not a
-#                              snapshot leak). HiveConf.java has no retention-count/TTL/cleanup
-#                              property for this feature (checked - none exists) because none
-#                              is needed: this is architecturally different from
-#                              hadoop_dr_replication.sh's SNAP_RETAIN/cleanup_old_snapshots
-#                              (which intentionally keeps N historical dated snapshots for
-#                              point-in-time rollback); this feature only ever needs "last
-#                              cycle's state" vs "this cycle's state" to compute a diff, so
-#                              there is no history to prune and no cleanup step to add here.
-#                              Example: HIVE_REPL_SNAPSHOT_COPY=false ./hive_bdr.sh ...
-#   SNAP_LOCK_DIR           - Directory for per-DB, per-dump-source external-table
-#                              snapshot-capability lock files (one lock file per
-#                              "<db>__<dump-source-nameservice>" pair, since failover
-#                              flips which nameservice is the real dump source and each
-#                              side needs its own independent check/enable - a lock
-#                              written for one direction is never reused for the other),
-#                              used only when HIVE_REPL_SNAPSHOT_COPY=true (default:
-#                              /var/tmp/hive-bdr-snapshot-setup-locks).
-#   HIVE_EXTERNAL_WAREHOUSE_DIR - Base dir Hive uses for EXTERNAL tables with no explicit
-#                              LOCATION on the SOURCE cluster (i.e. its
-#                              hive.metastore.warehouse.external.dir). Default:
-#                              /warehouse/tablespace/external/hive (Hive 3+ default; verified
-#                              on a real cluster: tables land at <this>/<db>.db/<table>).
-#                              Older Hive/HDP clusters may use /user/hive/external instead -
-#                              override if your source cluster's
-#                              hive.metastore.warehouse.external.dir differs. Used ONLY to
-#                              build REPL_EXTERNAL_SRC_DIR, the actual source-side path
-#                              checked/allowSnapshot'd by enable_external_table_snapshots()
-#                              (when HIVE_REPL_SNAPSHOT_COPY=true). Does NOT affect
-#                              REPL_EXTERNAL_BASE_DIR (hive.repl.replica.external.table.base.dir)
-#                              on the destination, which is an unrelated relocation root that
-#                              Hive prefixes the source table's path onto - it must stay a
-#                              distinct path (/user/hive/external/<db>), not mirror this value,
-#                              or REPL LOAD fails with a doubled/nested destination path.
-#                              Only covers tables using the default external location on
-#                              source, not tables with a custom LOCATION.
-#   YARN_QUEUE              - (also positional arg 6) YARN Capacity Scheduler queue for
-#                              REPL LOAD's internal data-copy YARN job (default: "testqueue"
-#                              in this script). Set via
-#                              SET mapreduce.job.queuename / SET tez.queue.name issued in
-#                              the same beeline session immediately before REPL LOAD.
-#                              Only applies to LOAD (immediate executions: bootstrap,
-#                              incremental cycle, failover) - DUMP does not launch a YARN
-#                              copy job so setting a queue there has no effect. Does NOT
-#                              apply to Hive Scheduled Query LOADs (USE_SCHEDULED_QUERIES=
-#                              true) - see notes in create_scheduled_queries().
-#                              Example: YARN_QUEUE=testqueue ./hive_bdr.sh ...
-#   HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS - "true" or "false" (default: false, matches
-#                              Hive's own default for hive.repl.include.materialized.views).
-#                              When "true", adds 'hive.repl.include.materialized.views'=
-#                              'true' to every REPL DUMP/LOAD WITH clause so materialized
-#                              views are replicated along with regular tables. Left false by
-#                              default: MVs are derived/rebuildable data, not source-of-truth
-#                              - replication copies the MV's last-materialized snapshot as-is
-#                              without triggering a REBUILD on the destination, so a
-#                              replicated MV can silently drift out of sync with its base
-#                              tables. Also adds data volume/time to every cycle. Enable only
-#                              after confirming you need replicated MV data and have
-#                              validated the staleness/rebuild implications on destination.
-#                              Example: HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS=true ./hive_bdr.sh ...
-#   FAILOVER_MODE           - Enable failover (direction reversal) for Hive BDR replication.
-#                              Default: false. NOT a positional argument (env-var only,
-#                              deliberately excluded from routine positional invocation).
-#                              Set to "true" when a failover has already occurred and DST has
-#                              become the new primary cluster receiving production writes.
+#   3. DST_NAMESERVICE     (required)
+#        The destination cluster's HDFS nameservice (or "host:port"),
+#        same rules as SRC_NAMESERVICE above.
 #
-#                              Prerequisites:
-#                                - Hive replication must already be configured and operational
-#                                - At least one incremental REPL DUMP must have completed on DST
-#                                  after bootstrap (Hive requires this before failover.start)
-#                                - Cluster failover must have been completed
-#                                - New writes must be occurring only on the DST cluster
+#   4. SRC_JDBC_URL        (required)
+#        JDBC connection string for the source cluster's HiveServer2.
+#        Example:
+#          jdbc:hive2://host1:2181,host2:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2
 #
-#                              Workflow:
-#                                Step 1: Disable existing scheduled queries on both clusters
-#                                Step 2: REPL DUMP on DST (new primary) with
-#                                        'hive.repl.failover.start'='true'
-#                                Step 3: REPL LOAD on SRC (old primary, now new replica)
-#                                Step 4: Create reversed scheduled queries:
-#                                          DUMP on DST, LOAD on SRC
-#                              This reverses replication so changes on the new primary (DST)
-#                              are replicated back to the old primary (SRC).
+#   5. DST_JDBC_URL        (required)
+#        JDBC connection string for the destination cluster's HiveServer2,
+#        same format as SRC_JDBC_URL.
 #
-#                              Example: FAILOVER_MODE=true ./hive_bdr.sh ...
+#   6. YARN_QUEUE          (default: "default")
+#        The YARN Capacity Scheduler queue that REPL LOAD's internal data
+#        copy job should run in. See the YARN_QUEUE section below.
 #
-# All examples below pass all 16 positional arguments explicitly (order matters - see
-# "Positional arguments" above). Trailing args can be omitted to fall back to their
-# defaults/environment overrides, but are spelled out here for clarity.
+#   7. REPL_BASE_DIR       (default: "/user/hive/repl/")
+#        The HDFS directory (on the source cluster) where Hive stages the
+#        REPL DUMP output before REPL LOAD reads it.
 #
-# Example (Bootstrap + Scheduled Incremental):
-#   ./hive_bdr.sh \
-#     "migration01" \
-#     "ODP-Aquaman" \
-#     "ODP-Aurora" \
-#     "jdbc:hive2://host1:2181,host2:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
-#     "jdbc:hive2://host3:2181,host4:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
-#     "testqueue" \
-#     "/user/hive/repl/" \
-#     "/var/log/hive-replication" \
-#     "hdfs" \
-#     "hdfs" \
-#     "false" \
-#     "true" \
-#     "EVERY 5 MINUTES" \
-#     "00:03:00" \
-#     "true" \
-#     "/user/hive/external/"
-#   NOTE: arg 12 (USE_SCHEDULED_QUERIES) must be "true" for Hive Scheduled Queries to
-#         actually be created from SCHEDULE_EXPR - "false" skips scheduled-query creation
-#         entirely and instead runs a direct incremental DUMP/LOAD cycle on every
-#         subsequent invocation (see USE_SCHEDULED_QUERIES notes above).
+#   8. LOG_DIR             (default: "/var/log/hive-replication")
+#        Local directory where this script writes its log files.
 #
-# Example (Bootstrap + externally-scheduled incremental, e.g. cron/Pulse Actions):
-#   USE_SCHEDULED_QUERIES=false (the default) - no Hive Scheduled Queries are created;
-#   just re-invoke this same command on your own interval to drive incrementals. Args
-#   13-14 (SCHEDULE_EXPR/LOAD_OFFSET) are irrelevant in this mode and left empty:
-#   ./hive_bdr.sh \
-#     "migration01" \
-#     "ODP-Aquaman" \
-#     "ODP-Aurora" \
-#     "jdbc:hive2://host1:2181,host2:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
-#     "jdbc:hive2://host3:2181,host4:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
-#     "testqueue" \
-#     "/user/hive/repl/" \
-#     "/var/log/hive-replication" \
-#     "hdfs" \
-#     "hdfs" \
-#     "false" \
-#     "false" \
-#     "" \
-#     "00:03:00" \
-#     "true" \
-#     "/user/hive/external/"
+#   9. HDFS_USER           (default: "hdfs")
+#        The OS user the script uses to run `hdfs dfs` / `hdfs dfsadmin`
+#        commands when Kerberos is not in use. See "AUTHENTICATION" below.
 #
-# Example (Multi-database replication):
-#   ./hive_bdr.sh \
-#     "sales|analytics|hr.'orders'" \
-#     "ODP-Aquaman" \
-#     "ODP-Aurora" \
-#     "jdbc:hive2://host1:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
-#     "jdbc:hive2://host3:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
-#     "testqueue" \
-#     "/user/hive/repl/" \
-#     "/var/log/hive-replication" \
-#     "hdfs" \
-#     "hdfs" \
-#     "false" \
-#     "false" \
-#     "" \
-#     "00:03:00" \
-#     "true" \
-#     "/user/hive/external/"
+#  10. HIVE_USER           (default: "hdfs")
+#        The username passed to beeline when Kerberos is not in use. See
+#        "AUTHENTICATION" below.
 #
-# Example (Table-level replication - specific tables only):
-#   ./hive_bdr.sh \
-#     "sales.'(t1|orders|course)'" \
-#     "ODP-Aquaman" \
-#     "ODP-Aurora" \
-#     "jdbc:hive2://host1:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
-#     "jdbc:hive2://host3:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
-#     "testqueue" \
-#     "/user/hive/repl/" \
-#     "/var/log/hive-replication" \
-#     "hdfs" \
-#     "hdfs" \
-#     "false" \
-#     "false" \
-#     "" \
-#     "00:03:00" \
-#     "true" \
-#     "/user/hive/external/"
+#  11. FAILOVER_MODE       (default: "false")
+#        Set to "true" to reverse the replication direction (failover), or
+#        "false" for normal replication. See "FAILOVER AND FAILBACK" below.
 #
-# Example (Incremental only - DB already exists):
-#   Same as above - script will detect existing DB and skip bootstrap
+#   Any of arguments 6, 9, 10, and 11 (YARN_QUEUE, HDFS_USER, HIVE_USER,
+#   FAILOVER_MODE) can also be supplied as an environment variable of the
+#   same name instead of a positional argument. If both are set, the
+#   positional argument wins.
 #
-# Example (Failover - reverse replication after ODP-Aurora became primary):
-#   NOTE: Ensure at least one incremental REPL DUMP has completed on ODP-Aurora
-#         after bootstrap, before enabling FAILOVER_MODE. FAILOVER_MODE is environment-only
-#         (not a positional argument) - set it before the positional args.
-#   FAILOVER_MODE=true ./hive_bdr.sh \
-#     "migration01" \
-#     "ODP-Aquaman" \
-#     "ODP-Aurora" \
-#     "jdbc:hive2://host1:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
-#     "jdbc:hive2://host3:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
-#     "testqueue" \
-#     "/user/hive/repl/" \
-#     "/var/log/hive-replication" \
-#     "hdfs" \
-#     "hdfs" \
-#     "false" \
-#     "true" \
-#     "EVERY 5 MINUTES" \
-#     "00:03:00" \
-#     "true" \
-#     "/user/hive/external/"
-#   NOTE: arg 12 is "true" here too - failover's Step 4 (create_reversed_scheduled_queries)
-#         only creates the reversed DUMP/LOAD scheduled queries when USE_SCHEDULED_QUERIES=
-#         true; with "false" that step is a no-op and the reversed direction must instead be
-#         driven by re-invoking this script (with SRC/DST swapped) on your own schedule.
+# FAILOVER AND FAILBACK
+# ----------------------------------------------------------------------------
+#   SRC_NAMESERVICE / DST_NAMESERVICE / SRC_JDBC_URL / DST_JDBC_URL always
+#   describe the SAME two clusters for the lifetime of a replication setup
+#   (for example SRC = your production cluster, DST = your DR cluster).
+#   These four values are NEVER swapped between runs, no matter which
+#   direction replication is currently flowing.
 #
-# Note: LOAD schedule will be offset by LOAD_OFFSET from DUMP schedule
-#   DUMP: EVERY 5 MINUTES → runs at 0, 5, 10, 15, 20, 25...
-#   LOAD: EVERY 5 MINUTES OFFSET BY '00:03:00' → runs at 3, 8, 13, 18, 23, 28...
+#   Instead, direction is controlled entirely by FAILOVER_MODE / an internal
+#   REPLICATION_DIRECTION value:
+#     FAILOVER_MODE=false -> REPL DUMP runs on SRC, REPL LOAD runs on DST
+#                            (normal direction)
+#     FAILOVER_MODE=true  -> REPL DUMP runs on DST, REPL LOAD runs on SRC
+#                            (reversed direction, used after a real cluster
+#                            failover)
 #
-# -----------------------------------------------------------------------------
+#   This lets you flip back and forth indefinitely using the exact same
+#   command, changing only this one value:
+#     Primary -> DR : FAILOVER_MODE=false   (or omit the argument)
+#     DR -> Primary : FAILOVER_MODE=true
+#     Primary -> DR : FAILOVER_MODE=false
+#     DR -> Primary : FAILOVER_MODE=true
+#     ... and so on.
+#
+#   Before requesting a direction change, make sure:
+#     - Replication is already configured and has completed at least one
+#       successful REPL DUMP/LOAD cycle in the CURRENT direction. The script
+#       checks this automatically via a REPL STATUS pre-flight check and
+#       will refuse to proceed with a clear error message if the new
+#       "dump" side is not yet an eligible replication source.
+#     - The real cluster failover has already happened at the
+#       infrastructure level, and new writes are only occurring on the
+#       cluster that is about to become the new dump source.
+#
+#   When FAILOVER_MODE=true is passed, the script performs 3 steps for each
+#   database:
+#     Step 1 - Pre-flight check: confirm the new dump side is eligible.
+#     Step 2 - REPL DUMP on the new primary, with
+#              'hive.repl.failover.start'='true'.
+#     Step 3 - REPL LOAD on the new replica.
+#
+#   To go back to normal replication after a failover, run the script again
+#   with FAILOVER_MODE=false (or omit the argument) - typically you run
+#   FAILOVER_MODE=true for exactly one invocation to perform the failover,
+#   then revert to the default for every run after that.
+#
+# AUTHENTICATION
+# ----------------------------------------------------------------------------
+#   The script automatically detects whether Kerberos is available (via
+#   `klist`). This changes how it runs `hdfs`/`beeline` commands:
+#
+#     Kerberos available:
+#       Commands run as the current OS user, using the active Kerberos
+#       ticket. HDFS_USER / HIVE_USER are not used.
+#
+#     Kerberos not available:
+#       - `hdfs dfs` / `hdfs dfsadmin` commands run via `sudo -u $HDFS_USER`.
+#         HDFS_USER must be an HDFS superuser (or a member of the HDFS
+#         supergroup), because operations like `allowSnapshot` and
+#         `chmod`/`mkdir` on directories owned by another user (e.g. `hive`)
+#         require superuser privileges.
+#       - beeline connects with `-n $HIVE_USER` so HiveServer2 does not
+#         authenticate the session as "anonymous".
+#
+# INCREMENTAL REPLICATION
+# ----------------------------------------------------------------------------
+#   This script always drives incremental replication itself by re-running
+#   a direct REPL DUMP -> REPL LOAD cycle; it does not use Hive Scheduled
+#   Queries. To keep a database up to date, re-invoke this script on your
+#   own schedule (cron, a systemd timer, or your orchestration tool of
+#   choice) with the same arguments used for the original bootstrap run.
+#
+# ENVIRONMENT VARIABLES (ADVANCED / OPTIONAL)
+# ----------------------------------------------------------------------------
+#   These are not positional arguments - set them in the environment before
+#   invoking the script, only if you need to change the default behavior.
+#
+#   HDFS_USER
+#     Also positional argument 9. See "AUTHENTICATION" above.
+#     Default: hdfs
+#
+#   HIVE_USER
+#     Also positional argument 10. See "AUTHENTICATION" above.
+#     Default: hdfs
+#
+#   HIVE_LDAP_ENABLED / HIVE_PASSWORD
+#     Not positional arguments (kept as environment-only settings since
+#     HIVE_PASSWORD is a credential). Controls the password beeline sends
+#     alongside HIVE_USER when Kerberos is not in use:
+#       HIVE_LDAP_ENABLED=false (default) - HiveServer2 is using
+#         pass-through/NONE authentication, so the password value is not
+#         actually checked. The script sends HIVE_USER's own value as the
+#         password, purely to satisfy beeline's syntax.
+#       HIVE_LDAP_ENABLED=true - HiveServer2 is backed by real LDAP
+#         authentication. HIVE_PASSWORD must be set to the real LDAP
+#         password for HIVE_USER; the script exits with an error if it is
+#         missing.
+#     Default: HIVE_LDAP_ENABLED=false
+#
+#   INCREMENTAL_LOCK_DIR
+#     Directory used to store a small per-database lock file so two
+#     incremental cycles for the same database can never run at the same
+#     time (for example, if this script is re-invoked before the previous
+#     run has finished).
+#     Default: /var/tmp/hive-bdr-incremental-locks
+#
+#   BEELINE_VERBOSE
+#     "true" or "false". When "true", every beeline call adds
+#     "--verbose=true" for extra JDBC/session detail - useful while
+#     diagnosing a hang or an unexpected failure.
+#     Default: false
+#
+#   HEARTBEAT_INTERVAL_SECONDS
+#     How often (in seconds) this script prints a "[HEARTBEAT] ... still
+#     running" line while a beeline statement (REPL DUMP/LOAD, status
+#     checks, etc.) is executing. beeline itself prints no progress output
+#     while a statement runs server-side, so this is what shows the script
+#     is still alive during a long DUMP/LOAD instead of going silent.
+#     Default: 30
+#
+#   BEELINE_COMMAND_TIMEOUT_SECONDS
+#     If set to a positive number, a beeline statement that runs longer
+#     than this many seconds is killed automatically, with a message
+#     pointing at likely causes (metastore lock, a stuck YARN data-copy
+#     job, or an unreachable remote cluster) to check next.
+#     Default: 0 (disabled - statements run to completion no matter how
+#     long they take)
+#
+#   HIVE_REPL_SNAPSHOT_COPY
+#     "true" or "false". When "true", REPL DUMP/LOAD use HDFS
+#     snapshot-diff based copying for external table data - only the
+#     blocks that changed since the last run are copied, instead of a full
+#     directory listing and copy every time. This is the recommended way
+#     to scale replication of large (for example, 1 TB or more) external
+#     tables. When enabled, the script automatically runs
+#     `hdfs dfsadmin -allowSnapshot` on the source external table
+#     directory before each DUMP; no manual snapshot setup is required.
+#     Default: false
+#
+#   SNAP_LOCK_DIR
+#     Directory used to store lock files that record which external table
+#     directories have already been made snapshot-capable, so the script
+#     does not repeat that setup on every run. Only used when
+#     HIVE_REPL_SNAPSHOT_COPY=true.
+#     Default: /var/tmp/hive-bdr-snapshot-setup-locks
+#
+#   HIVE_EXTERNAL_WAREHOUSE_DIR
+#     The base HDFS directory the source cluster uses for external tables
+#     that do not have an explicit LOCATION (Hive's
+#     `hive.metastore.warehouse.external.dir`). Used only to compute the
+#     source-side path that needs snapshot capability when
+#     HIVE_REPL_SNAPSHOT_COPY=true. Change this only if your source
+#     cluster uses a non-default external warehouse path.
+#     Default: /warehouse/tablespace/external/hive
+#
+#   YARN_QUEUE
+#     Also positional argument 6. The YARN Capacity Scheduler queue used
+#     for REPL LOAD's internal data-copy job on the destination cluster.
+#     Only affects REPL LOAD (REPL DUMP does not launch a YARN job).
+#     Default: default
+#
+#   HA_CONFIG_IN_WITH_CLAUSE
+#     "true" or "false". Normally, an HA nameservice must already be
+#     resolvable to HiveServer2 through the cluster's own hdfs-site.xml
+#     (configured once, cluster-wide, via Ambari or similar). Set this to
+#     "true" to have the script instead inject the HA NameNode properties
+#     directly into every REPL DUMP/LOAD statement - useful when one
+#     cluster's hdfs-site.xml does not yet know about the other cluster's
+#     nameservice. Requires SRC_NN_HOSTS and DST_NN_HOSTS to be set.
+#     Default: false
+#
+#   SRC_NN_HOSTS / DST_NN_HOSTS
+#     Required when HA_CONFIG_IN_WITH_CLAUSE=true. Comma-separated
+#     "<nn-id>=<host>:<port>" pairs describing each cluster's NameNodes.
+#     Example:
+#       SRC_NN_HOSTS="nn1=prod-nn1.example.com:8020,nn2=prod-nn2.example.com:8020"
+#       DST_NN_HOSTS="nn1=dr-nn1.example.com:8020,nn2=dr-nn2.example.com:8020"
+#
+#   AUTOMATIC_FAILOVER_ENABLED
+#     "true" or "false". Only used when HA_CONFIG_IN_WITH_CLAUSE=true.
+#     Default: true
+#
+#   HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS
+#     "true" or "false". When "true", materialized views are replicated
+#     along with regular tables. Left disabled by default because a
+#     replicated materialized view is copied as-is (its last-computed
+#     result), without triggering a rebuild on the destination - so it can
+#     silently fall out of sync with its base tables over time. Only
+#     enable this after confirming that behavior is acceptable for your
+#     use case.
+#     Default: false
+#
+# EXAMPLES
+# ----------------------------------------------------------------------------
+#   Example 1 - Bootstrap a single database, then keep it in sync by
+#   re-running this same command on a schedule (e.g. cron):
+#
+#     ./hive_bdr_replication.sh \
+#       "sales" \
+#       "prod-nameservice" \
+#       "dr-nameservice" \
+#       "jdbc:hive2://prod-host1:2181,prod-host2:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#       "jdbc:hive2://dr-host1:2181,dr-host2:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#       "default" \
+#       "/user/hive/repl/" \
+#       "/var/log/hive-replication" \
+#       "hdfs" \
+#       "hdfs" \
+#       "false"
+#
+#   Example 2 - Replicate multiple databases in one invocation:
+#
+#     ./hive_bdr_replication.sh \
+#       "sales|analytics|hr.'orders'" \
+#       "prod-nameservice" \
+#       "dr-nameservice" \
+#       "jdbc:hive2://prod-host1:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#       "jdbc:hive2://dr-host1:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#       "default" \
+#       "/user/hive/repl/" \
+#       "/var/log/hive-replication" \
+#       "hdfs" \
+#       "hdfs" \
+#       "false"
+#
+#   Example 3 - Replicate specific tables only, instead of a whole
+#   database:
+#
+#     ./hive_bdr_replication.sh \
+#       "sales.'(orders|customers)'" \
+#       "prod-nameservice" \
+#       "dr-nameservice" \
+#       "jdbc:hive2://prod-host1:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#       "jdbc:hive2://dr-host1:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#       "default" \
+#       "/user/hive/repl/" \
+#       "/var/log/hive-replication" \
+#       "hdfs" \
+#       "hdfs" \
+#       "false"
+#
+#   Example 4 - Failover after the DR cluster has been promoted to
+#   primary (reverses replication direction so DR now dumps and the
+#   original primary now loads). Only the last argument changes from
+#   Example 1:
+#
+#     ./hive_bdr_replication.sh \
+#       "sales" \
+#       "prod-nameservice" \
+#       "dr-nameservice" \
+#       "jdbc:hive2://prod-host1:2181,prod-host2:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#       "jdbc:hive2://dr-host1:2181,dr-host2:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#       "default" \
+#       "/user/hive/repl/" \
+#       "/var/log/hive-replication" \
+#       "hdfs" \
+#       "hdfs" \
+#       "true"
+#
+#   Example 5 - Failback: return to normal direction after Example 4.
+#   SRC_NAMESERVICE / DST_NAMESERVICE are identical to every previous
+#   invocation - only FAILOVER_MODE flips back to "false":
+#
+#     ./hive_bdr_replication.sh \
+#       "sales" \
+#       "prod-nameservice" \
+#       "dr-nameservice" \
+#       "jdbc:hive2://prod-host1:2181,prod-host2:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#       "jdbc:hive2://dr-host1:2181,dr-host2:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#       "default" \
+#       "/user/hive/repl/" \
+#       "/var/log/hive-replication" \
+#       "hdfs" \
+#       "hdfs" \
+#       "false"
+#
+#   This Example 4 / Example 5 pattern can be repeated indefinitely for any
+#   number of failover / failback cycles.
+#
+# ==============================================================================
 
 set -euo pipefail
 
-####################################
-# Variables - Accept from positional arguments with defaults
-####################################
+# Dedicated file descriptor for heartbeat/debug messages printed by
+# run_with_heartbeat() and beeline_exec_load() below. These messages must
+# NEVER be written to stdout (fd 1) directly: several callers capture a
+# beeline command's stdout via $(...) (for example, the database-existence
+# check in replicate_one_db()), and a heartbeat line printed at the wrong
+# moment would land in the middle of that captured text and corrupt it.
+#
+# fd 3 is set up in two stages: a safe default here (pointing at the
+# script's original, pre-redirect stdout) so it is always valid even if a
+# function runs before the session log is set up, and then re-pointed at
+# the session-log "tee" pipeline once that is established further down -
+# so heartbeat/debug messages always land in both the console and
+# SESSION_LOG_FILE. Every heartbeat/debug message must be written with
+# "echo ... >&${HEARTBEAT_FD}", never plain "echo".
+exec 3>&1
+HEARTBEAT_FD=3
 
+# ------------------------------------------------------------------------------
+#  Read positional arguments and apply defaults.
+#  For YARN_QUEUE, HDFS_USER, HIVE_USER, and FAILOVER_MODE: if the
+#  positional argument is not supplied, fall back to the environment
+#  variable of the same name, and finally to a hardcoded default.
+# ------------------------------------------------------------------------------
 HIVE_DB="${1:-}"
 SRC_NAMESERVICE="${2:-}"
 DST_NAMESERVICE="${3:-}"
@@ -405,162 +441,114 @@ REPL_BASE_DIR="${7:-/user/hive/repl/}"
 LOG_DIR="${8:-/var/log/hive-replication}"
 HDFS_USER="${9:-${HDFS_USER:-hdfs}}"
 HIVE_USER="${10:-${HIVE_USER:-hdfs}}"
-HIVE_LDAP_ENABLED="${11:-${HIVE_LDAP_ENABLED:-false}}"
-USE_SCHEDULED_QUERIES="${12:-${USE_SCHEDULED_QUERIES:-false}}"
-SCHEDULE_EXPR="${13:-}"
-LOAD_OFFSET="${14:-00:03:00}"
-# "false" (default): use REPL_EXTERNAL_BASE_DIR_ROOT bare, with no per-DB suffix. Combined
-# with REPL_EXTERNAL_BASE_DIR_ROOT="/" (its default, below), this makes the destination
-# external-table path Hive constructs (REPL_EXTERNAL_BASE_DIR + the source table's own
-# nested path) equal to the source path itself, modulo nameservice/host. Verified against a
-# real bootstrap: with APPEND_DB=true the destination path came out prefixed with
-# /<db_name> instead of matching source. "true": append ${HIVE_DB_NAME} to
-# REPL_EXTERNAL_BASE_DIR_ROOT, giving each DB its own isolated relocation root - use this if
-# REPL_EXTERNAL_BASE_DIR_ROOT is NOT "/" (e.g. /user/hive/external/) and per-DB isolation
-# under that shared root is wanted.
-REPL_EXTERNAL_BASE_DIR_APPEND_DB="${15:-${REPL_EXTERNAL_BASE_DIR_APPEND_DB:-false}}"
-REPL_EXTERNAL_BASE_DIR_ROOT="${16:-/}"
-FAILOVER_MODE="${FAILOVER_MODE:-false}"
+FAILOVER_MODE="${11:-${FAILOVER_MODE:-false}}"
 
-# Strip surrounding double-quotes that some callers (e.g. Pulse Actions) inject literally
+# Fixed relocation settings for replicated external table data on the
+# destination cluster. These intentionally have no positional argument or
+# environment override: keeping them fixed guarantees the destination
+# EXTERNAL TABLE LOCATION is always path-identical to the source location
+# (only the nameservice/authority differs). See compute_repl_external_base_dir()
+# below for how these two values are used together.
+REPL_EXTERNAL_BASE_DIR_APPEND_DB=false
+REPL_EXTERNAL_BASE_DIR_ROOT="/"
+
+# Some callers (for example, orchestration tools that pass shell arguments
+# through an extra layer of quoting) may pass HIVE_DB wrapped in literal
+# double quotes. Strip them here so a value like "\"sales\"" is treated as
+# "sales".
 HIVE_DB="${HIVE_DB#\"}"
 HIVE_DB="${HIVE_DB%\"}"
 
-# Failover mode: reverse replication direction. Not a positional argument (deliberately
-# excluded - failover is an operational decision, not a routine invocation parameter).
-# Override via environment: FAILOVER_MODE=true.
+# ------------------------------------------------------------------------------
+#  Resolve FAILOVER_MODE into REPLICATION_DIRECTION.
+#
+#  REPLICATION_DIRECTION is the internal value that actually drives the
+#  script: "src_to_dst" (REPL DUMP on SRC, REPL LOAD on DST) or
+#  "dst_to_src" (REPL DUMP on DST, REPL LOAD on SRC). It can also be set
+#  directly via the REPLICATION_DIRECTION environment variable if you
+#  prefer that over FAILOVER_MODE true/false; if both are set,
+#  REPLICATION_DIRECTION wins.
+# ------------------------------------------------------------------------------
+REPLICATION_DIRECTION="${REPLICATION_DIRECTION:-}"
 
-# USE_SCHEDULED_QUERIES: "true" uses Hive's own Scheduled Queries to drive
-# incremental DUMP/LOAD after bootstrap (current/existing behavior) - once bootstrap runs
-# once, subsequent script invocations just detect the DB exists and skip, since Hive itself
-# is driving incrementals. "false" (default) disables Hive Scheduled Query creation entirely
-# and instead runs a real incremental REPL DUMP -> DistCp -> REPL LOAD cycle directly on
-# every subsequent invocation - use this when an external scheduler (cron, Pulse Actions) is
-# re-invoking this script on its own interval instead of relying on Hive's scheduler.
-# Positional arg 12, or override via environment: USE_SCHEDULED_QUERIES=true (positional arg
-# takes precedence if both are set).
+if [[ -z "$REPLICATION_DIRECTION" ]]; then
+  if [[ "${FAILOVER_MODE,,}" == "true" ]]; then
+    REPLICATION_DIRECTION="dst_to_src"
+  else
+    REPLICATION_DIRECTION="src_to_dst"
+  fi
+fi
+case "${REPLICATION_DIRECTION,,}" in
+  src_to_dst|dst_to_src) REPLICATION_DIRECTION="${REPLICATION_DIRECTION,,}" ;;
+  *)
+    echo "[ERROR] REPLICATION_DIRECTION must be 'src_to_dst' or 'dst_to_src' (got: '${REPLICATION_DIRECTION}')" >&2
+    exit 1
+    ;;
+esac
 
-# Lock directory used to prevent overlapping incremental cycles for the same DB when this
-# script is invoked repeatedly (e.g. from an external cron loop) with
-# USE_SCHEDULED_QUERIES=false. Concurrent REPL DUMP/LOAD against the same DB is not safe.
+# Directory used for per-database lock files that prevent two incremental
+# replication cycles for the same database from running at the same time.
 INCREMENTAL_LOCK_DIR="${INCREMENTAL_LOCK_DIR:-/var/tmp/hive-bdr-incremental-locks}"
 
-########################################
-# HIVE_REPL_SNAPSHOT_COPY: "true" or "false" (default: false, matches Hive's own default
-# for hive.repl.externaltable.snapshotdiff.copy).
-#
-# When "true": REPL DUMP/LOAD WITH clauses add
-#   'hive.repl.externaltable.snapshotdiff.copy'='true'
-#   'hive.repl.external.warehouse.single.copy.task'='true'
-#   'hive.repl.externaltable.snapshot.overwrite.target'='true'
-# so REPL LOAD's internal external-table data copy uses HDFS snapshot-diff based DistCp
-# (only transfers changed blocks since the last snapshot) instead of a full listing-based
-# copy every time. This is the mechanism for scaling large (e.g. 1TB+) external table
-# bootstraps/incrementals without disabling hive.repl.run.data.copy.tasks.on.target.
-#
-# Prerequisite: HDFS snapshots must be allowed (hdfs dfsadmin -allowSnapshot) on BOTH the
-# source external table warehouse dir and REPL_EXTERNAL_BASE_DIR on the destination. This
-# script handles that automatically (idempotent, per-directory lock files, same pattern as
-# hadoop_dr_replication.sh Stage 2) via enable_external_table_snapshots() when this flag is
-# "true" - see that function for details.
-#
-# When "false" (default): none of the above properties are set, external table copy uses
-# Hive's normal listing-based copy (as before) - no snapshot prerequisite needed.
-#
-# Default is "false" here: this feature has NOT yet been validated end-to-end across a
-# FAILOVER_MODE=true cycle (confirmed via testing: real failover DUMP/LOAD failures were
-# hit independent of this flag's value, tied to hive.repl.rootdir reuse - see FAILOVER_MODE
-# notes below - but the combination of snapshot-diff copy + failover remains untested past
-# that point). Enable explicitly (HIVE_REPL_SNAPSHOT_COPY=true) only for non-failover
-# bootstrap/incremental replication of large external tables.
-########################################
+# ------------------------------------------------------------------------------
+#  HIVE_REPL_SNAPSHOT_COPY - enable HDFS snapshot-diff based copying for
+#  external table data (recommended for large external tables). See the
+#  "ENVIRONMENT VARIABLES" section at the top of this file for details.
+# ------------------------------------------------------------------------------
 HIVE_REPL_SNAPSHOT_COPY="${HIVE_REPL_SNAPSHOT_COPY:-false}"
 
-# Snapshot-diff external table copy is untested against a failover cycle (see notes above)
-# - force it off whenever FAILOVER_MODE=true, regardless of what was requested, rather than
-# letting an unvalidated combination run.
-if [[ "${FAILOVER_MODE,,}" == "true" && "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ]]; then
-  echo "[WARN] FAILOVER_MODE=true - forcing HIVE_REPL_SNAPSHOT_COPY=false (untested combination, see script header notes)"
+# Snapshot-diff copy is not currently supported together with a reversed
+# replication direction. If both are requested, disable snapshot-diff copy
+# for this run rather than proceeding with an unsupported combination.
+if [[ "$REPLICATION_DIRECTION" == "dst_to_src" && "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ]]; then
+  echo "[WARN] REPLICATION_DIRECTION=dst_to_src - forcing HIVE_REPL_SNAPSHOT_COPY=false (not supported together with a reversed direction)"
   HIVE_REPL_SNAPSHOT_COPY="false"
 fi
 
-# Lock directory for per-directory external-table snapshot-capability locks, used only
-# when HIVE_REPL_SNAPSHOT_COPY=true. Mirrors SNAP_LOCK_DIR in hadoop_dr_replication.sh.
+# Directory used for lock files that record which external table
+# directories have already been made snapshot-capable. Only used when
+# HIVE_REPL_SNAPSHOT_COPY=true.
 SNAP_LOCK_DIR="${SNAP_LOCK_DIR:-/var/tmp/hive-bdr-snapshot-setup-locks}"
 
-# Base directory Hive uses for EXTERNAL table data on the SOURCE cluster when a table has
-# no explicit LOCATION (i.e. the source's hive.metastore.warehouse.external.dir). Used ONLY
-# to build REPL_EXTERNAL_SRC_DIR as "<this>/<db>.db" (Hive's own default external table
-# layout) - the real source-side path checked/allowSnapshot'd by
-# enable_external_table_snapshots(). Does NOT affect REPL_EXTERNAL_BASE_DIR (the destination
-# relocation root), which is a separate, unrelated path - see derive_db_vars.
-# Verified default on a real cluster: /warehouse/tablespace/external/hive (tables land at
-# /warehouse/tablespace/external/hive/<db>.db/<table>). Older Hive/HDP layouts used
-# /user/hive/external instead - override this if your source cluster's actual
-# hive.metastore.warehouse.external.dir differs from the default below.
-# NOTE: only covers tables using the default external location; a table created with an
-# explicit LOCATION outside this dir needs separate snapshot setup.
+# Base directory the source cluster uses for external tables that have no
+# explicit LOCATION. Only used to compute the source-side path that needs
+# snapshot capability when HIVE_REPL_SNAPSHOT_COPY=true. Override this if
+# your source cluster's hive.metastore.warehouse.external.dir is not the
+# Hive 3 default below.
 HIVE_EXTERNAL_WAREHOUSE_DIR="${HIVE_EXTERNAL_WAREHOUSE_DIR:-/warehouse/tablespace/external/hive}"
 
-########################################
-# YARN_QUEUE - YARN Capacity Scheduler queue that REPL LOAD's internal data-copy jobs
-# (Stage-0:COPY, launched on the DESTINATION cluster during LOAD) should submit to.
-# Default: "default".
-#
-# Only affects LOAD, not DUMP: DUMP does not launch a YARN copy job (it just reads/writes
-# metadata + snapshot diffs on the source), so the queue is only set on the destination
-# beeline session before REPL LOAD executes. Confirmed via YARN ResourceManager UI: without
-# this, every "distcp: Repl#<db>" MAPREDUCE application launched by LOAD lands in the
-# "default" queue regardless of intent.
-#
-# Set via two SET statements issued in the same beeline session immediately before the
-# REPL LOAD statement (see beeline_exec_load()):
-#   SET mapreduce.job.queuename=<YARN_QUEUE>;   -- the underlying MR/distcp job's queue
-#   SET tez.queue.name=<YARN_QUEUE>;            -- the Tez session's queue (if HS2 uses Tez)
-# Both are set together since the HS2 query itself may run on Tez while the DirCopyTask's
-# internal copy job is a separate MapReduce/distcp job - either engine could be in play
-# depending on cluster config, so both properties are set to be safe.
-#
-# Applies to: immediate LOAD executions this script runs directly (bootstrap, incremental
-# cycle, failover). For Hive Scheduled Queries (USE_SCHEDULED_QUERIES=true), the same SET
-# statements are embedded inside the CREATE SCHEDULED QUERY LOAD body itself, since that
-# query runs later under Hive's own scheduler, not through this script's beeline session.
-# Set via positional arg 6, or override via environment: YARN_QUEUE=testqueue (positional
-# arg takes precedence if both are set).
-########################################
+# ------------------------------------------------------------------------------
+#  YARN_QUEUE - the YARN queue used for REPL LOAD's internal data-copy job.
+#  Applied via two `SET` statements issued immediately before every
+#  REPL LOAD statement (see beeline_exec_load() below):
+#    SET mapreduce.job.queuename=<YARN_QUEUE>;
+#    SET tez.queue.name=<YARN_QUEUE>;
+#  Both are set together because HiveServer2 may execute the query itself
+#  on Tez while the data-copy task runs as a separate MapReduce/DistCp job.
+#  Only affects REPL LOAD - REPL DUMP does not launch a YARN job.
+# ------------------------------------------------------------------------------
 
-########################################
-# HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS - "true" or "false" (default: false, matches Hive's
-# own default for hive.repl.include.materialized.views).
-#
-# When "true": REPL DUMP/LOAD WITH clauses add
-#   'hive.repl.include.materialized.views'='true'
-# so materialized views in the replicated DB(s) are included in DUMP/LOAD, same as regular
-# tables.
-#
-# Left "false" by default deliberately, NOT just to mirror Hive's default:
-#   - MVs are derived/rebuildable data, not source-of-truth data. Hive replication copies
-#     the MV's last-materialized snapshot as-is; it does not trigger a REBUILD on the
-#     destination, so a replicated MV can silently drift out of sync with its base tables
-#     depending on the destination's own rewrite/refresh configuration.
-#   - Adds extra data volume/time to every DUMP/LOAD cycle (bootstrap AND incremental) for
-#     deployments that don't use or don't need to replicate MVs.
-#   - Untested against this script's HIVE_REPL_SNAPSHOT_COPY (external-table snapshot-diff)
-#     path - no validation here that the two features interact cleanly.
-# Enable only for deployments that have confirmed they need replicated MV data and have
-# validated the staleness/rebuild implications on the destination cluster.
-# Override via environment: HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS=true
-########################################
+# ------------------------------------------------------------------------------
+#  HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS - replicate materialized views
+#  along with regular tables. Disabled by default: a replicated
+#  materialized view is copied as a static snapshot and is not
+#  automatically rebuilt on the destination, so it can silently drift out
+#  of sync with its base tables. Enable only if you have confirmed that
+#  behavior is acceptable.
+# ------------------------------------------------------------------------------
 HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS="${HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS:-false}"
 
-# Normalize REPL_BASE_DIR to always have a trailing slash
+# Ensure REPL_BASE_DIR always ends with exactly one trailing slash.
 REPL_BASE_DIR="${REPL_BASE_DIR%/}/"
 
-# Normalize REPL_EXTERNAL_BASE_DIR_ROOT to always have exactly one leading and one trailing slash
+# Ensure REPL_EXTERNAL_BASE_DIR_ROOT always has exactly one leading and one
+# trailing slash.
 REPL_EXTERNAL_BASE_DIR_ROOT="/${REPL_EXTERNAL_BASE_DIR_ROOT#/}"
 REPL_EXTERNAL_BASE_DIR_ROOT="${REPL_EXTERNAL_BASE_DIR_ROOT%/}/"
 
-# Validate mandatory parameters before deriving any variables from them
+# ------------------------------------------------------------------------------
+#  Validate required arguments before doing anything else.
+# ------------------------------------------------------------------------------
 if [[ -z "$HIVE_DB" ]]; then
     echo "Error: HIVE_DB (argument 1) is required"
     exit 1
@@ -582,10 +570,13 @@ if [[ -z "$DST_JDBC_URL" ]]; then
     exit 1
 fi
 
-# parse_db_specs: split HIVE_DB on | only outside single-quoted sections.
-# Populates the global DB_SPECS array with one entry per DB spec.
-# Handles patterns like "sales.'(t1|t2)'|analytics" correctly — the pipe
-# inside single quotes is part of the table regex, not a DB separator.
+# parse_db_specs: split the HIVE_DB argument on "|", but only outside of
+# single-quoted sections, and populate the global DB_SPECS array with one
+# entry per database spec.
+#
+# This lets a table pattern like "sales.'(orders|customers)'" keep its "|"
+# intact (it is part of the regex), while still treating the "|" in
+# "sales|analytics" as a separator between two different databases.
 parse_db_specs() {
   local raw="$1"
   local parsed
@@ -617,29 +608,25 @@ parse_db_specs() {
   fi
 }
 
-# compute_repl_external_base_dir: set REPL_EXTERNAL_BASE_DIR (the external-table relocation
-# base dir, hive.repl.replica.external.table.base.dir) rooted at the given nameservice.
-# NOTE: this is a RELOCATION root, not a mirror of the source's actual external warehouse
-# path. Per HiveConf docs, hive.repl.replica.external.table.base.dir is "prefixed to the
-# source external table path on target cluster" - i.e. Hive appends the source table's
-# own path onto this base. Setting it to the SAME path shape as the source's real
-# warehouse.external.dir causes a doubled/nested destination path and REPL LOAD failure
-# (confirmed via testing: "Failed to AllowSnapshot on .../snap_test1.db/.../snap_test1.db").
-# Keep this as an arbitrary, distinct relocation root (verified working in earlier tests).
+# compute_repl_external_base_dir: compute REPL_EXTERNAL_BASE_DIR, the
+# destination-side base directory Hive relocates replicated external
+# table data under (hive.repl.replica.external.table.base.dir).
 #
-# Must always be re-rooted at whichever nameservice is the actual REPL LOAD target for the
-# current direction (DST_NAMESERVICE normally, SRC_NAMESERVICE during failover) - reusing a
-# value rooted at the wrong side causes the destination LOCATION to compound-nest on every
-# run (confirmed via testing: each cycle appended the PREVIOUS cycle's already-relocated
-# full path onto the same base dir shape again).
+# Hive prefixes the source table's own path onto this base directory when
+# copying external table data to the destination, so this value must be a
+# separate relocation root - not the same path shape as the source
+# cluster's real external warehouse directory (doing so produces a
+# doubled/nested destination path and causes REPL LOAD to fail).
 #
-# REPL_EXTERNAL_BASE_DIR_APPEND_DB=false (env var; default) drops the ${HIVE_DB_NAME} suffix,
-# giving a bare per-nameservice root shared by every DB. Combined with the default
-# REPL_EXTERNAL_BASE_DIR_ROOT="/", this is what makes the destination external-table path
-# mirror the source path exactly (aside from nameservice/host) - confirmed via testing:
-# with APPEND_DB=true the destination path came out prefixed with /<db_name>, not matching
-# source. Set APPEND_DB=true only if REPL_EXTERNAL_BASE_DIR_ROOT is a shared non-root path
-# (e.g. /user/hive/external/) and per-DB isolation under it is wanted instead of path parity.
+# This must always be rooted at whichever nameservice is the actual
+# REPL LOAD target for the current run (the "load_target_nameservice"
+# argument, computed by derive_db_vars() from REPLICATION_DIRECTION).
+#
+# With REPL_EXTERNAL_BASE_DIR_APPEND_DB=false (the fixed value set at the
+# top of this script) and REPL_EXTERNAL_BASE_DIR_ROOT="/", the destination
+# external table path ends up identical to the source path except for the
+# nameservice/host - for example, source hdfs://src-ns/warehouse/sales.db/orders
+# becomes hdfs://dst-ns/warehouse/sales.db/orders on the destination.
 compute_repl_external_base_dir() {
   local load_target_nameservice="$1"
   if [[ "${REPL_EXTERNAL_BASE_DIR_APPEND_DB,,}" == "false" ]]; then
@@ -649,8 +636,16 @@ compute_repl_external_base_dir() {
   fi
 }
 
-# derive_db_vars: set all per-DB globals from a single spec string.
-# Called at the start of each iteration so every function sees fresh values.
+# derive_db_vars: compute every per-database variable used by the rest of
+# this script, from a single database spec string. Called once at the
+# start of processing each database so every function that follows always
+# sees fresh, correct values for that database.
+#
+# SRC_NAMESERVICE/DST_NAMESERVICE/SRC_JDBC_URL/DST_JDBC_URL are fixed
+# labels for the two clusters (see "FAILOVER AND FAILBACK" at the top of
+# this file) and are never swapped. This function derives which cluster is
+# actually the DUMP source and which is the LOAD target for the CURRENT
+# run, based on REPLICATION_DIRECTION.
 derive_db_vars() {
   local spec="$1"
   if [[ "$spec" == *.* ]]; then
@@ -662,54 +657,158 @@ derive_db_vars() {
     HIVE_TABLE_PATTERN=""
     HIVE_REPL_SPEC="${spec}"
   fi
-  REPL_ROOT_DIR_SRC="hdfs://${SRC_NAMESERVICE}${REPL_BASE_DIR}${HIVE_DB_NAME}"
-  # IMPORTANT: REPL LOAD must use the same nameservice as REPL DUMP
+
+  if [[ "$REPLICATION_DIRECTION" == "dst_to_src" ]]; then
+    DUMP_NAMESERVICE="$DST_NAMESERVICE"
+    LOAD_NAMESERVICE="$SRC_NAMESERVICE"
+    DUMP_JDBC_URL="$DST_JDBC_URL"
+    LOAD_JDBC_URL="$SRC_JDBC_URL"
+  else
+    DUMP_NAMESERVICE="$SRC_NAMESERVICE"
+    LOAD_NAMESERVICE="$DST_NAMESERVICE"
+    DUMP_JDBC_URL="$SRC_JDBC_URL"
+    LOAD_JDBC_URL="$DST_JDBC_URL"
+  fi
+
+  # The REPL DUMP staging directory is suffixed with the dump-side
+  # nameservice (for example .../repl/sales/from_prod-nameservice), so
+  # each direction has its own independent, persistent staging path. This
+  # keeps repeated failover/failback cycles from ever reusing (and
+  # colliding with) a staging directory left over from the opposite
+  # direction. The path is stable and reused across repeated runs in the
+  # SAME direction - only a direction change moves to a different path.
+  REPL_ROOT_DIR_SRC="hdfs://${DUMP_NAMESERVICE}${REPL_BASE_DIR}${HIVE_DB_NAME}/from_${DUMP_NAMESERVICE}"
+  # REPL LOAD must read from the exact same location REPL DUMP wrote to.
   REPL_ROOT_DIR_DST="${REPL_ROOT_DIR_SRC}"
-  # Base directory on destination for replicated EXTERNAL tables (per-DB).
-  # Normal bootstrap/incremental direction: REPL LOAD target is DST_NAMESERVICE.
-  compute_repl_external_base_dir "$DST_NAMESERVICE"
-  
-  # NOTE: the dump-source external table warehouse dir (used by
-  # enable_external_table_snapshots() when HIVE_REPL_SNAPSHOT_COPY=true) is computed
-  # dynamically inside that function from whichever nameservice is passed to it - it varies
-  # depending on dump direction (SRC_NAMESERVICE normally, DST_NAMESERVICE during failover),
-  # so it is NOT precomputed here as a fixed per-DB global.
-  # NOTE: this only matches tables using Hive's default external location - a table created
-  # with an explicit LOCATION outside HIVE_EXTERNAL_WAREHOUSE_DIR will not be covered by the
-  # allowSnapshot call in enable_external_table_snapshots() and needs its own snapshot setup.
-  SRC_SCHEDULED_QUERY_NAME="sq_repl_dump_${HIVE_DB_NAME}"
-  DST_SCHEDULED_QUERY_NAME="sq_repl_load_${HIVE_DB_NAME}"
+
+  # Base directory on the LOAD target for replicated external table data,
+  # rooted at whichever nameservice is actually being loaded onto in this
+  # run.
+  compute_repl_external_base_dir "$LOAD_NAMESERVICE"
+  # Note: only tables using Hive's default external table location are
+  # covered by the automatic snapshot setup in
+  # enable_external_table_snapshots() below. A table created with an
+  # explicit, non-default LOCATION needs its own snapshot setup outside
+  # this script.
 }
 
 declare -a DB_SPECS=()
 parse_db_specs "$HIVE_DB"
 
-# Detect HA enabled if both SRC_NAMESERVICE and DST_NAMESERVICE do NOT contain ':'
+# HA is assumed to be enabled when neither nameservice argument contains a
+# ":" (a "host:port" value implies a single, non-HA NameNode instead of an
+# HA nameservice name).
 if [[ "$SRC_NAMESERVICE" != *:* ]] && [[ "$DST_NAMESERVICE" != *:* ]]; then
   HA_ENABLED=true
 else
   HA_ENABLED=false
 fi
 
-# Define HDFS_TOKEN_EXCLUDE_PROP based on HA_ENABLED
+# When both clusters are HA, exclude both nameservices from HDFS delegation
+# token renewal for the MapReduce/DistCp job REPL LOAD launches internally
+# (avoids a cross-cluster token-renewal failure for jobs that run entirely
+# within a single, already-authenticated session).
 if [[ "$HA_ENABLED" == true ]]; then
   HDFS_TOKEN_EXCLUDE_PROP="'mapreduce.job.hdfs-servers.token-renewal.exclude'='${SRC_NAMESERVICE},${DST_NAMESERVICE}',"
 else
   HDFS_TOKEN_EXCLUDE_PROP=""
 fi
 
-########################################
-# Kerberos credential cache (KRB5CCNAME) - pick from Actions path first
-# When kinit is run from Actions (adaxn-krb), cache is saved under $PULSE_HOME/actions/tmp (e.g. /opt/pulse/actions/tmp ).
-# Shell kinit typically uses /tmp/krb5cc_<uid>. This block detects and sets KRB5CCNAME so beeline, hadoop, hdfs use the same cache.
+# ------------------------------------------------------------------------------
+#  HA_CONFIG_IN_WITH_CLAUSE - inject HA NameNode configuration directly
+#  into REPL DUMP/LOAD statements.
 #
-# Returns 0 if valid Kerberos tickets were found (Kerberos mode), 1 otherwise (non-Kerberos / sudo mode).
-########################################
+#  Normally, an HA nameservice must already be resolvable to HiveServer2
+#  through the cluster's own hdfs-site.xml, configured once cluster-wide.
+#  Set HA_CONFIG_IN_WITH_CLAUSE=true to have this script inject the same
+#  properties directly into every REPL DUMP/LOAD statement instead - useful
+#  when one cluster's hdfs-site.xml does not yet know about the other
+#  cluster's nameservice. Requires SRC_NN_HOSTS and DST_NN_HOSTS.
+# ------------------------------------------------------------------------------
+HA_CONFIG_IN_WITH_CLAUSE="${HA_CONFIG_IN_WITH_CLAUSE:-false}"
+
+# SRC_NN_HOSTS / DST_NN_HOSTS - required when HA_CONFIG_IN_WITH_CLAUSE=true.
+# Comma-separated "<nn-id>=<host>:<port>" pairs describing each
+# nameservice's NameNodes, for example:
+#   SRC_NN_HOSTS="nn1=prod-nn1.example.com:8020,nn2=prod-nn2.example.com:8020"
+#   DST_NN_HOSTS="nn1=dr-nn1.example.com:8020,nn2=dr-nn2.example.com:8020"
+SRC_NN_HOSTS="${SRC_NN_HOSTS:-}"
+DST_NN_HOSTS="${DST_NN_HOSTS:-}"
+
+# AUTOMATIC_FAILOVER_ENABLED - only used when HA_CONFIG_IN_WITH_CLAUSE=true.
+AUTOMATIC_FAILOVER_ENABLED="${AUTOMATIC_FAILOVER_ENABLED:-true}"
+
+if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" == "true" ]]; then
+  if [[ -z "$SRC_NN_HOSTS" || -z "$DST_NN_HOSTS" ]]; then
+    echo "[ERROR] HA_CONFIG_IN_WITH_CLAUSE=true requires both SRC_NN_HOSTS and DST_NN_HOSTS to be set." >&2
+    echo "[ERROR] Example: SRC_NN_HOSTS=\"nn1=host1:8020,nn2=host2:8020\"" >&2
+    exit 1
+  fi
+fi
+
+# build_nameservice_ha_props: print the dfs.ha.namenodes.<ns>,
+# dfs.namenode.rpc-address.<ns>.<nn-id>, and
+# dfs.client.failover.proxy.provider.<ns> properties for one nameservice
+# (each line ending in a comma, ready to splice into a REPL DUMP/LOAD
+# WITH() clause).
+# Usage: build_nameservice_ha_props <nameservice> <nn_hosts_spec>
+build_nameservice_ha_props() {
+  local nameservice="$1"
+  local nn_hosts_spec="$2"
+  local nn_ids=()
+  local pair nn_id nn_addr
+
+  IFS=',' read -ra pairs <<< "$nn_hosts_spec"
+  for pair in "${pairs[@]}"; do
+    nn_id="${pair%%=*}"
+    nn_addr="${pair#*=}"
+    if [[ -z "$nn_id" || -z "$nn_addr" || "$nn_id" == "$pair" ]]; then
+      echo "[ERROR] Malformed NN host entry for nameservice '${nameservice}': '${pair}' (expected <nn-id>=<host>:<port>)" >&2
+      exit 1
+    fi
+    nn_ids+=("$nn_id")
+    printf "'dfs.namenode.rpc-address.%s.%s'='%s',\n" "$nameservice" "$nn_id" "$nn_addr"
+  done
+
+  local joined_ids
+  joined_ids="$(IFS=,; echo "${nn_ids[*]}")"
+  printf "'dfs.ha.namenodes.%s'='%s',\n" "$nameservice" "$joined_ids"
+  printf "'dfs.client.failover.proxy.provider.%s'='org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider',\n" "$nameservice"
+}
+
+# ha_config_props: print the full HA property block for both clusters
+# (each line ending in a comma, ready to splice into a REPL DUMP/LOAD
+# WITH() clause) when HA_CONFIG_IN_WITH_CLAUSE=true. Prints nothing when
+# false (the default), since HA resolution is then assumed to already be
+# configured cluster-wide.
+ha_config_props() {
+  if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" != "true" ]]; then
+    return
+  fi
+  printf "'dfs.nameservices'='%s,%s',\n" "$SRC_NAMESERVICE" "$DST_NAMESERVICE"
+  printf "'dfs.ha.automatic-failover.enabled'='%s',\n" "${AUTOMATIC_FAILOVER_ENABLED,,}"
+  build_nameservice_ha_props "$SRC_NAMESERVICE" "$SRC_NN_HOSTS"
+  build_nameservice_ha_props "$DST_NAMESERVICE" "$DST_NN_HOSTS"
+}
+
+# ------------------------------------------------------------------------------
+#  Kerberos detection.
+#
+#  Locates a valid Kerberos credential cache (KRB5CCNAME) so beeline/hdfs
+#  commands authenticate with the active ticket instead of falling back to
+#  sudo. Checks, in order: an already-set KRB5CCNAME, a cache created by
+#  Acceldata Pulse Actions, the default per-user cache under /tmp, and
+#  finally the default klist cache.
+#
+#  Returns 0 (Kerberos available) or 1 (Kerberos not available - the
+#  script falls back to sudo-based execution).
+# ------------------------------------------------------------------------------
 detect_and_set_kerberos_cache() {
     if ! command -v klist >/dev/null 2>&1; then
         return 1
     fi
-    # 1) If KRB5CCNAME is already set (e.g. passed from plugin env), trust but verify
+    # 1) If KRB5CCNAME is already set (e.g. passed in from the calling
+    #    environment), trust it but verify it is actually valid first.
     if [[ -n "${KRB5CCNAME:-}" ]]; then
         if klist -s 2>/dev/null; then
             export KRB5CCNAME
@@ -749,7 +848,7 @@ detect_and_set_kerberos_cache() {
             return 0
         fi
     fi
-    # 4) Final fallback: default klist
+    # 4) Final fallback: default klist cache
     if klist -s 2>/dev/null; then
         echo "[INFO] Kerberos using default credential cache"
         return 0
@@ -764,42 +863,28 @@ else
     echo "[INFO] Kerberos not detected — HDFS commands will run via sudo as HDFS_USER"
 fi
 
-########################################
-# HDFS_USER - user to run `hdfs dfs` / `hdfs dfsadmin` commands as when Kerberos is NOT
-# enabled. MUST be an HDFS superuser (or in the HDFS supergroup) - allowSnapshot and
-# mkdir/chmod on directories owned by other users (e.g. hive) require superuser privileges;
-# a non-superuser account will fail with AccessControlException.
-# Set via positional arg 9, or override via environment: HDFS_USER=hdfs (positional arg
-# takes precedence if both are set). When Kerberos is enabled, commands run as the current
-# user (to preserve tickets) and HDFS_USER is not used.
-########################################
-# Beeline authentication (non-Kerberos only)
+# ------------------------------------------------------------------------------
+#  Beeline authentication.
 #
-# When Kerberos is NOT enabled, beeline needs an explicit -n <user> or HiveServer2
-# will authenticate the connection as "anonymous" (visible e.g. in
-# sys.scheduled_queries.user). Two non-Kerberos sub-modes are supported:
+#  When Kerberos is not available, beeline needs an explicit "-n <user>"
+#  or HiveServer2 authenticates the session as "anonymous". Two modes are
+#  supported, controlled by HIVE_LDAP_ENABLED:
 #
-#   HIVE_LDAP_ENABLED=false (default):
-#     HS2 is using pass-through/NONE auth - the password value is not actually
-#     validated. We pass -n "$HIVE_USER" -p "$HIVE_USER" (username as password)
-#     purely to satisfy beeline's syntax and avoid the "anonymous" fallback.
+#    HIVE_LDAP_ENABLED=false (default)
+#      HiveServer2 is using pass-through/NONE authentication - the
+#      password value is not actually checked. The script passes
+#      "-n $HIVE_USER -p $HIVE_USER" (the username doubling as the
+#      password) purely to satisfy beeline's syntax.
 #
-#   HIVE_LDAP_ENABLED=true:
-#     HS2 is backed by real LDAP auth - the password IS validated. HIVE_PASSWORD
-#     must be set to the actual LDAP credential; the script fails fast if it is
-#     missing rather than silently sending a wrong/empty password.
+#    HIVE_LDAP_ENABLED=true
+#      HiveServer2 is backed by real LDAP authentication - the password IS
+#      checked. HIVE_PASSWORD must be set to the actual LDAP password; the
+#      script exits with an error if it is missing.
 #
-# Set via positional args, or override via environment (positional arg takes precedence
-# if both are set):
-#   HIVE_USER         - beeline username (default: hdfs). Also used as password
-#                       when HIVE_LDAP_ENABLED=false. Positional arg 10.
-#   HIVE_LDAP_ENABLED - "true" or "false" (default: false). Positional arg 11.
-#   HIVE_PASSWORD     - real LDAP password; required when HIVE_LDAP_ENABLED=true. Not a
-#                       positional arg (secret - env var only).
-#
-# When Kerberos IS enabled, none of this is used - beeline authenticates via the
-# active Kerberos ticket and no -n/-p is passed.
-########################################
+#  When Kerberos IS available, none of this is used - beeline authenticates
+#  via the active Kerberos ticket and no "-n"/"-p" flags are passed.
+# ------------------------------------------------------------------------------
+HIVE_LDAP_ENABLED="${HIVE_LDAP_ENABLED:-false}"
 HIVE_PASSWORD="${HIVE_PASSWORD:-}"
 
 declare -a BEELINE_AUTH_ARGS=()
@@ -818,33 +903,184 @@ if [[ "$KERBEROS_ENABLED" == "no" ]]; then
     fi
 fi
 
-# beeline_exec: run beeline with the correct auth args spliced in after -u <jdbc_url>.
+# ------------------------------------------------------------------------------
+#  Long-running-command watchdog.
+#
+#  beeline gives no progress output at all while a statement executes
+#  server-side (e.g. REPL DUMP/LOAD's internal metadata and data-copy
+#  work), so a slow-but-healthy run and a truly stuck run look identical
+#  in this script's log. run_with_heartbeat() runs a command in the
+#  background and, every HEARTBEAT_INTERVAL_SECONDS, prints an
+#  "still running" message with the elapsed time - so the log always
+#  shows forward progress instead of going silent.
+#
+#  If BEELINE_COMMAND_TIMEOUT_SECONDS is set to a positive number, the
+#  command is killed after that many seconds and a clear timeout message
+#  is printed with troubleshooting pointers. Default (0) means no timeout
+#  - only the heartbeat is active, and the command runs to completion.
+# ------------------------------------------------------------------------------
+HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-30}"
+BEELINE_COMMAND_TIMEOUT_SECONDS="${BEELINE_COMMAND_TIMEOUT_SECONDS:-0}"
+
+# BEELINE_VERBOSE - "true" or "false". When "true", every beeline
+# invocation adds "--verbose=true", which prints each statement beeline
+# sends to HiveServer2 (in addition to the statements this script already
+# echoes itself) and more detail on the JDBC connection/session setup.
+# Useful while diagnosing a hang or an unexpected failure. Left off by
+# default to keep normal runs less noisy.
+BEELINE_VERBOSE="${BEELINE_VERBOSE:-false}"
+declare -a BEELINE_VERBOSE_ARGS=()
+if [[ "${BEELINE_VERBOSE,,}" == "true" ]]; then
+  BEELINE_VERBOSE_ARGS=(--verbose=true)
+fi
+
+# run_with_heartbeat: run "$@" as a child process, printing a heartbeat
+# line every HEARTBEAT_INTERVAL_SECONDS until it exits. Optionally enforces
+# BEELINE_COMMAND_TIMEOUT_SECONDS. Preserves and returns the child's exit
+# code.
+# Usage: run_with_heartbeat <label> <command> [args...]
+run_with_heartbeat() {
+  local label="$1"
+  shift
+
+  "$@" &
+  local cmd_pid=$!
+
+  local elapsed=0
+  while kill -0 "$cmd_pid" 2>/dev/null; do
+    sleep "$HEARTBEAT_INTERVAL_SECONDS"
+    elapsed=$(( elapsed + HEARTBEAT_INTERVAL_SECONDS ))
+
+    if kill -0 "$cmd_pid" 2>/dev/null; then
+      echo "[HEARTBEAT] ${label} still running - elapsed ${elapsed}s (pid ${cmd_pid})" >&${HEARTBEAT_FD}
+
+      if [[ "$BEELINE_COMMAND_TIMEOUT_SECONDS" -gt 0 && "$elapsed" -ge "$BEELINE_COMMAND_TIMEOUT_SECONDS" ]]; then
+        {
+          echo "[ERROR] ${label} exceeded BEELINE_COMMAND_TIMEOUT_SECONDS=${BEELINE_COMMAND_TIMEOUT_SECONDS}s - killing pid ${cmd_pid}"
+          echo "[ERROR] This usually means the statement is blocked server-side (metastore lock, a stuck"
+          echo "[ERROR] MapReduce/Tez data-copy job, or an unreachable remote cluster) rather than genuinely"
+          echo "[ERROR] still working. On the cluster ${label} is targeting, check:"
+          echo "[ERROR]   - SHOW LOCKS DATABASE ${HIVE_DB_NAME:-<db>};"
+          echo "[ERROR]   - yarn application -list  (look for a running data-copy job in queue '${YARN_QUEUE}')"
+          echo "[ERROR]   - HiveServer2 logs for the queryId last printed above"
+        } >&${HEARTBEAT_FD}
+        kill -9 "$cmd_pid" 2>/dev/null
+        wait "$cmd_pid" 2>/dev/null
+        return 124
+      fi
+    fi
+  done
+
+  wait "$cmd_pid"
+  return $?
+}
+
+# beeline_exec: run beeline against a given JDBC URL with the correct
+# authentication arguments applied automatically. Wrapped in
+# run_with_heartbeat() so a slow or stuck statement is visible in the log
+# instead of producing silence.
 # Usage: beeline_exec <jdbc_url> [beeline args...]
 beeline_exec() {
     local jdbc_url="$1"
     shift
-    beeline -u "$jdbc_url" "${BEELINE_AUTH_ARGS[@]}" "$@"
+    run_with_heartbeat "beeline_exec (${jdbc_url})" \
+        beeline -u "$jdbc_url" "${BEELINE_AUTH_ARGS[@]}" "${BEELINE_VERBOSE_ARGS[@]}" "$@"
 }
 
-# beeline_exec_load: like beeline_exec, but first issues SET statements (in the same
-# session, as separate -e flags executed in order before the caller's statement) so
-# REPL LOAD's internal data-copy YARN job (Stage-0:COPY) submits to YARN_QUEUE instead of
-# the cluster's "default" queue. Only use this for REPL LOAD calls - DUMP does not launch
-# a YARN copy job, so setting the queue there has no effect (see YARN_QUEUE comment above).
+# beeline_exec_load: same as beeline_exec, but first issues the two YARN
+# queue `SET` statements (in the same beeline session, before the caller's
+# statement) so REPL LOAD's internal data-copy job submits to YARN_QUEUE.
+# Only use this for REPL LOAD calls - REPL DUMP does not launch a YARN job,
+# so setting the queue has no effect there.
 # Usage: beeline_exec_load <jdbc_url> -e "<REPL LOAD ...>"
 beeline_exec_load() {
     local jdbc_url="$1"
     shift
-    beeline -u "$jdbc_url" "${BEELINE_AUTH_ARGS[@]}" \
-        -e "SET mapreduce.job.queuename=${YARN_QUEUE};" \
-        -e "SET tez.queue.name=${YARN_QUEUE};" \
-        "$@"
+    run_with_heartbeat "beeline_exec_load (${jdbc_url})" \
+        beeline -u "$jdbc_url" "${BEELINE_AUTH_ARGS[@]}" "${BEELINE_VERBOSE_ARGS[@]}" \
+            -e "SET mapreduce.job.queuename=${YARN_QUEUE};" \
+            -e "SET tez.queue.name=${YARN_QUEUE};" \
+            "$@"
 }
 
-# Wrapper to run `hdfs dfs` / `hdfs dfsadmin` commands (mkdir, chmod, allowSnapshot).
-# If Kerberos is enabled, run as current user (preserves tickets).
-# Otherwise, sudo -u to HDFS_USER, which must be an HDFS superuser (preserving environment
-# via -E for HADOOP_CLIENT_OPTS etc).
+# repl_status_last_id: run "REPL STATUS <db>" against the given JDBC URL
+# and print its last_repl_id value. This is empty/NULL if the database has
+# never been the target of a REPL LOAD on that cluster (i.e. it has never
+# acted as a replica). Returns 1 if the query itself fails - for example,
+# if the database does not exist yet on that cluster, or the cluster is
+# unreachable.
+repl_status_last_id() {
+  local jdbc_url="$1"
+  local db="$2"
+  local output
+  output=$(beeline_exec "${jdbc_url}" -e "REPL STATUS ${db};" 2>&1) || return 1
+  # beeline prints results as a bordered ASCII table, e.g.:
+  #   +--------------+---------------+
+  #   |  dump_dir    | last_repl_id  |
+  #   +--------------+---------------+
+  #   | hdfs://...   | 10884         |
+  #   +--------------+---------------+
+  # last_repl_id is the LAST "|"-delimited column of the one data row
+  # (the row that is not the header/border). Extract it directly rather
+  # than filtering by shape, since the surrounding connection/session
+  # chatter never matches this table format.
+  echo "$output" | awk -F'|' '
+    /^\| *[Hh]dfs:\/\// || /^\| *[Nn][Uu][Ll][Ll] *\|/ || /^\|.*\|.*[0-9].*\|/ {
+      n = NF
+      val = $(n-1)
+      gsub(/^[ \t]+|[ \t]+$/, "", val)
+      if (val != "" && val !~ /^-+$/) { print val; exit }
+    }
+  '
+}
+
+# preflight_check_direction_change: before reversing replication direction
+# (a DUMP with 'hive.repl.failover.start'='true'), confirm that Hive's own
+# metastore already considers the CURRENT replica (the side about to
+# become the new dump source's replica... no - about to become the new
+# LOAD target) a caught-up replica, i.e. it has a non-NULL last_repl_id
+# from a previous successful REPL LOAD in the current direction.
+#
+# This check must be run against the current LOAD side (LOAD_NAMESERVICE),
+# not the current DUMP side: Hive only records last_repl_id on the side
+# that gets loaded into, never on the dump/source side. Checking the wrong
+# side would always report "not caught up" even when replication is
+# healthy.
+#
+# Only called from failover_one_db(), i.e. only when the caller explicitly
+# requested a direction change for this invocation.
+preflight_check_direction_change() {
+  local current_replica_jdbc="$1"
+  local current_replica_ns="$2"
+
+  echo "$SUBSEP"
+  echo "Pre-flight: verifying ${current_replica_ns} is a caught-up replica before reversing direction..."
+
+  local last_id
+  if ! last_id="$(repl_status_last_id "$current_replica_jdbc" "$HIVE_DB_NAME")"; then
+    echo "ERROR: Could not query REPL STATUS ${HIVE_DB_NAME} on ${current_replica_ns} - aborting direction change rather than risk an invalid failover-start DUMP."
+    echo "This usually means the database does not exist yet on ${current_replica_ns}, or that cluster is unreachable."
+    return 1
+  fi
+
+  if [[ -z "$last_id" || "${last_id^^}" == "NULL" ]]; then
+    echo "ERROR: ${current_replica_ns} has no recorded last_repl_id for '${HIVE_DB_NAME}' - Hive does not consider it a"
+    echo "       caught-up replica, so a direction reversal is not yet safe."
+    echo "       Ensure at least one successful REPL LOAD has completed onto ${current_replica_ns} in the CURRENT"
+    echo "       direction before requesting a reversal."
+    return 1
+  fi
+
+  echo "OK: ${current_replica_ns} last_repl_id=${last_id} - safe to reverse direction (it becomes the new replica)."
+  echo ""
+  return 0
+}
+
+# run_as_hdfs: run an `hdfs dfs` / `hdfs dfsadmin` command as the
+# appropriate user. When Kerberos is available, runs as the current user
+# (preserving the active ticket). Otherwise, runs via `sudo -u $HDFS_USER`
+# (preserving the environment with -E, so variables like
+# HADOOP_CLIENT_OPTS still apply).
 run_as_hdfs() {
     if [[ "$KERBEROS_ENABLED" == "yes" ]]; then
         "$@"
@@ -853,9 +1089,9 @@ run_as_hdfs() {
     fi
 }
 
-# allow_snapshot_idempotent: run `hdfs dfsadmin -allowSnapshot <dir>` and treat
-# "already snapshottable" as success. Returns 0 on success (including already-enabled), 1
-# on failure. Same idempotency semantics as hadoop_dr_replication.sh Stage 2.
+# allow_snapshot_idempotent: run `hdfs dfsadmin -allowSnapshot <dir>` and
+# treat "directory is already snapshottable" as success (not an error).
+# Returns 0 on success (including already-enabled), 1 on failure.
 allow_snapshot_idempotent() {
   local nameservice="$1"
   local dir="$2"
@@ -873,42 +1109,32 @@ allow_snapshot_idempotent() {
   return 1
 }
 
-# enable_external_table_snapshots: idempotently allowSnapshot on the ACTUAL dump-source
-# external warehouse dir only, for the current DB (HIVE_DB_NAME - set by derive_db_vars).
-# Required before hive.repl.externaltable.snapshotdiff.copy=true will work. Uses a per-DB
-# lock file (keyed by DB name AND dump-source nameservice) so this only runs once per DB
-# per dump-source, not on every script invocation. Only called when
-# HIVE_REPL_SNAPSHOT_COPY=true.
+# enable_external_table_snapshots: make the current database's external
+# table warehouse directory on the dump source snapshot-capable, which is
+# a prerequisite for HIVE_REPL_SNAPSHOT_COPY=true. Idempotent - uses a
+# per-database, per-dump-source lock file so this setup only runs once,
+# not on every invocation. Only called when HIVE_REPL_SNAPSHOT_COPY=true.
 #
 # Usage: enable_external_table_snapshots [dump_source_nameservice]
-#   dump_source_nameservice defaults to SRC_NAMESERVICE (the normal bootstrap/incremental
-#   case, where SRC_NAMESERVICE is always the one running REPL DUMP). Callers in
-#   failover_one_db MUST pass DST_NAMESERVICE explicitly, since failover reverses direction
-#   and DST_NAMESERVICE is the one actually running REPL DUMP in that path - confirmed via
-#   testing: without this, the real dump-source side (DST_NAMESERVICE post-failover) never
-#   gets allowSnapshot applied at all, and the failover LOAD fails with "Unable to delete
-#   snapshot ... snapshot name: <db>replOld" because the snapshot-diff machinery has no
-#   valid snapshot capability to work with on that side.
+#   dump_source_nameservice defaults to SRC_NAMESERVICE (the normal
+#   bootstrap/incremental case). Callers in failover_one_db() pass the
+#   actual current dump-side nameservice explicitly, since a reversed
+#   direction means DST_NAMESERVICE is the one actually running REPL DUMP.
 #
-# IMPORTANT: does NOT call allowSnapshot on REPL_EXTERNAL_BASE_DIR (the destination
-# relocation root). Confirmed via testing: HDFS does not allow a directory to become
-# snapshottable if an ancestor directory is already snapshottable. hive.repl.replica.
-# external.table.base.dir is prefixed with the source table's full path by Hive's
-# DirCopyTask (see derive_db_vars comment), so the directory Hive actually needs
-# snapshottable on the destination is a NESTED subdirectory under REPL_EXTERNAL_BASE_DIR
-# that does not exist until copy time - pre-enabling allowSnapshot on the base dir itself
-# blocks Hive from enabling it on that nested path ("Failed to AllowSnapshot on
-# .../REPL_EXTERNAL_BASE_DIR/<full source path>"). Hive's DirCopyTask handles the
-# destination-side allowSnapshot itself at copy time; this script only needs to prepare
-# the dump-source side in advance.
+# Note: this does NOT enable snapshots on REPL_EXTERNAL_BASE_DIR (the
+# destination relocation root) - HDFS does not allow a directory to become
+# snapshottable if an ancestor directory already is snapshottable, and
+# Hive's own data-copy task enables snapshots on the correct nested
+# destination path itself, at copy time. Pre-enabling the parent directory
+# here would block that and cause REPL LOAD to fail.
 enable_external_table_snapshots() {
   local dump_source_ns="${1:-$SRC_NAMESERVICE}"
   local dump_source_path="hdfs://${dump_source_ns}${HIVE_EXTERNAL_WAREHOUSE_DIR}/${HIVE_DB_NAME}.db"
 
   mkdir -p "$SNAP_LOCK_DIR" 2>/dev/null || true
-  # Lock is keyed by DB + dump-source nameservice, NOT just DB - a failover flips which
-  # side is the real dump source, and that side needs its own independent check/enable;
-  # a lock written for one direction must not be trusted for the other.
+  # The lock is keyed by database + dump-source nameservice (not just the
+  # database), because a failover flips which cluster is the real dump
+  # source, and each side needs its own independent setup/check.
   local lock_file="${SNAP_LOCK_DIR}/${HIVE_DB_NAME}__${dump_source_ns}.lock"
 
   if [[ -f "$lock_file" ]]; then
@@ -920,13 +1146,10 @@ enable_external_table_snapshots() {
   echo "Enabling HDFS snapshot capability for external-table snapshot-diff copy (dump source: ${dump_source_ns})..."
   local src_ok=false
   local src_path="${dump_source_path/hdfs:\/\/${dump_source_ns}/}"
-  # REPL_EXTERNAL_BASE_DIR's own nameservice is the actual LOAD target's nameservice - it is
-  # DST_NAMESERVICE in the normal bootstrap/incremental direction, but re-rooted to
-  # SRC_NAMESERVICE by failover_one_db() during failover (since LOAD then runs against
-  # SRC_JDBC_URL). Parse it out of the value itself rather than assuming DST_NAMESERVICE, or
-  # this breaks under failover (confirmed via testing: hardcoding DST_NAMESERVICE here left
-  # the prefix-strip below a no-op post-failover, since REPL_EXTERNAL_BASE_DIR no longer
-  # started with "hdfs://${DST_NAMESERVICE}").
+  # REPL_EXTERNAL_BASE_DIR's own nameservice is whichever cluster is the
+  # actual LOAD target for the current direction. Parse it out of the
+  # value itself, rather than assuming a fixed nameservice, so this
+  # continues to work correctly regardless of replication direction.
   local base_dir_ns="${REPL_EXTERNAL_BASE_DIR#hdfs://}"
   base_dir_ns="${base_dir_ns%%/*}"
   local dst_path="${REPL_EXTERNAL_BASE_DIR#hdfs://${base_dir_ns}}"
@@ -938,9 +1161,9 @@ enable_external_table_snapshots() {
     echo "[WARN] It will be created by Hive on first external table creation; snapshot will be retried on next run."
   fi
 
-  # Ensure the destination relocation root exists (but do NOT allowSnapshot it - see note
-  # above). Hive's DirCopyTask creates and snapshot-enables the nested destination path
-  # itself during copy.
+  # Ensure the destination relocation root exists (its snapshot capability
+  # is handled separately by Hive itself at copy time - see the function
+  # comment above).
   run_as_hdfs hdfs dfs -fs "hdfs://${base_dir_ns}" -mkdir -p "$dst_path" || true
 
   if [[ "$src_ok" == "true" ]]; then
@@ -952,9 +1175,10 @@ enable_external_table_snapshots() {
   echo ""
 }
 
-# snapshot_copy_props: echoes the extra HiveConf WITH-clause properties (each ending in a
-# comma, ready to splice into a REPL DUMP/LOAD WITH() block) for snapshot-diff external
-# table copy, when HIVE_REPL_SNAPSHOT_COPY=true. Echoes nothing when false.
+# snapshot_copy_props: print the extra WITH-clause properties (each line
+# ending in a comma) that enable HDFS snapshot-diff based copying for
+# external tables, when HIVE_REPL_SNAPSHOT_COPY=true. Prints nothing when
+# false.
 snapshot_copy_props() {
   if [[ "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ]]; then
     printf "%s\n" \
@@ -964,319 +1188,35 @@ snapshot_copy_props() {
   fi
 }
 
-# materialized_view_props: echoes the extra HiveConf WITH-clause property (ending in a
-# comma, ready to splice into a REPL DUMP/LOAD WITH() block) to include materialized views,
-# when HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS=true. Echoes nothing when false (default).
+# materialized_view_props: print the extra WITH-clause property (ending
+# in a comma) that includes materialized views in DUMP/LOAD, when
+# HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS=true. Prints nothing when false
+# (the default).
 materialized_view_props() {
   if [[ "${HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS,,}" == "true" ]]; then
     printf "%s\n" "'hive.repl.include.materialized.views'='true',"
   fi
 }
 
-TOTAL_STEPS=6
-FAILOVER_TOTAL_STEPS=4
+# Step counters used purely for the progress messages printed to the log
+# (e.g. "[2/5] Running REPL DUMP..."). TOTAL_STEPS covers a normal
+# replication run (replicate_one_db); FAILOVER_TOTAL_STEPS covers a
+# direction-change run (failover_one_db).
+TOTAL_STEPS=5
+FAILOVER_TOTAL_STEPS=3
 
-# Check if a scheduled query exists on a given cluster.
-# Tries sys.scheduled_queries first; falls back to information_schema.scheduled_queries.
-# Usage: check_scheduled_query_exists <jdbc_url> <query_name>
-# Sets global SQ_CHECK_RESULT to the matched name (empty if not found).
-check_scheduled_query_exists() {
-  local jdbc_url="$1"
-  local sq_name="$2"
-
-  local sq_output
-  local sq_sql="SELECT schedule_name FROM sys.scheduled_queries WHERE schedule_name = '${sq_name}';"
-  echo "Executing: ${sq_sql}"
-  sq_output=$( beeline_exec "${jdbc_url}" \
-    --silent=true \
-    --showHeader=false \
-    --outputformat=tsv2 \
-    -e "${sq_sql}" 2>&1 || true )
-
-  # If sys.scheduled_queries is not available, fall back to information_schema
-  if echo "$sq_output" | grep -q "Table not found.*scheduled_queries"; then
-    echo "[INFO] sys.scheduled_queries not available, trying information_schema.scheduled_queries"
-    sq_sql="SELECT schedule_name FROM information_schema.scheduled_queries WHERE schedule_name = '${sq_name}';"
-    echo "Executing: ${sq_sql}"
-    sq_output=$( beeline_exec "${jdbc_url}" \
-      --silent=true \
-      --showHeader=false \
-      --outputformat=tsv2 \
-      -e "${sq_sql}" 2>&1 || true )
-
-    # If information_schema also doesn't have the table, no scheduled queries exist yet
-    if echo "$sq_output" | grep -q "Table not found.*scheduled_queries"; then
-      echo "[INFO] information_schema.scheduled_queries also not available — no scheduled queries exist yet"
-      SQ_CHECK_RESULT=""
-      return 0
-    fi
-  fi
-
-  SQ_CHECK_RESULT=$(echo "$sq_output" | grep -v "^[0-9]\{2\}/[0-9]\{2\}/[0-9]\{2\}.*INFO" | grep -v "^[[:space:]]*$" | head -n 1 || true)
-
-  # Validate: if we got output but it doesn't match expected name, it's an error
-  if [[ -n "$SQ_CHECK_RESULT" && "$SQ_CHECK_RESULT" != "${sq_name}" ]]; then
-    echo "ERROR: Scheduled query exist check returned unexpected output"
-    echo "$sq_output"
-    return 1
-  fi
-  return 0
-}
-
-# disable_scheduled_query: disable a scheduled query if it exists; no-op if absent.
-# Usage: disable_scheduled_query <jdbc_url> <query_name>
-disable_scheduled_query() {
-  local jdbc_url="$1"
-  local sq_name="$2"
-
-  if ! check_scheduled_query_exists "${jdbc_url}" "${sq_name}"; then
-    echo "ERROR: Could not check existence of scheduled query '${sq_name}'"
-    return 1
-  fi
-
-  if [[ -z "$SQ_CHECK_RESULT" ]]; then
-    echo "Scheduled query '${sq_name}' does not exist — nothing to disable."
-    return 0
-  fi
-
-  local sql="ALTER SCHEDULED QUERY ${sq_name} DISABLE;"
-  echo "Executing: ${sql}"
-  if ! beeline_exec "${jdbc_url}" -e "${sql}"; then
-    echo "ERROR: Failed to disable scheduled query '${sq_name}'"
-    return 1
-  fi
-  echo "Scheduled query '${sq_name}' disabled."
-}
-
-create_scheduled_queries() {
-  local dump_schedule="${SCHEDULE_EXPR}"
-  local load_offset="${LOAD_OFFSET}"
-
-  if [[ -z "$dump_schedule" ]]; then
-    echo "No schedule expression provided; skipping scheduled queries."
-    return
-  fi
-
-  echo "$SEP"
-  echo " Configuring Hive Scheduled Queries (Incremental Replication)"
-  echo "$SEP"
-  echo "Dump schedule: ${dump_schedule}"
-  echo "Load offset: ${load_offset}"
-  echo ""
-
-  # Build load schedule with offset
-  local load_schedule
-  if [[ "$dump_schedule" =~ ^EVERY ]]; then
-    load_schedule="${dump_schedule} OFFSET BY '${load_offset}'"
-  else
-    # For CRON expressions, use same schedule (can't easily offset CRON)
-    load_schedule="${dump_schedule}"
-    echo "Note: CRON schedule detected - load will use same schedule as dump (offset not applied to CRON)"
-  fi
-
-  echo "$SUBSEP"
-  # Check if source scheduled query already exists
-  echo "Checking if scheduled query exists on source: ${SRC_SCHEDULED_QUERY_NAME}"
-  if ! check_scheduled_query_exists "${SRC_JDBC_URL}" "${SRC_SCHEDULED_QUERY_NAME}"; then
-    echo "ERROR: Scheduled query exist check failed on source"
-    return 1
-  fi
-
-  if [[ -n "$SQ_CHECK_RESULT" ]]; then
-    echo "Scheduled query '${SRC_SCHEDULED_QUERY_NAME}' already exists on source. Skipping creation."
-  else
-    local dump_sql
-    dump_sql="CREATE SCHEDULED QUERY ${SRC_SCHEDULED_QUERY_NAME} ${dump_schedule} AS
-REPL DUMP ${HIVE_REPL_SPEC} WITH(
-${HDFS_TOKEN_EXCLUDE_PROP}
-'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
-'hive.repl.include.external.tables'='true',
-'hive.repl.bootstrap.external.tables'='false',
-'hive.repl.dump.metadata.only.for.external.table'='false',
-$(snapshot_copy_props)
-$(materialized_view_props)
-'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
-);"
-
-    echo "$SUBSEP"
-    echo "Creating scheduled query on source: ${SRC_SCHEDULED_QUERY_NAME}"
-    echo "Executing: ${dump_sql}"
-    echo ""
-    if ! beeline_exec "${SRC_JDBC_URL}" -e "${dump_sql}"; then
-      echo "ERROR: Failed to create scheduled query '${SRC_SCHEDULED_QUERY_NAME}' on source"
-      return 1
-    fi
-  fi
-  echo ""
-
-  echo "$SUBSEP"
-  # Check if destination scheduled query already exists
-  echo "Checking if scheduled query exists on destination: ${DST_SCHEDULED_QUERY_NAME}"
-  if ! check_scheduled_query_exists "${DST_JDBC_URL}" "${DST_SCHEDULED_QUERY_NAME}"; then
-    echo "ERROR: Scheduled query exist check failed on destination"
-    return 1
-  fi
-
-  if [[ -n "$SQ_CHECK_RESULT" ]]; then
-    echo "Scheduled query '${DST_SCHEDULED_QUERY_NAME}' already exists on destination. Skipping creation."
-  else
-    # NOTE: YARN_QUEUE is NOT applied here. CREATE SCHEDULED QUERY ... AS <body> takes a
-    # single statement body, so the SET mapreduce.job.queuename/tez.queue.name approach
-    # used for immediate LOAD calls (beeline_exec_load) doesn't apply - this scheduled
-    # query runs later under Hive's own scheduler, not through this script's beeline
-    # session. Left unresolved since USE_SCHEDULED_QUERIES=false is the tested/default
-    # path; revisit if USE_SCHEDULED_QUERIES=true is actually used and queue targeting is
-    # needed for the scheduler-driven LOAD.
-    local load_sql="CREATE SCHEDULED QUERY ${DST_SCHEDULED_QUERY_NAME} ${load_schedule} AS
-REPL LOAD ${HIVE_DB_NAME} INTO ${HIVE_DB_NAME} WITH(
-${HDFS_TOKEN_EXCLUDE_PROP}
-'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
-'hive.repl.run.data.copy.tasks.on.target'='true',
-'hive.repl.include.external.tables'='true',
-'hive.repl.bootstrap.external.tables'='false',
-'hive.repl.dump.metadata.only.for.external.table'='false',
-$(snapshot_copy_props)
-$(materialized_view_props)
-'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
-);"
-
-    echo "$SUBSEP"
-    echo "Creating scheduled query on destination: ${DST_SCHEDULED_QUERY_NAME}"
-    echo "Executing: ${load_sql}"
-    echo ""
-    if ! beeline_exec "${DST_JDBC_URL}" -e "${load_sql}"; then
-      echo "ERROR: Failed to create scheduled query '${DST_SCHEDULED_QUERY_NAME}' on destination"
-      return 1
-    fi
-  fi
-  echo ""
-
-  echo "$SUBSEP"
-  echo " Scheduled query setup completed"
-  echo ""
-}
-
-# create_reversed_scheduled_queries: create DUMP on DST and LOAD on SRC
-# (reversed direction, used after failover).
-create_reversed_scheduled_queries() {
-  local dump_schedule="${SCHEDULE_EXPR}"
-  local load_offset="${LOAD_OFFSET}"
-
-  if [[ "${USE_SCHEDULED_QUERIES,,}" == "false" ]]; then
-    echo "USE_SCHEDULED_QUERIES=false; skipping reversed scheduled query setup (incremental cycle runs directly from this script)."
-    return
-  fi
-
-  if [[ -z "$dump_schedule" ]]; then
-    echo "No schedule expression provided; skipping reversed scheduled queries."
-    return
-  fi
-
-  echo "$SEP"
-  echo " Configuring Reversed Scheduled Queries (Post-Failover Incremental)"
-  echo "$SEP"
-  echo "New primary (DUMP source) : $DST_NAMESERVICE"
-  echo "New replica (LOAD target) : $SRC_NAMESERVICE"
-  echo "Dump schedule             : ${dump_schedule}"
-  echo "Load offset               : ${load_offset}"
-  echo ""
-
-  # Reversed query names have a _reverse suffix to avoid collision with old ones
-  local rev_dump_sq_name="sq_repl_dump_${HIVE_DB_NAME}_reverse"
-  local rev_load_sq_name="sq_repl_load_${HIVE_DB_NAME}_reverse"
-
-  # Build load schedule with offset
-  local load_schedule
-  if [[ "$dump_schedule" =~ ^EVERY ]]; then
-    load_schedule="${dump_schedule} OFFSET BY '${load_offset}'"
-  else
-    load_schedule="${dump_schedule}"
-    echo "Note: CRON schedule detected - load will use same schedule as dump (offset not applied to CRON)"
-  fi
-
-  echo "$SUBSEP"
-  # DUMP scheduled query on DST (new primary)
-  echo "Checking if reversed dump scheduled query exists on new primary (${DST_NAMESERVICE}): ${rev_dump_sq_name}"
-  if ! check_scheduled_query_exists "${DST_JDBC_URL}" "${rev_dump_sq_name}"; then
-    echo "ERROR: Scheduled query exist check failed on new primary"
-    return 1
-  fi
-
-  if [[ -n "$SQ_CHECK_RESULT" ]]; then
-    echo "Reversed dump scheduled query '${rev_dump_sq_name}' already exists on new primary. Skipping creation."
-  else
-    local dump_sql="CREATE SCHEDULED QUERY ${rev_dump_sq_name} ${dump_schedule} AS
-REPL DUMP ${HIVE_REPL_SPEC} WITH(
-${HDFS_TOKEN_EXCLUDE_PROP}
-'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
-'hive.repl.include.external.tables'='true',
-'hive.repl.bootstrap.external.tables'='false',
-'hive.repl.dump.metadata.only.for.external.table'='false',
-$(snapshot_copy_props)
-$(materialized_view_props)
-'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
-);"
-
-    echo "$SUBSEP"
-    echo "Creating reversed dump scheduled query on new primary (${DST_NAMESERVICE}): ${rev_dump_sq_name}"
-    echo "Executing: ${dump_sql}"
-    echo ""
-    if ! beeline_exec "${DST_JDBC_URL}" -e "${dump_sql}"; then
-      echo "ERROR: Failed to create reversed dump scheduled query '${rev_dump_sq_name}' on new primary"
-      return 1
-    fi
-  fi
-  echo ""
-
-  echo "$SUBSEP"
-  # LOAD scheduled query on SRC (new replica / old primary)
-  echo "Checking if reversed load scheduled query exists on new replica (${SRC_NAMESERVICE}): ${rev_load_sq_name}"
-  if ! check_scheduled_query_exists "${SRC_JDBC_URL}" "${rev_load_sq_name}"; then
-    echo "ERROR: Scheduled query exist check failed on new replica"
-    return 1
-  fi
-
-  if [[ -n "$SQ_CHECK_RESULT" ]]; then
-    echo "Reversed load scheduled query '${rev_load_sq_name}' already exists on new replica. Skipping creation."
-  else
-    # NOTE: YARN_QUEUE is NOT applied here - see the equivalent note in
-    # create_scheduled_queries() for why (single-statement scheduled query body).
-    local load_sql="CREATE SCHEDULED QUERY ${rev_load_sq_name} ${load_schedule} AS
-REPL LOAD ${HIVE_DB_NAME} INTO ${HIVE_DB_NAME} WITH(
-${HDFS_TOKEN_EXCLUDE_PROP}
-'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
-'hive.repl.run.data.copy.tasks.on.target'='true',
-'hive.repl.include.external.tables'='true',
-'hive.repl.bootstrap.external.tables'='false',
-'hive.repl.dump.metadata.only.for.external.table'='false',
-$(snapshot_copy_props)
-$(materialized_view_props)
-'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
-);"
-
-    echo "$SUBSEP"
-    echo "Creating reversed load scheduled query on new replica (${SRC_NAMESERVICE}): ${rev_load_sq_name}"
-    echo "Executing: ${load_sql}"
-    echo ""
-    if ! beeline_exec "${SRC_JDBC_URL}" -e "${load_sql}"; then
-      echo "ERROR: Failed to create reversed load scheduled query '${rev_load_sq_name}' on new replica"
-      return 1
-    fi
-  fi
-  echo ""
-
-  echo "$SUBSEP"
-  echo " Reversed scheduled query setup completed"
-  echo "  DUMP: ${rev_dump_sq_name} on ${DST_NAMESERVICE}"
-  echo "  LOAD: ${rev_load_sq_name} on ${SRC_NAMESERVICE}"
-  echo ""
-}
-
-# failover_one_db: perform the 4-step failover sequence for a single DB.
-#   Step 1: Disable existing scheduled queries on both clusters
-#   Step 2: REPL DUMP with failover.start=true on DST (new primary)
-#   Step 3: REPL LOAD on SRC (old primary, now new replica)
-#   Step 4: Create reversed scheduled queries (DUMP on DST, LOAD on SRC)
+# failover_one_db: reverse the replication direction for a single
+# database. Performs 3 steps:
+#   Step 1 - Pre-flight check: confirm the new dump side is an eligible
+#            replication source (see preflight_check_direction_change()).
+#   Step 2 - REPL DUMP on the new primary, with
+#            'hive.repl.failover.start'='true'.
+#   Step 3 - REPL LOAD on the new replica.
+#
+# All of DUMP_NAMESERVICE / LOAD_NAMESERVICE / DUMP_JDBC_URL /
+# LOAD_JDBC_URL / REPL_ROOT_DIR_* / REPL_EXTERNAL_BASE_DIR are already
+# computed correctly for the current REPLICATION_DIRECTION by
+# derive_db_vars() before this function is called.
 failover_one_db() {
   local db_spec="$1"
   local db_index="$2"
@@ -1284,96 +1224,54 @@ failover_one_db() {
 
   derive_db_vars "$db_spec"
 
-  # Failover reverses direction: REPL DUMP now runs against DST_JDBC_URL (the new primary),
-  # not SRC_JDBC_URL. derive_db_vars() unconditionally rooted REPL_ROOT_DIR_SRC/DST at
-  # SRC_NAMESERVICE (the normal-direction dump source) - re-root them at the actual dump
-  # source for this failover (DST_NAMESERVICE), or REPL DUMP writes its dump dir (including
-  # the external-table file-list manifest) onto the WRONG cluster's HDFS. Confirmed via
-  # testing: with the stale SRC_NAMESERVICE-rooted value, REPL LOAD's DirCopyTask read a
-  # manifest whose paths were rooted at the old primary and copied "old primary -> old
-  # primary" (a no-op), while metadata/partition events (small, embedded in the dump itself)
-  # still replicated fine - so REPL STATUS/partition counts looked correct and REPL LOAD
-  # logged "Data copy at load enabled: true" / "REPL::DATA_COPY_END: Completed all external
-  # table copy tasks" as if it succeeded, but the actual new external-table row data (living
-  # only on the new primary, DST_NAMESERVICE) never crossed clusters.
-  REPL_ROOT_DIR_SRC="hdfs://${DST_NAMESERVICE}${REPL_BASE_DIR}${HIVE_DB_NAME}"
-  REPL_ROOT_DIR_DST="${REPL_ROOT_DIR_SRC}"
-
-  # Failover reverses direction: REPL LOAD now runs against SRC_JDBC_URL (old primary, now
-  # new replica) instead of DST_JDBC_URL. derive_db_vars() computed REPL_EXTERNAL_BASE_DIR
-  # rooted at DST_NAMESERVICE for the normal direction - re-root it at the actual LOAD
-  # target (SRC_NAMESERVICE) for this failover. See compute_repl_external_base_dir().
-  compute_repl_external_base_dir "$SRC_NAMESERVICE"
-
-  LOG_FILE="$LOG_DIR/hive_bdr_failover_${HIVE_DB_NAME}_$(date +%Y%m%d_%H%M%S).log"
+  LOG_FILE="$LOG_DIR/hive_bdr_direction_change_${HIVE_DB_NAME}_$(date +%Y%m%d_%H%M%S).log"
 
   SEP="======================================================================"
   SUBSEP="----------------------------------------------------------------------"
 
   echo "$SEP"
-  echo " Hive Failover Replication - DB ${db_index}/${db_total}: ${HIVE_DB_NAME}"
+  echo " Hive Direction-Change Replication - DB ${db_index}/${db_total}: ${HIVE_DB_NAME}"
   echo "$SEP"
   echo "Timestamp        : $(date)"
   echo "Database         : $HIVE_DB_NAME"
   if [[ -n "$HIVE_TABLE_PATTERN" ]]; then
     echo "Tables           : $HIVE_TABLE_PATTERN"
   fi
-  echo "Original primary : $SRC_NAMESERVICE (now new replica)"
-  echo "Original replica : $DST_NAMESERVICE (now new primary)"
+  echo "Direction        : $REPLICATION_DIRECTION"
+  echo "New primary      : $DUMP_NAMESERVICE (writes here)"
+  echo "New replica      : $LOAD_NAMESERVICE (receives replication)"
   echo "Log File         : $LOG_FILE"
   echo ""
 
   ########################################
-  # Failover Step 1: Disable existing scheduled queries
+  # Step 1: Pre-flight check
   ########################################
   echo "$SUBSEP"
-  echo "[1/${FAILOVER_TOTAL_STEPS}] Disabling existing scheduled queries..."
-  echo ""
-
-  echo "Disabling dump scheduled query on original primary (${SRC_NAMESERVICE}): ${SRC_SCHEDULED_QUERY_NAME}"
-  if ! disable_scheduled_query "${SRC_JDBC_URL}" "${SRC_SCHEDULED_QUERY_NAME}"; then
-    echo "ERROR: Failed to disable source scheduled query for ${HIVE_DB_NAME} - aborting failover for this DB"
+  echo "[1/${FAILOVER_TOTAL_STEPS}] Pre-flight check..."
+  if ! preflight_check_direction_change "$LOAD_JDBC_URL" "$LOAD_NAMESERVICE"; then
+    echo "ERROR: Aborting direction change for ${HIVE_DB_NAME} - see pre-flight error above"
     return 1
   fi
-  echo ""
-
-  echo "Disabling load scheduled query on original replica (${DST_NAMESERVICE}): ${DST_SCHEDULED_QUERY_NAME}"
-  if ! disable_scheduled_query "${DST_JDBC_URL}" "${DST_SCHEDULED_QUERY_NAME}"; then
-    echo "ERROR: Failed to disable destination scheduled query for ${HIVE_DB_NAME} - aborting failover for this DB"
-    return 1
-  fi
-  echo ""
 
   if [[ "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ]]; then
-    # Failover reverses direction: DST_NAMESERVICE is the actual REPL DUMP source here
-    # (the new primary), not SRC_NAMESERVICE - must be passed explicitly or the real
-    # dump-source side never gets allowSnapshot applied (confirmed via testing: this
-    # caused "Unable to delete snapshot ... snapshot name: <db>replOld" on the failover
-    # LOAD, since the snapshot-diff machinery had no valid snapshot capability to work
-    # with on the side that was actually dumping).
-    enable_external_table_snapshots "$DST_NAMESERVICE"
-    # The LOAD target (SRC_NAMESERVICE, the new replica) ALSO needs its own copy of the
-    # external warehouse dir snapshottable, independent of the dump-source side above.
-    # Confirmed via testing (snap_test7): ReplLoadTask's snapshot-diff apply manages a
-    # replOld/replNew pair on the REPLICA's own warehouse dir too (not just the dump
-    # source's) - if SRC_NAMESERVICE's copy was never enabled for snapshots (e.g. this DB's
-    # earlier bootstrap/incrementals ran with HIVE_REPL_SNAPSHOT_COPY=false), the LOAD fails
-    # with "Unable to delete snapshot for path: .../<db>.db snapshot name: <db>replOld" even
-    # though that snapshot never existed there - Hive still expects the dir to be
-    # snapshot-capable to proceed. Enabling it here is a no-op (lock-guarded) if the normal
-    # bootstrap/incremental path already did this for SRC_NAMESERVICE previously.
-    enable_external_table_snapshots "$SRC_NAMESERVICE"
+    # Prepare both sides for snapshot-diff copy: the new dump source
+    # (must be passed explicitly here, since it is not necessarily
+    # SRC_NAMESERVICE once the direction has reversed) and the new load
+    # target (harmless no-op if a previous cycle already prepared it).
+    enable_external_table_snapshots "$DUMP_NAMESERVICE"
+    enable_external_table_snapshots "$LOAD_NAMESERVICE"
   fi
 
   ########################################
-  # Failover Step 2: REPL DUMP with failover.start=true on DST (new primary)
+  # Step 2: REPL DUMP with failover.start=true on the new primary
   ########################################
   echo "$SUBSEP"
-  echo "[2/${FAILOVER_TOTAL_STEPS}] Running failover REPL DUMP on new primary (${DST_NAMESERVICE})..."
+  echo "[2/${FAILOVER_TOTAL_STEPS}] Running failover-start REPL DUMP on new primary (${DUMP_NAMESERVICE})..."
 
   local FAILOVER_DUMP_CMD="REPL DUMP ${HIVE_REPL_SPEC} WITH(
 'hive.repl.failover.start'='true',
 ${HDFS_TOKEN_EXCLUDE_PROP}
+$(ha_config_props)
 'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
 'hive.repl.include.external.tables'='true',
 'hive.repl.bootstrap.external.tables'='false',
@@ -1383,23 +1281,26 @@ $(materialized_view_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
-  echo "Executing on ${DST_NAMESERVICE}: ${FAILOVER_DUMP_CMD}"
+  echo "Executing on ${DUMP_NAMESERVICE}: ${FAILOVER_DUMP_CMD}"
   echo ""
-  if ! beeline_exec "${DST_JDBC_URL}" -e "${FAILOVER_DUMP_CMD}"; then
-    echo "ERROR: Failover REPL DUMP failed on ${DST_NAMESERVICE} for ${HIVE_DB_NAME}"
+  if ! beeline_exec "${DUMP_JDBC_URL}" -e "${FAILOVER_DUMP_CMD}"; then
+    echo "ERROR: Failover REPL DUMP failed on ${DUMP_NAMESERVICE} for ${HIVE_DB_NAME}"
     return 1
   fi
   echo ""
 
   ########################################
-  # Failover Step 3: REPL LOAD on SRC (old primary, now new replica)
-  # No DistCp needed — rootdir is on SRC nameservice, accessible from both clusters.
+  # Step 3: REPL LOAD on the new replica
+  # (No separate DistCp step is needed - the staging directory lives on
+  # the dump-side nameservice, which is reachable from both clusters, and
+  # REPL LOAD copies data itself.)
   ########################################
   echo "$SUBSEP"
-  echo "[3/${FAILOVER_TOTAL_STEPS}] Running failover REPL LOAD on new replica (${SRC_NAMESERVICE})..."
+  echo "[3/${FAILOVER_TOTAL_STEPS}] Running failover REPL LOAD on new replica (${LOAD_NAMESERVICE})..."
 
   local FAILOVER_LOAD_CMD="REPL LOAD ${HIVE_DB_NAME} INTO ${HIVE_DB_NAME} WITH(
 ${HDFS_TOKEN_EXCLUDE_PROP}
+$(ha_config_props)
 'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
 'hive.repl.run.data.copy.tasks.on.target'='true',
 'hive.repl.include.external.tables'='true',
@@ -1410,44 +1311,26 @@ $(materialized_view_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
-  echo "Executing on ${SRC_NAMESERVICE}: ${FAILOVER_LOAD_CMD}"
+  echo "Executing on ${LOAD_NAMESERVICE}: ${FAILOVER_LOAD_CMD}"
   echo ""
-  if ! beeline_exec_load "${SRC_JDBC_URL}" -e "${FAILOVER_LOAD_CMD}"; then
-    echo "ERROR: Failover REPL LOAD failed on ${SRC_NAMESERVICE} for ${HIVE_DB_NAME}"
+  if ! beeline_exec_load "${LOAD_JDBC_URL}" -e "${FAILOVER_LOAD_CMD}"; then
+    echo "ERROR: Failover REPL LOAD failed on ${LOAD_NAMESERVICE} for ${HIVE_DB_NAME}"
     return 1
   fi
   echo ""
 
-  echo "Validating replication status on new replica (${SRC_NAMESERVICE})..."
-  beeline_exec "${SRC_JDBC_URL}" -e "REPL STATUS ${HIVE_DB_NAME};" || echo "WARN: REPL STATUS check failed for ${HIVE_DB_NAME} (informational only - failover DUMP/LOAD already succeeded)"
+  echo "Validating replication status on new replica (${LOAD_NAMESERVICE})..."
+  beeline_exec "${LOAD_JDBC_URL}" -e "REPL STATUS ${HIVE_DB_NAME};" || echo "WARN: REPL STATUS check failed for ${HIVE_DB_NAME} (informational only - failover DUMP/LOAD already succeeded)"
   echo ""
 
-  ########################################
-  # Failover Step 4: Create reversed scheduled queries
-  ########################################
-  echo "$SUBSEP"
-  echo "[4/${FAILOVER_TOTAL_STEPS}] Setting up reversed incremental replication..."
-  if ! create_reversed_scheduled_queries; then
-    echo "ERROR: Failed to set up reversed scheduled queries for ${HIVE_DB_NAME}"
-    return 1
-  fi
-
-  echo ""
   echo "$SEP"
   echo " Failover Replication Completed: ${HIVE_DB_NAME}"
   echo "$SEP"
   echo ""
   echo "Database         : $HIVE_DB_NAME"
-  echo "New primary      : $DST_NAMESERVICE (writes here)"
-  echo "New replica      : $SRC_NAMESERVICE (receives replication)"
+  echo "New primary      : $DUMP_NAMESERVICE (writes here)"
+  echo "New replica      : $LOAD_NAMESERVICE (receives replication)"
   echo "YARN Queue       : $YARN_QUEUE (REPL LOAD data-copy jobs)"
-  if [[ -n "$SCHEDULE_EXPR" ]]; then
-    echo "Reversed Scheduled Queries:"
-    echo "  - DUMP (new primary ${DST_NAMESERVICE}): sq_repl_dump_${HIVE_DB_NAME}_reverse"
-    echo "  - LOAD (new replica ${SRC_NAMESERVICE}): sq_repl_load_${HIVE_DB_NAME}_reverse"
-    echo "  - Schedule : $SCHEDULE_EXPR"
-    [[ "$SCHEDULE_EXPR" =~ ^EVERY ]] && echo "  - Load Offset: $LOAD_OFFSET"
-  fi
   echo ""
   echo "Completed        : $(date)"
   echo "Log File         : $LOG_FILE"
@@ -1456,20 +1339,20 @@ $(materialized_view_props)
   echo ""
 }
 
-# run_incremental_cycle: perform one incremental REPL DUMP -> REPL LOAD cycle (REPL LOAD
-# copies data itself via its internal COPY stage - no separate DistCp is run) for the
-# current DB (HIVE_DB_NAME / HIVE_REPL_SPEC, set by derive_db_vars). Used when
-# USE_SCHEDULED_QUERIES=false and the destination DB already exists (BOOTSTRAP=false path
-# in replicate_one_db). Relies on Hive's own replication state (repl.last.id) to dump only
-# events since the last successful DUMP - the WITH clause here intentionally sets
-# bootstrap.external.tables=false, unlike the bootstrap cycle.
+# run_incremental_cycle: run one incremental REPL DUMP -> REPL LOAD cycle
+# for the current database (HIVE_DB_NAME / HIVE_REPL_SPEC, set by
+# derive_db_vars()). Called by replicate_one_db() when the destination
+# database already exists. Hive's own replication state (repl.last.id)
+# ensures each DUMP only contains events since the last successful DUMP,
+# so only the changes are transferred.
 run_incremental_cycle() {
   echo "$SUBSEP"
-  echo "[3-5/${TOTAL_STEPS}] Running incremental replication cycle (USE_SCHEDULED_QUERIES=false)..."
+  echo "[3-4/${TOTAL_STEPS}] Running incremental replication cycle..."
   echo ""
 
-  # Prevent overlapping incremental cycles for the same DB (e.g. if this script is looped
-  # externally faster than a cycle completes).
+  # Prevent two incremental cycles for the same database from running at
+  # the same time (for example, if this script is re-invoked before a
+  # previous run has finished).
   mkdir -p "$INCREMENTAL_LOCK_DIR" 2>/dev/null || true
   local lock_file="${INCREMENTAL_LOCK_DIR}/${HIVE_DB_NAME}.lock"
   exec {lock_fd}>"$lock_file"
@@ -1479,22 +1362,20 @@ run_incremental_cycle() {
     exec {lock_fd}>&-
     return 0
   fi
-  # Guarantee the lock fd is released on ANY exit from this function (normal completion,
-  # explicit return, or set -e propagating a beeline_exec failure) - without this, a mid-cycle
-  # failure would leave the fd open for the rest of the script process (verified: bash file
-  # descriptors opened via `exec {fd}>` are shell-global, not function-scoped, so they are
-  # not implicitly closed when the function returns).
+  # Release the lock on any exit from this function - normal completion,
+  # an explicit return, or set -e propagating a beeline failure.
   trap 'flock -u "$lock_fd" 2>/dev/null; exec {lock_fd}>&- 2>/dev/null; trap - RETURN' RETURN
 
   if [[ "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ]]; then
-    enable_external_table_snapshots
+    enable_external_table_snapshots "$DUMP_NAMESERVICE"
   fi
 
   echo "$SUBSEP"
-  echo "Running incremental REPL DUMP on source cluster..."
+  echo "Running incremental REPL DUMP on dump source (${DUMP_NAMESERVICE}, direction: ${REPLICATION_DIRECTION})..."
 
   local incr_dump_cmd="REPL DUMP ${HIVE_REPL_SPEC} WITH(
 ${HDFS_TOKEN_EXCLUDE_PROP}
+$(ha_config_props)
 'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
 'hive.repl.include.external.tables'='true',
 'hive.repl.bootstrap.external.tables'='false',
@@ -1506,25 +1387,18 @@ $(materialized_view_props)
 
   echo "Executing: $incr_dump_cmd"
   echo ""
-  if ! beeline_exec "${SRC_JDBC_URL}" -e "$incr_dump_cmd"; then
+  if ! beeline_exec "${DUMP_JDBC_URL}" -e "$incr_dump_cmd"; then
     echo "ERROR: Incremental REPL DUMP failed for ${HIVE_DB_NAME}"
     return 1
   fi
   echo ""
 
-  # NOTE: No separate DistCp step here. REPL LOAD reads 'hive.repl.rootdir' directly from
-  # the SOURCE nameservice (REPL_ROOT_DIR_DST == REPL_ROOT_DIR_SRC by design - see
-  # derive_db_vars) and performs its own internal COPY/DistCp (as a YARN job on the
-  # destination cluster) for both metadata and actual table data - managed and external
-  # alike - when hive.repl.run.data.copy.tasks.on.target=true. Verified: a pre-staged
-  # destination-side copy of the dump dir is never read by REPL LOAD in this script, since
-  # every REPL LOAD call uses the source-nameservice rootdir. Distcp-ing it separately was
-  # dead work.
   echo "$SUBSEP"
-  echo "Running incremental REPL LOAD on destination cluster..."
+  echo "Running incremental REPL LOAD on load target (${LOAD_NAMESERVICE})..."
 
   local incr_load_cmd="REPL LOAD ${HIVE_DB_NAME} INTO ${HIVE_DB_NAME} WITH(
 ${HDFS_TOKEN_EXCLUDE_PROP}
+$(ha_config_props)
 'hive.repl.rootdir'='${REPL_ROOT_DIR_DST}',
 'hive.repl.run.data.copy.tasks.on.target'='true',
 'hive.repl.include.external.tables'='true',
@@ -1537,21 +1411,25 @@ $(materialized_view_props)
 
   echo "Executing: $incr_load_cmd"
   echo ""
-  if ! beeline_exec_load "${DST_JDBC_URL}" -e "$incr_load_cmd"; then
+  if ! beeline_exec_load "${LOAD_JDBC_URL}" -e "$incr_load_cmd"; then
     echo "ERROR: Incremental REPL LOAD failed for ${HIVE_DB_NAME}"
     return 1
   fi
   echo ""
 
   echo "$SUBSEP"
-  echo "Validating replication status on destination..."
-  beeline_exec "${DST_JDBC_URL}" -e "REPL STATUS ${HIVE_DB_NAME};" || echo "WARN: REPL STATUS check failed for ${HIVE_DB_NAME} (informational only - incremental DUMP/LOAD already succeeded)"
+  echo "Validating replication status on load target..."
+  beeline_exec "${LOAD_JDBC_URL}" -e "REPL STATUS ${HIVE_DB_NAME};" || echo "WARN: REPL STATUS check failed for ${HIVE_DB_NAME} (informational only - incremental DUMP/LOAD already succeeded)"
   echo ""
 
   echo "Incremental cycle completed for ${HIVE_DB_NAME}"
   echo ""
 }
 
+# replicate_one_db: replicate a single database - runs a bootstrap cycle
+# if the destination database does not yet exist, or an incremental cycle
+# if it does. This is the main entry point used for every database when
+# REPLICATION_DIRECTION is "src_to_dst" (normal, non-failover) replication.
 replicate_one_db() {
   local db_spec="$1"
   local db_index="$2"
@@ -1560,7 +1438,7 @@ replicate_one_db() {
   derive_db_vars "$db_spec"
 
   ########################################
-  # Logging (per-DB log file)
+  # Per-database log file
   ########################################
   LOG_FILE="$LOG_DIR/hive_bdr_${HIVE_DB_NAME}_$(date +%Y%m%d_%H%M%S).log"
 
@@ -1575,64 +1453,75 @@ replicate_one_db() {
   if [[ -n "$HIVE_TABLE_PATTERN" ]]; then
     echo "Tables    : $HIVE_TABLE_PATTERN"
   fi
-  echo "Source NS : $SRC_NAMESERVICE"
-  echo "Dest NS   : $DST_NAMESERVICE"
+  echo "Direction : $REPLICATION_DIRECTION (DUMP: $DUMP_NAMESERVICE -> LOAD: $LOAD_NAMESERVICE)"
   echo "Log File  : $LOG_FILE"
   echo ""
 
   ########################################
-  # 2. Check DB existence on destination
+  # Step 1: Check whether the database already exists on the load target
   ########################################
   echo "$SUBSEP"
-  echo "[1/${TOTAL_STEPS}] Checking if database exists on destination..."
+  echo "[1/${TOTAL_STEPS}] Checking if database exists on load target..."
 
-  DB_CHECK_OUTPUT=$( beeline_exec "${DST_JDBC_URL}" \
+  DB_CHECK_OUTPUT=$( beeline_exec "${LOAD_JDBC_URL}" \
     --silent=true \
     --showHeader=false \
     --outputformat=tsv2 \
     -e "SHOW DATABASES LIKE '${HIVE_DB_NAME}';" 2>&1 || true )
 
-  DB_EXISTS=$(echo "$DB_CHECK_OUTPUT" | grep -v "^[0-9]\{2\}/[0-9]\{2\}/[0-9]\{2\}.*INFO" | grep -v "^[[:space:]]*$" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | head -n 1 || true)
+  # beeline prints its own connection/session chatter (e.g. "Setting
+  # property: ...", "!connect ...", timestamped "INFO ..." lines,
+  # "Executing command: ...") even with --silent=true - none of that is
+  # suppressed by --silent, which only affects query RESULT formatting.
+  # Only accept a line that looks like a valid Hive identifier (letters,
+  # digits, underscore) as the actual result; every other line - no
+  # matter its shape - is beeline chrome, not data.
+  DB_EXISTS=$(echo "$DB_CHECK_OUTPUT" | grep -E "^[A-Za-z0-9_]+$" | head -n 1 || true)
 
-  # Hive Metastore stores/returns database names lowercased, so compare case-insensitively
+  # The Hive Metastore stores and returns database names in lowercase, so
+  # compare case-insensitively.
   if [[ -n "$DB_EXISTS" && "${DB_EXISTS,,}" != "${HIVE_DB_NAME,,}" ]]; then
-    echo "ERROR: Database exist check failed on destination"
+    echo "ERROR: Database exist check failed on load target"
     echo "$DB_CHECK_OUTPUT"
     return 1
   fi
 
   ########################################
-  # 3. Decide replication mode
+  # Step 2: Decide bootstrap vs. incremental
   ########################################
   echo "$SUBSEP"
   echo "[2/${TOTAL_STEPS}] Determining replication mode..."
 
   local BOOTSTRAP
   if [[ -n "$DB_EXISTS" ]]; then
-    echo "Database '${HIVE_DB_NAME}' exists on destination cluster - Incremental replication mode"
+    echo "Database '${HIVE_DB_NAME}' exists on load target - Incremental replication mode"
     BOOTSTRAP=false
   else
-    echo "Database '${HIVE_DB_NAME}' DOES NOT exist on destination cluster - Bootstrap mode"
+    echo "Database '${HIVE_DB_NAME}' DOES NOT exist on load target - Bootstrap mode"
     BOOTSTRAP=true
   fi
   echo ""
 
   if [[ "$BOOTSTRAP" == "true" ]]; then
-    # Trap errors during bootstrap to warn about potential partial state
-    trap 'echo ""; echo "ERROR: Bootstrap failed at $(date). The destination database may be in an inconsistent state."; echo "Before re-running, check: REPL STATUS ${HIVE_DB_NAME} on destination and clean up if needed."; echo "Log File: $LOG_FILE"' ERR
+    # If bootstrap fails partway through, warn that the destination
+    # database may be left in a partial state and should be checked
+    # before re-running.
+    trap 'echo ""; echo "ERROR: Bootstrap failed at $(date). The load-target database may be in an inconsistent state."; echo "Before re-running, check: REPL STATUS ${HIVE_DB_NAME} on the load target and clean up if needed."; echo "Log File: $LOG_FILE"' ERR
 
     if [[ "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ]]; then
-      enable_external_table_snapshots
+      enable_external_table_snapshots "$DUMP_NAMESERVICE"
+      enable_external_table_snapshots "$LOAD_NAMESERVICE"
     fi
 
     ########################################
-    # 4. Run REPL DUMP (SOURCE) - Bootstrap
+    # Step 3: Bootstrap REPL DUMP on the dump source
     ########################################
     echo "$SUBSEP"
-    echo "[3/${TOTAL_STEPS}] Running REPL DUMP on source cluster (Bootstrap)..."
+    echo "[3/${TOTAL_STEPS}] Running REPL DUMP on dump source (${DUMP_NAMESERVICE}) (Bootstrap)..."
 
     DUMP_CMD="REPL DUMP ${HIVE_REPL_SPEC} WITH(
 ${HDFS_TOKEN_EXCLUDE_PROP}
+$(ha_config_props)
 'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
 'hive.repl.include.external.tables'='true',
 'hive.repl.bootstrap.external.tables'='true',
@@ -1646,39 +1535,27 @@ $(materialized_view_props)
     echo "Executing: $DUMP_CMD"
     echo ""
 
-    if ! beeline_exec "${SRC_JDBC_URL}" -e "$DUMP_CMD"; then
+    if ! beeline_exec "${DUMP_JDBC_URL}" -e "$DUMP_CMD"; then
       echo "ERROR: Bootstrap REPL DUMP failed for ${HIVE_DB_NAME}"
       trap - ERR
       return 1
     fi
     echo ""
 
-    # NOTE: No separate DistCp step here. REPL LOAD reads 'hive.repl.rootdir' directly from
-    # the SOURCE nameservice (REPL_ROOT_DIR_DST == REPL_ROOT_DIR_SRC by design - see
-    # derive_db_vars) and performs its own internal COPY/DistCp (as a YARN job on the
-    # destination cluster) for both metadata and actual table data - managed and external
-    # alike - when hive.repl.run.data.copy.tasks.on.target=true. Verified via REPL LOAD logs
-    # (Stage:COPY / DistCp Counters) for both a managed table (data copied from source
-    # .../hive/data/<db>/<table> straight into the destination warehouse dir) and an
-    # external table (file_list_external-driven copy), with no destination-side pre-copy of
-    # the dump dir present at all. A separate distcp of the dump dir to the destination was
-    # dead work - its output was never read by REPL LOAD in this script.
     ########################################
-    # 5. REPL LOAD (DESTINATION) - Bootstrap
+    # Step 4: Bootstrap REPL LOAD on the load target
     ########################################
     echo "$SUBSEP"
-    echo "[4/${TOTAL_STEPS}] Running REPL LOAD on destination cluster (Bootstrap)..."
+    echo "[4/${TOTAL_STEPS}] Running REPL LOAD on load target (${LOAD_NAMESERVICE}) (Bootstrap)..."
 
-    # NOTE: 'hive.repl.run.data.copy.tasks.on.target' (default: true) is what makes REPL LOAD
-    # actually copy external-table data (source external dir -> replica.external.table.base.dir)
-    # as part of the LOAD itself. It is set explicitly to 'true' below rather than left to the
-    # cluster default, since setting it 'false' silently skips the external-table data copy
-    # entirely (verified: LOAD completes, metadata/partitions are created, but no bytes land
-    # under the external base dir). Do not disable it - the DistCp step above only stages the
-    # dump rootdir (metadata/events/_file_list_external manifest for external tables, plus
-    # physical data for managed tables); it does NOT copy external table data itself.
+    # 'hive.repl.run.data.copy.tasks.on.target'='true' is what makes
+    # REPL LOAD actually copy external table data (from the source
+    # external directory into REPL_EXTERNAL_BASE_DIR) as part of the LOAD
+    # itself. Leaving this at "false" would silently skip copying
+    # external table data, so it is always set explicitly here.
     LOAD_CMD="REPL LOAD ${HIVE_DB_NAME} INTO ${HIVE_DB_NAME} WITH(
 ${HDFS_TOKEN_EXCLUDE_PROP}
+$(ha_config_props)
 'hive.repl.rootdir'='${REPL_ROOT_DIR_DST}',
 'hive.repl.run.data.copy.tasks.on.target'='true',
 'hive.repl.include.external.tables'='true',
@@ -1689,7 +1566,7 @@ $(materialized_view_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
-    echo "Ensuring external table base directory exists on destination: ${REPL_EXTERNAL_BASE_DIR}"
+    echo "Ensuring external table base directory exists on load target: ${REPL_EXTERNAL_BASE_DIR}"
     run_as_hdfs hdfs dfs -mkdir -p "${REPL_EXTERNAL_BASE_DIR}" || true
     run_as_hdfs hdfs dfs -chmod 1777 "${REPL_EXTERNAL_BASE_DIR}" || true
     echo ""
@@ -1698,7 +1575,7 @@ $(materialized_view_props)
     echo "Executing: $LOAD_CMD"
     echo ""
 
-    if ! beeline_exec_load "${DST_JDBC_URL}" -e "$LOAD_CMD"; then
+    if ! beeline_exec_load "${LOAD_JDBC_URL}" -e "$LOAD_CMD"; then
       echo "ERROR: Bootstrap REPL LOAD failed for ${HIVE_DB_NAME}"
       trap - ERR
       return 1
@@ -1706,43 +1583,20 @@ $(materialized_view_props)
     echo ""
 
     ########################################
-    # 6. Post-load validation - Bootstrap
+    # Step 5: Post-load validation
     ########################################
     echo "$SUBSEP"
-    echo "[5/${TOTAL_STEPS}] Validating replication status on destination..."
+    echo "[5/${TOTAL_STEPS}] Validating replication status on load target..."
     echo ""
 
-    beeline_exec "${DST_JDBC_URL}" -e "REPL STATUS ${HIVE_DB_NAME};" || echo "WARN: REPL STATUS check failed for ${HIVE_DB_NAME} (informational only - bootstrap DUMP/LOAD already succeeded)"
+    beeline_exec "${LOAD_JDBC_URL}" -e "REPL STATUS ${HIVE_DB_NAME};" || echo "WARN: REPL STATUS check failed for ${HIVE_DB_NAME} (informational only - bootstrap DUMP/LOAD already succeeded)"
     echo ""
 
-    # Bootstrap completed successfully — clear the error trap
+    # Bootstrap completed successfully - clear the error trap.
     trap - ERR
-  elif [[ "${USE_SCHEDULED_QUERIES,,}" == "false" ]]; then
+  else
     if ! run_incremental_cycle; then
       echo "ERROR: Incremental replication cycle failed for ${HIVE_DB_NAME}"
-      return 1
-    fi
-  else
-    echo "$SUBSEP"
-    echo "[3-5/${TOTAL_STEPS}] Skipping bootstrap steps - Database already exists on destination"
-    echo "Note: USE_SCHEDULED_QUERIES=true - Hive Scheduled Queries are expected to be driving"
-    echo "      incremental replication. Set USE_SCHEDULED_QUERIES=false (the script default)"
-    echo "      to run an incremental DUMP/LOAD cycle directly from this script invocation instead."
-    echo ""
-  fi
-
-  ########################################
-  # 7. Setup Scheduled Queries for Incremental Replication
-  ########################################
-  if [[ "${USE_SCHEDULED_QUERIES,,}" == "false" ]]; then
-    echo "$SUBSEP"
-    echo "[6/${TOTAL_STEPS}] Skipping Scheduled Query setup (USE_SCHEDULED_QUERIES=false)"
-    echo ""
-  else
-    echo "$SUBSEP"
-    echo "[6/${TOTAL_STEPS}] Setting up incremental replication..."
-    if ! create_scheduled_queries; then
-      echo "ERROR: Failed to set up scheduled queries for ${HIVE_DB_NAME}"
       return 1
     fi
   fi
@@ -1757,18 +1611,11 @@ $(materialized_view_props)
     echo "Tables       : $HIVE_TABLE_PATTERN"
   fi
   echo "Mode         : $([ "$BOOTSTRAP" = "true" ] && echo "Bootstrap + Incremental" || echo "Incremental Only")"
-  echo "Source       : $SRC_NAMESERVICE"
-  echo "Destination  : $DST_NAMESERVICE"
+  echo "Direction    : $REPLICATION_DIRECTION"
+  echo "Dump source  : $DUMP_NAMESERVICE"
+  echo "Load target  : $LOAD_NAMESERVICE"
   echo "YARN Queue   : $YARN_QUEUE (REPL LOAD data-copy jobs)"
   echo ""
-  if [[ -n "$SCHEDULE_EXPR" ]]; then
-    echo "Scheduled Queries:"
-    echo "  - DUMP (Source): $SRC_SCHEDULED_QUERY_NAME"
-    echo "  - LOAD (Dest)  : $DST_SCHEDULED_QUERY_NAME"
-    echo "  - Schedule     : $SCHEDULE_EXPR"
-    [[ "$SCHEDULE_EXPR" =~ ^EVERY ]] && echo "  - Load Offset  : $LOAD_OFFSET"
-    echo ""
-  fi
   echo "Completed    : $(date)"
   echo "Log File     : $LOG_FILE"
   echo ""
@@ -1776,8 +1623,14 @@ $(materialized_view_props)
   echo ""
 }
 
+# ==============================================================================
+#  Script entry point
+# ==============================================================================
+
 ########################################
-# 1. Logging (top-level, tee to a session log covering all DBs)
+# Session logging - a single top-level log file covers every database
+# processed in this invocation, in addition to each database's own
+# per-database log file.
 ########################################
 
 mkdir -p "$LOG_DIR"
@@ -1785,6 +1638,12 @@ SESSION_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 SESSION_LOG_FILE="$LOG_DIR/hive_bdr_session_${SESSION_TIMESTAMP}.log"
 
 exec > >(tee -a "$SESSION_LOG_FILE") 2>&1
+
+# Re-point fd 3 (opened earlier, at script startup) at the now-active
+# session-log "tee" pipeline, so heartbeat/debug messages written to fd 3
+# reach both the console and SESSION_LOG_FILE - while still never sharing
+# a file descriptor with output a caller captures via $(...).
+exec 3>&1
 
 SEP="======================================================================"
 SUBSEP="----------------------------------------------------------------------"
@@ -1796,10 +1655,9 @@ echo " Hive Cluster Replication Script Started"
 echo "$SEP"
 echo "Timestamp    : $(date)"
 echo "Databases    : ${DB_COUNT} (${HIVE_DB})"
-echo "Source NS    : $SRC_NAMESERVICE"
-echo "Dest NS      : $DST_NAMESERVICE"
-echo "Failover Mode: $FAILOVER_MODE"
-echo "Sched Queries: ${USE_SCHEDULED_QUERIES} $([ "${USE_SCHEDULED_QUERIES,,}" == "false" ] && echo "(incremental cycle runs directly from this script)" || echo "(Hive Scheduled Queries drive incrementals)")"
+echo "SRC (fixed)  : $SRC_NAMESERVICE"
+echo "DST (fixed)  : $DST_NAMESERVICE"
+echo "Direction    : $REPLICATION_DIRECTION"
 echo "Snapshot Copy: ${HIVE_REPL_SNAPSHOT_COPY} $([ "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ] && echo "(snapshot-diff external table copy enabled)" || echo "(normal listing-based external table copy)")"
 echo "YARN Queue   : ${YARN_QUEUE} (REPL LOAD data-copy jobs only)"
 echo "Kerberos     : ${KERBEROS_ENABLED^^}"
@@ -1813,7 +1671,14 @@ echo "Session Log  : $SESSION_LOG_FILE"
 echo ""
 
 ########################################
-# Main loop — replicate (or failover) each DB spec in sequence
+# Main loop - process each database spec in sequence.
+#
+# REPLICATION_DIRECTION is read directly on every invocation: there is no
+# local state file that tries to guess whether a direction change is
+# intended. The caller (a human, cron, or an orchestration tool) is
+# always responsible for explicitly passing FAILOVER_MODE /
+# REPLICATION_DIRECTION to indicate whether this run should be a normal
+# replication cycle or a direction change.
 ########################################
 DB_IDX=0
 FAILED_DBS=()
@@ -1823,9 +1688,9 @@ for db_spec in "${DB_SPECS[@]}"; do
   echo " Processing DB ${DB_IDX}/${DB_COUNT}: ${db_spec}"
   echo "$SEP"
 
-  if [[ "$FAILOVER_MODE" == "true" ]]; then
+  if [[ "$REPLICATION_DIRECTION" == "dst_to_src" ]]; then
     if ! failover_one_db "$db_spec" "$DB_IDX" "$DB_COUNT"; then
-      echo "ERROR: Failover failed for DB spec: ${db_spec}"
+      echo "ERROR: Direction-change replication failed for DB spec: ${db_spec}"
       FAILED_DBS+=("$db_spec")
     fi
   else
@@ -1851,63 +1716,44 @@ if [[ ${#FAILED_DBS[@]} -gt 0 ]]; then
   exit 1
 fi
 echo ""
-
-########################################
-# NOTE: why destination EXTERNAL TABLE LOCATION never matches source
-########################################
-# Hive's ReplExternalTables.externalTableDataPath() (ql/exec/repl/ReplExternalTables.java)
-# always builds the destination path as:
-#     REPL_EXTERNAL_BASE_DIR + <full source table path>
-# (base dir is a RELOCATION ROOT, not a mirror of the source path) - unless the base dir's
-# path component is exactly "/", which is special-cased to pass the source path through
-# unchanged (still on the destination nameservice/authority).
-#
-# This means:
-#   REPL_EXTERNAL_BASE_DIR="hdfs://${DST_NAMESERVICE}/${HIVE_DB_NAME}"
-#     -> DOUBLED/NESTED path (e.g. /${HIVE_DB_NAME}/user/hive/external/${HIVE_DB_NAME})
-#     -> this is the same bug already hit and fixed earlier in this script (see
-#        derive_db_vars comment above REPL_EXTERNAL_BASE_DIR): confirmed via testing to
-#        cause "Failed to AllowSnapshot on .../snap_test1.db/.../snap_test1.db" and
-#        REPL LOAD failure. Do NOT use this form.
-#
-#   REPL_EXTERNAL_BASE_DIR="hdfs://${DST_NAMESERVICE}/"  (bare root)
-#     -> destination LOCATION becomes path-identical to source (only nameservice differs)
-#     -> BUT this pushes the snapshot-allow scope up to the filesystem root. With
-#        HIVE_REPL_SNAPSHOT_COPY=true, enable_external_table_snapshots() (see comment above
-#        that function) relies on the destination relocation root NOT already being
-#        snapshottable, since Hive's DirCopyTask enables snapshot on a NESTED subdirectory
-#        under it at copy time, and HDFS forbids a directory becoming snapshottable if an
-#        ancestor already is. Root passthrough moves that ancestor conflict to the most
-#        sensitive point in the tree. Untested here - do not switch to this form without
-#        specifically validating snapshot-diff copy behavior at root first, or with
-#        HIVE_REPL_SNAPSHOT_COPY=false.
-#
-# Current choice (REPL_EXTERNAL_BASE_DIR = "hdfs://${DST_NAMESERVICE}/user/hive/external/
-# ${HIVE_DB_NAME}", set in derive_db_vars) is a deliberate, distinct relocation root: it
-# does NOT match source LOCATION, but is the form verified working with snapshot-diff copy.
 echo "Session Log: $SESSION_LOG_FILE"
-echo ""
 
-########################################
-# NOTE: bare-root option (REPL_EXTERNAL_BASE_DIR_APPEND_DB=false + REPL_EXTERNAL_BASE_DIR_ROOT="/")
-# deliberately tested and rejected as the default
-########################################
-# This combination (positional args 15 and 16) produces
-# REPL_EXTERNAL_BASE_DIR="hdfs://<load-target-nameservice>/" - path component exactly "/" -
-# which triggers Hive's bare-root passthrough special case described above: the
-# destination EXTERNAL TABLE LOCATION becomes path-identical to the source (only the
-# nameservice/authority differs). This was deliberately run (both normal and failover
-# direction) specifically to get destination LOCATION to match source exactly.
+# ==============================================================================
+#  SUGGESTED FUTURE POSITIONAL ARGUMENTS
+# ------------------------------------------------------------------------------
+#  The settings below currently require editing this script (or exporting
+#  an environment variable before running it) to change per environment.
+#  If different environments running this script are expected to need
+#  different values regularly, consider promoting these to positional
+#  arguments (or documented environment variables, if they should stay
+#  optional/advanced) so no manual script edits are needed. Listed in
+#  rough order of how commonly they vary between environments; excludes
+#  HIVE_LDAP_ENABLED / HIVE_PASSWORD, which should stay environment-only
+#  since they carry credentials.
 #
-# Deliberately NOT made the default (REPL_EXTERNAL_BASE_DIR_APPEND_DB stays "true"):
-#   - Only validated with HIVE_REPL_SNAPSHOT_COPY=false. The untested-at-root concern
-#     documented above (ancestor-snapshottable conflict with Hive's DirCopyTask) still
-#     applies uncombined with HIVE_REPL_SNAPSHOT_COPY=true - do not flip that flag on
-#     together with a bare "/" root without re-validating snapshot-diff copy at root first.
-#   - A bare per-nameservice root is shared across every DB (no per-DB suffix), unlike the
-#     default option-1 shape - multi-DB invocations relocate all DBs' external tables under
-#     the same root, mirroring source layout exactly rather than isolating each DB under
-#     its own relocation subdirectory.
-# Kept available via positional args 15/16 for deployments that specifically need
-# destination LOCATION to match source (e.g. tooling/scripts downstream that assume
-# path-identical source/destination external table locations), not as a general default.
+#    1. HIVE_REPL_SNAPSHOT_COPY
+#       Whether to use HDFS snapshot-diff copying for external tables.
+#       Environments with only small tables may never need this; those
+#       with large (1 TB+) external tables likely always want it on.
+#
+#    2. HIVE_EXTERNAL_WAREHOUSE_DIR
+#       The source cluster's external table warehouse path. Differs
+#       between Hive 3+ clusters (default used here) and older Hive/HDP
+#       clusters (commonly /user/hive/external).
+#
+#    3. HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS
+#       Whether to replicate materialized views. Depends entirely on
+#       whether a given deployment uses materialized views at all.
+#
+#    4. HA_CONFIG_IN_WITH_CLAUSE, SRC_NN_HOSTS, DST_NN_HOSTS,
+#       AUTOMATIC_FAILOVER_ENABLED
+#       Needed only when a cluster's own hdfs-site.xml does not already
+#       know about the other cluster's HA nameservice. Whether this is
+#       needed - and the NameNode host/port values themselves - is
+#       entirely dependent on each customer's network and cluster setup.
+#
+#    5. INCREMENTAL_LOCK_DIR, SNAP_LOCK_DIR
+#       Local lock file directories. Rarely need to change, but
+#       environments with restricted /var/tmp access may require a
+#       different path.
+# ==============================================================================
