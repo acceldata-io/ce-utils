@@ -234,7 +234,7 @@ SQOOP_CONFIGS=("sqoop-atlas-application.properties" "sqoop-env")
 OOZIE_CONFIGS=("oozie-env" "oozie-log4j" "oozie-site")
 
 # ZOOKEEPER configs
-ZOOKEEPER_CONFIGS=("zoo.cfg" "zookeeper-env" "zookeeper-log4j")
+ZOOKEEPER_CONFIGS=("zoo.cfg" "zookeeper-env" "zookeeper-log4j" "zookeeper-logback")
 
 # YARN configs
 YARN_CONFIGS=("container-executor" "ranger-yarn-audit" "ranger-yarn-plugin-properties" "ranger-yarn-policymgr-ssl" "ranger-yarn-security" "yarn-env" "yarn-hbase-env" "yarn-hbase-log4j" "yarn-hbase-policy" "yarn-hbase-site" "yarn-log4j" "yarn-site")

@@ -8,7 +8,7 @@ set -e
 LDAP_HOSTNAME="ad-server.com"
 LDAP_PORT="389"
 BASE_DN="dc=accelo,dc=com"
-GROUP_FILTER=""
+GROUP_FILTER=""  # Add LDAP filter string (e.g., "(objectClass=group)")
 SEARCH_USER_BASE=""
 BIND_USER="cn=Manager,dc=accelo,dc=com"
 BIND_USER_PASSWORD="PASSWORD"
@@ -21,11 +21,13 @@ groupNamingAttr="cn"
 groupMembershipAttr="member"
 useSSL="false"
 referral="ignore"
-export truststore=/opt/security/pki/ca-certs.jks
+export truststore=/opt/odp/security/pki/truststore.jks
 export truststorepassword=Password
 
-# Check if LDAP_PORT is 636 (SSL enabled) and set LDAP_SSL accordingly
-if [ "$LDAP_PORT" = "636" ]; then
+# Check if LDAP_PORT is 636 (LDAPS) or 3269 (Global Catalog LDAPS) and set LDAP_SSL accordingly
+# Port 636: Standard LDAPS (LDAP over SSL)
+# Port 3269: Global Catalog LDAP over SSL (Active Directory)
+if [ "$LDAP_PORT" = "636" ] || [ "$LDAP_PORT" = "3269" ]; then
     LDAP_SSL=true
 else
     LDAP_SSL=false
