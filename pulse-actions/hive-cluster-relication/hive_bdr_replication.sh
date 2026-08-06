@@ -60,9 +60,10 @@
 #     "<LOG_DIR>" \
 #     "<HDFS_USER>" \
 #     "<HIVE_USER>" \
-#     "<FAILOVER_MODE>"
+#     "<FAILOVER_MODE>" \
+#     "<RECONCILE_EXTERNAL_DATA>"
 #
-#   All 11 arguments are positional - the order matters. Trailing arguments
+#   All 12 arguments are positional - the order matters. Trailing arguments
 #   may be omitted and will fall back to their defaults (shown below).
 #
 # POSITIONAL ARGUMENTS
@@ -120,10 +121,25 @@
 #        Set to "true" to reverse the replication direction (failover), or
 #        "false" for normal replication. See "FAILOVER AND FAILBACK" below.
 #
-#   Any of arguments 6, 9, 10, and 11 (YARN_QUEUE, HDFS_USER, HIVE_USER,
-#   FAILOVER_MODE) can also be supplied as an environment variable of the
-#   same name instead of a positional argument. If both are set, the
-#   positional argument wins.
+#  12. RECONCILE_EXTERNAL_DATA (default: "false")
+#        Set to "true" ONLY for a database (or table pattern) where every
+#        table is an EXTERNAL_TABLE and the load target already has
+#        partial or full matching HDFS data worth not re-copying - for
+#        example, an existing DR database that was moved aside to a
+#        "_backup" database so this script's bootstrap REPL LOAD could run
+#        against an empty database (Hive's REPL LOAD bootstrap path
+#        refuses a non-empty target database, with no override). See
+#        "RECONCILING PRE-EXISTING EXTERNAL TABLE DATA" below for the full
+#        explanation of what this changes and why. Leave this "false" (the
+#        default) for normal replication, and for ANY database that may
+#        contain managed/ACID tables - the script fails fast, before
+#        REPL DUMP/LOAD runs at all, if RECONCILE_EXTERNAL_DATA=true is
+#        requested for a database containing a non-external table.
+#
+#   Any of arguments 6, 9, 10, 11, and 12 (YARN_QUEUE, HDFS_USER, HIVE_USER,
+#   FAILOVER_MODE, RECONCILE_EXTERNAL_DATA) can also be supplied as an
+#   environment variable of the same name instead of a positional argument.
+#   If both are set, the positional argument wins.
 #
 # FAILOVER AND FAILBACK
 # ----------------------------------------------------------------------------
@@ -170,6 +186,77 @@
 #   with FAILOVER_MODE=false (or omit the argument) - typically you run
 #   FAILOVER_MODE=true for exactly one invocation to perform the failover,
 #   then revert to the default for every run after that.
+#
+# RECONCILING PRE-EXISTING EXTERNAL TABLE DATA (RECONCILE_EXTERNAL_DATA)
+# ----------------------------------------------------------------------------
+#   A bootstrap REPL LOAD (Step 4 above) normally sets
+#   'hive.repl.run.data.copy.tasks.on.target'='true', which makes REPL LOAD
+#   copy every external table's data itself, as part of the LOAD. That
+#   internal copy always re-copies every file listed in the REPL DUMP
+#   manifest, with no regard for what may already exist at the destination
+#   path - confirmed by testing: files already present on the load target,
+#   byte-identical (same size, same checksum) to the source, were still
+#   re-copied in full. There is no Hive configuration property that makes
+#   this internal copy skip unchanged files.
+#
+#   This matters for a specific, real scenario: a load-target database that
+#   already has data for the same tables you are about to replicate - for
+#   example, an earlier/legacy replication tool (such as Cloudera BDR) has
+#   already copied some or all of a database's external table data, or an
+#   existing DR database was deliberately renamed aside to a "_backup"
+#   database (see the empty-database-prep step you may already be running
+#   separately) purely so this script's bootstrap REPL LOAD has an empty
+#   database to bootstrap into - Hive's REPL LOAD bootstrap path refuses to
+#   run against a non-empty target database, with no override. In that
+#   situation the load target's HDFS files are frequently still physically
+#   present at their original path (renaming a Hive table does not move its
+#   underlying data), so REPL LOAD's normal full re-copy wastes bandwidth
+#   and time proportional to the FULL table size, not just the genuinely
+#   missing data.
+#
+#   Setting RECONCILE_EXTERNAL_DATA=true for a bootstrap run changes two
+#   things:
+#     1. The bootstrap REPL LOAD sets
+#        'hive.repl.run.data.copy.tasks.on.target'='false' instead of
+#        "true" - REPL LOAD then recreates metadata only (databases,
+#        tables, partitions) and copies NO table data itself.
+#     2. Immediately after that metadata-only LOAD succeeds, this script
+#        runs a manual `hadoop distcp ${DISTCP_OPTS}` once per external
+#        table, directly between that table's real LOCATION on the dump
+#        source and its real LOCATION on the load target (read via
+#        DESCRIBE FORMATTED on both sides, so this works correctly even for
+#        tables with a custom, non-default LOCATION). Unlike REPL LOAD's
+#        own internal copy, a real `hadoop distcp` with -update/
+#        -skipcrccheck (the DISTCP_OPTS default) genuinely compares source
+#        and destination and skips files that already match - this is the
+#        ONLY point in the whole pipeline where that comparison happens.
+#
+#   RECONCILE_EXTERNAL_DATA=true REQUIRES every table in the database (or
+#   table pattern) to be EXTERNAL_TABLE. Managed/ACID table data (base and
+#   delta directories, valid-txn-lists, and so on) is Hive-owned in a way
+#   that is not safe to reconcile with a raw filesystem-level distcp - there
+#   is no equivalent manual step for managed tables. This script checks
+#   every table on the dump source BEFORE running REPL DUMP/LOAD at all, and
+#   fails fast with a clear error if it finds even one non-external table,
+#   rather than disabling data copy for the whole database and silently
+#   leaving a managed table's data missing.
+#
+#   RECONCILE_EXTERNAL_DATA is a per-database judgment call, not a setting
+#   to leave on for every replication:
+#     - Leave it "false" (the default) for normal bootstraps, for
+#       incremental cycles (which never read this setting - an incremental
+#       cycle only ever copies new events/files, so there is no
+#       pre-existing-data problem to reconcile there), for failover, and
+#       for any database that may contain managed/ACID tables.
+#     - Set it "true" only when you specifically know: every table in this
+#       database is external, AND the load target already has matching (or
+#       partially matching) HDFS data for those tables that is worth not
+#       re-copying from scratch.
+#   On a genuinely fresh/empty load target (nothing pre-existing at any
+#   destination path), RECONCILE_EXTERNAL_DATA=true is harmless but brings
+#   no benefit - -update has nothing to skip, so the same bytes move either
+#   way, just via a separate `hadoop distcp` process instead of REPL LOAD's
+#   internal copy. There is no reason to enable it in that case.
 #
 # AUTHENTICATION
 # ----------------------------------------------------------------------------
@@ -317,6 +404,20 @@
 #     use case.
 #     Default: false
 #
+#   RECONCILE_EXTERNAL_DATA
+#     Also positional argument 12. See "RECONCILING PRE-EXISTING EXTERNAL
+#     TABLE DATA" above for the full explanation.
+#     Default: false
+#
+#   DISTCP_OPTS
+#     Tool-specific flags passed to the manual `hadoop distcp` calls this
+#     script runs when RECONCILE_EXTERNAL_DATA=true (see above). Not used
+#     for anything else - the normal bootstrap/incremental DUMP/LOAD flow
+#     never runs `hadoop distcp` itself; REPL LOAD performs its own
+#     internal data copy. Not a positional argument, since it is only
+#     relevant together with RECONCILE_EXTERNAL_DATA=true.
+#     Default: "-p -update -skipcrccheck"
+#
 # EXAMPLES
 # ----------------------------------------------------------------------------
 #   Example 1 - Bootstrap a single database, then keep it in sync by
@@ -404,6 +505,26 @@
 #   This Example 4 / Example 5 pattern can be repeated indefinitely for any
 #   number of failover / failback cycles.
 #
+#   Example 6 - Bootstrap a database whose load-target already has
+#   pre-existing/partial HDFS data for its (all-external) tables, without
+#   re-copying data that is already correct. Only the last argument changes
+#   from Example 1 - see "RECONCILING PRE-EXISTING EXTERNAL TABLE DATA"
+#   above before using this:
+#
+#     ./hive_bdr_replication.sh \
+#       "sales" \
+#       "prod-nameservice" \
+#       "dr-nameservice" \
+#       "jdbc:hive2://prod-host1:2181,prod-host2:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#       "jdbc:hive2://dr-host1:2181,dr-host2:2181/;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=hiveserver2" \
+#       "default" \
+#       "/user/hive/repl/" \
+#       "/var/log/hive-replication" \
+#       "hdfs" \
+#       "hdfs" \
+#       "false" \
+#       "true"
+#
 # ==============================================================================
 
 set -euo pipefail
@@ -427,9 +548,10 @@ HEARTBEAT_FD=3
 
 # ------------------------------------------------------------------------------
 #  Read positional arguments and apply defaults.
-#  For YARN_QUEUE, HDFS_USER, HIVE_USER, and FAILOVER_MODE: if the
-#  positional argument is not supplied, fall back to the environment
-#  variable of the same name, and finally to a hardcoded default.
+#  For YARN_QUEUE, HDFS_USER, HIVE_USER, FAILOVER_MODE, and
+#  RECONCILE_EXTERNAL_DATA: if the positional argument is not supplied,
+#  fall back to the environment variable of the same name, and finally to
+#  a hardcoded default.
 # ------------------------------------------------------------------------------
 HIVE_DB="${1:-}"
 SRC_NAMESERVICE="${2:-}"
@@ -442,6 +564,24 @@ LOG_DIR="${8:-/var/log/hive-replication}"
 HDFS_USER="${9:-${HDFS_USER:-hdfs}}"
 HIVE_USER="${10:-${HIVE_USER:-hdfs}}"
 FAILOVER_MODE="${11:-${FAILOVER_MODE:-false}}"
+# See "RECONCILING PRE-EXISTING EXTERNAL TABLE DATA" near the top of this
+# file. Per-database judgment call, NOT a setting to leave "true" always -
+# keep this "false" (the default) for any database that may contain
+# managed/ACID tables; the script fails fast, before REPL DUMP/LOAD runs at
+# all, if this is "true" for a database containing a non-external table.
+RECONCILE_EXTERNAL_DATA="${12:-${RECONCILE_EXTERNAL_DATA:-false}}"
+
+# DISTCP_OPTS - tool-specific `hadoop distcp` flags used only by the manual
+# distcp calls this script runs when RECONCILE_EXTERNAL_DATA=true (see
+# reconcile_external_table_data() below). Not a positional argument - only
+# relevant together with RECONCILE_EXTERNAL_DATA=true, and every other
+# environment-only setting in this script (HIVE_REPL_SNAPSHOT_COPY,
+# HA_CONFIG_IN_WITH_CLAUSE, etc.) follows the same env-var-only pattern for
+# settings that are not part of the common/required call shape.
+# "-update"/"-skipcrccheck" are what make distcp genuinely compare source
+# vs. destination and skip files that already match - this is the actual
+# mechanism that avoids re-copying pre-existing, unchanged data.
+DISTCP_OPTS="${DISTCP_OPTS:--p -update -skipcrccheck}"
 
 # Fixed relocation settings for replicated external table data on the
 # destination cluster. These intentionally have no positional argument or
@@ -1426,6 +1566,195 @@ $(materialized_view_props)
   echo ""
 }
 
+# check_all_tables_external: query the dump source and fail (return 1) if the
+# current database/table pattern (HIVE_DB_NAME / HIVE_TABLE_PATTERN, set by
+# derive_db_vars) contains any table that is NOT EXTERNAL_TABLE. Only called
+# when RECONCILE_EXTERNAL_DATA=true - that mode disables REPL LOAD's own
+# bootstrap data copy in favor of a manual per-table distcp, which is only a
+# safe substitute for external-table data (plain files under a LOCATION).
+# Managed/ACID table data has no equivalent manual-reconciliation step, so
+# this check runs BEFORE REPL DUMP/LOAD is issued at all, rather than
+# discovering a managed table mid-bootstrap with data copy already disabled
+# for the whole database.
+check_all_tables_external() {
+  local jdbc_url="$1"
+
+  local tables_output
+  tables_output=$(beeline_exec "${jdbc_url}" \
+    --silent=true \
+    --showHeader=false \
+    --outputformat=tsv2 \
+    -e "USE ${HIVE_DB_NAME}; SHOW TABLES;" 2>&1) || {
+    echo "ERROR: Could not list tables in '${HIVE_DB_NAME}' on dump source to verify they are all external"
+    return 1
+  }
+
+  local tables
+  tables=$(echo "$tables_output" | grep -E "^[A-Za-z0-9_]+$")
+
+  if [[ -n "$HIVE_TABLE_PATTERN" ]]; then
+    tables=$(echo "$tables" | grep -E "^${HIVE_TABLE_PATTERN}$" || true)
+  fi
+
+  if [[ -z "$tables" ]]; then
+    echo "[WARN] No tables found in '${HIVE_DB_NAME}' matching pattern (nothing to check for RECONCILE_EXTERNAL_DATA)"
+    return 0
+  fi
+
+  local non_external=()
+  local tbl tbl_type
+  while IFS= read -r tbl; do
+    [[ -z "$tbl" ]] && continue
+    tbl_type=$(beeline_exec "${jdbc_url}" \
+      --silent=true \
+      --showHeader=false \
+      --outputformat=tsv2 \
+      -e "USE ${HIVE_DB_NAME}; DESCRIBE FORMATTED ${tbl};" 2>&1 \
+      | grep -i "^Table Type:" | awk -F'\t' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ "$tbl_type" != "EXTERNAL_TABLE" ]]; then
+      non_external+=("${tbl} (${tbl_type:-unknown})")
+    fi
+  done <<< "$tables"
+
+  if [[ ${#non_external[@]} -gt 0 ]]; then
+    echo "ERROR: RECONCILE_EXTERNAL_DATA=true requires every table in '${HIVE_DB_NAME}' to be EXTERNAL_TABLE."
+    echo "ERROR: Found non-external table(s):"
+    for t in "${non_external[@]}"; do
+      echo "  - ${t}"
+    done
+    echo "ERROR: Managed/ACID table data cannot be safely reconciled with a manual distcp (base/delta"
+    echo "ERROR: directories, valid-txn-lists have no equivalent manual step). Re-run with"
+    echo "ERROR: RECONCILE_EXTERNAL_DATA=false (the default) to use REPL LOAD's normal full data copy instead."
+    return 1
+  fi
+
+  echo "OK: all tables in '${HIVE_DB_NAME}' (matching pattern) are EXTERNAL_TABLE - safe for RECONCILE_EXTERNAL_DATA=true"
+  return 0
+}
+
+# table_location: print the LOCATION of a single table via DESCRIBE
+# FORMATTED against the given JDBC URL. Works for both default-warehouse-
+# path and custom-LOCATION tables.
+table_location() {
+  local jdbc_url="$1"
+  local db="$2"
+  local tbl="$3"
+
+  beeline_exec "${jdbc_url}" \
+    --silent=true \
+    --showHeader=false \
+    --outputformat=tsv2 \
+    -e "USE ${db}; DESCRIBE FORMATTED ${tbl};" 2>&1 \
+    | grep -i "^Location:" | awk -F'\t' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# reconcile_external_table_data: for every table actually present in
+# HIVE_DB_NAME on the LOAD target after a metadata-only bootstrap REPL LOAD
+# ('hive.repl.run.data.copy.tasks.on.target'='false'), read that table's
+# real LOCATION on both the dump source and the load target (handles custom
+# LOCATIONs, not just Hive's default warehouse path) and run a manual
+# `hadoop distcp ${DISTCP_OPTS}` directly between those two paths. This is
+# the ONLY point in the whole pipeline where a genuine destination-aware
+# skip-if-unchanged copy happens - REPL LOAD's own bootstrap copy task has
+# no such comparison (confirmed via testing: it re-copies every file in the
+# dump manifest unconditionally, regardless of what already exists at the
+# destination). Only called when RECONCILE_EXTERNAL_DATA=true, after
+# check_all_tables_external has already confirmed every table in scope is
+# EXTERNAL_TABLE.
+reconcile_external_table_data() {
+  # The token-renewal-exclude property must name the DUMP source's
+  # nameservice (the far side being read from during this copy) for
+  # whichever direction is actually running - DUMP_NAMESERVICE, computed
+  # per-call by derive_db_vars - not a value fixed to one role label
+  # regardless of direction.
+  local distcp_token_exclude_opt="-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${DUMP_NAMESERVICE}"
+
+  echo "$SUBSEP"
+  echo "Reconciling external table data via manual distcp (RECONCILE_EXTERNAL_DATA=true)..."
+  echo "DistCp options: ${distcp_token_exclude_opt} -Dmapreduce.job.queuename=${YARN_QUEUE} ${DISTCP_OPTS}"
+  echo ""
+
+  local tables_output tables
+  tables_output=$(beeline_exec "${LOAD_JDBC_URL}" \
+    --silent=true \
+    --showHeader=false \
+    --outputformat=tsv2 \
+    -e "USE ${HIVE_DB_NAME}; SHOW TABLES;" 2>&1) || {
+    echo "ERROR: Could not list tables in '${HIVE_DB_NAME}' on load target for data reconciliation"
+    return 1
+  }
+  tables=$(echo "$tables_output" | grep -E "^[A-Za-z0-9_]+$")
+
+  if [[ -z "$tables" ]]; then
+    echo "[WARN] No tables found in '${HIVE_DB_NAME}' on load target after metadata-only LOAD - nothing to reconcile"
+    return 0
+  fi
+
+  # Split the tool-specific options string into an array once, up front -
+  # deliberate word-splitting (meant to expand into multiple separate
+  # distcp flags, e.g. "-p -update -skipcrccheck"), done explicitly via
+  # read -ra rather than a bare unquoted expansion at the call site.
+  #
+  # ORDER MATTERS: `hadoop distcp` is a Tool, so its GenericOptionsParser
+  # only recognizes -D/-fs/-conf/etc. when they appear BEFORE any
+  # tool-specific arguments (-p, -update, -skipcrccheck, source/dest
+  # paths). Confirmed via testing: with -D flags placed AFTER
+  # -p -update -skipcrccheck, distcp's CopyListing treated the -D flags
+  # themselves as literal source paths ("-Dmapreduce.job...=... doesn't
+  # exist") instead of parsing them as JVM properties, failing with
+  # InvalidInputException before any copy started. All -D options (the
+  # token-exclude and queue flags below) are placed first for this reason;
+  # DISTCP_OPTS (-p -update -skipcrccheck) comes after, then finally the
+  # source/dest paths.
+  local -a distcp_opts_arr
+  read -ra distcp_opts_arr <<< "$DISTCP_OPTS"
+
+  # YARN_QUEUE routes REPL LOAD's OWN internal copy job via SET
+  # mapreduce.job.queuename/tez.queue.name in the beeline session (see
+  # beeline_exec_load) - that mechanism only works for a job HiveServer2
+  # itself submits. This manual `hadoop distcp` call is a plain CLI
+  # invocation outside any beeline session, so the equivalent is passing
+  # the same underlying MapReduce property directly as a -D generic
+  # option instead.
+  local -a distcp_dgen_arr=("$distcp_token_exclude_opt" -Dmapreduce.job.queuename="${YARN_QUEUE}")
+
+  local tbl src_loc dst_loc
+  local failed=0
+  while IFS= read -r tbl; do
+    [[ -z "$tbl" ]] && continue
+
+    src_loc=$(table_location "$DUMP_JDBC_URL" "$HIVE_DB_NAME" "$tbl")
+    dst_loc=$(table_location "$LOAD_JDBC_URL" "$HIVE_DB_NAME" "$tbl")
+
+    if [[ -z "$src_loc" || -z "$dst_loc" ]]; then
+      echo "ERROR: Could not resolve LOCATION for table '${tbl}' (source='${src_loc}' dest='${dst_loc}') - skipping distcp for this table"
+      failed=1
+      continue
+    fi
+
+    echo "$SUBSEP"
+    echo "Table  : ${HIVE_DB_NAME}.${tbl}"
+    echo "Source : ${src_loc}"
+    echo "Dest   : ${dst_loc}"
+    echo "Executing: hadoop distcp ${distcp_token_exclude_opt} -Dmapreduce.job.queuename=${YARN_QUEUE} ${DISTCP_OPTS} ${src_loc} ${dst_loc}"
+    if ! run_as_hdfs hadoop distcp "${distcp_dgen_arr[@]}" "${distcp_opts_arr[@]}" "${src_loc}" "${dst_loc}"; then
+      echo "ERROR: distcp failed for table '${tbl}' (${src_loc} -> ${dst_loc})"
+      failed=1
+      continue
+    fi
+    echo "OK: reconciled ${HIVE_DB_NAME}.${tbl}"
+    echo ""
+  done <<< "$tables"
+
+  if [[ $failed -ne 0 ]]; then
+    echo "ERROR: One or more tables failed external data reconciliation for '${HIVE_DB_NAME}'"
+    return 1
+  fi
+
+  echo "All external tables in '${HIVE_DB_NAME}' reconciled successfully."
+  echo ""
+}
+
 # replicate_one_db: replicate a single database - runs a bootstrap cycle
 # if the destination database does not yet exist, or an incremental cycle
 # if it does. This is the main entry point used for every database when
@@ -1488,14 +1817,45 @@ replicate_one_db() {
 
   ########################################
   # Step 2: Decide bootstrap vs. incremental
+  #
+  # A database that EXISTS but is genuinely empty (0 tables) is still
+  # eligible for a bootstrap REPL LOAD - this matches Hive's own
+  # LoadDatabase.getLoadDbType() constraint (bootstrap proceeds if the
+  # target database is nonexistent, already at the dump's own repl
+  # checkpoint, OR literally empty). Checking database existence alone
+  # (SHOW DATABASES) is not enough to tell bootstrap from incremental
+  # apart: an empty database (for example, one left behind after moving
+  # its old tables aside to a "_backup" database so REPL LOAD could
+  # bootstrap onto it at all - see RECONCILE_EXTERNAL_DATA above) still
+  # exists as a database object, but has no tables to make an incremental
+  # cycle meaningful against. Without this table-count check, such a
+  # database would be routed to run_incremental_cycle() (which
+  # unconditionally sets hive.repl.run.data.copy.tasks.on.target=true and
+  # never reads RECONCILE_EXTERNAL_DATA at all), even though REPL DUMP/LOAD
+  # would still internally perform a real bootstrap underneath - silently
+  # skipping this script's own bootstrap-only safeguards
+  # (RECONCILE_EXTERNAL_DATA check/flip, snapshot enablement, the ERR trap).
   ########################################
   echo "$SUBSEP"
   echo "[2/${TOTAL_STEPS}] Determining replication mode..."
 
   local BOOTSTRAP
   if [[ -n "$DB_EXISTS" ]]; then
-    echo "Database '${HIVE_DB_NAME}' exists on load target - Incremental replication mode"
-    BOOTSTRAP=false
+    local existing_table_count
+    existing_table_count=$(beeline_exec "${LOAD_JDBC_URL}" \
+      --silent=true \
+      --showHeader=false \
+      --outputformat=tsv2 \
+      -e "USE ${HIVE_DB_NAME}; SHOW TABLES;" 2>&1 \
+      | grep -c -E "^[A-Za-z0-9_]+$")
+
+    if [[ "$existing_table_count" -eq 0 ]]; then
+      echo "Database '${HIVE_DB_NAME}' exists on load target but has 0 tables - Bootstrap mode (empty database is bootstrap-eligible per Hive's own REPL LOAD constraint)"
+      BOOTSTRAP=true
+    else
+      echo "Database '${HIVE_DB_NAME}' exists on load target with ${existing_table_count} table(s) - Incremental replication mode"
+      BOOTSTRAP=false
+    fi
   else
     echo "Database '${HIVE_DB_NAME}' DOES NOT exist on load target - Bootstrap mode"
     BOOTSTRAP=true
@@ -1511,6 +1871,17 @@ replicate_one_db() {
     if [[ "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ]]; then
       enable_external_table_snapshots "$DUMP_NAMESERVICE"
       enable_external_table_snapshots "$LOAD_NAMESERVICE"
+    fi
+
+    if [[ "${RECONCILE_EXTERNAL_DATA,,}" == "true" ]]; then
+      echo "$SUBSEP"
+      echo "RECONCILE_EXTERNAL_DATA=true - verifying all tables in '${HIVE_DB_NAME}' are EXTERNAL_TABLE..."
+      if ! check_all_tables_external "$DUMP_JDBC_URL"; then
+        echo "ERROR: Aborting bootstrap for ${HIVE_DB_NAME} - see error above"
+        trap - ERR
+        return 1
+      fi
+      echo ""
     fi
 
     ########################################
@@ -1553,11 +1924,25 @@ $(materialized_view_props)
     # external directory into REPL_EXTERNAL_BASE_DIR) as part of the LOAD
     # itself. Leaving this at "false" would silently skip copying
     # external table data, so it is always set explicitly here.
+    #
+    # EXCEPTION: when RECONCILE_EXTERNAL_DATA=true, this is deliberately
+    # set to "false" instead - REPL LOAD then recreates metadata only (no
+    # data copy at all), and reconcile_external_table_data() (called below)
+    # does the data copy itself via a manual per-table `hadoop distcp`,
+    # which can genuinely skip files already present/unchanged on the load
+    # target. See "RECONCILING PRE-EXISTING EXTERNAL TABLE DATA" near the
+    # top of this file for why this exists.
+    local load_data_copy_flag="true"
+    if [[ "${RECONCILE_EXTERNAL_DATA,,}" == "true" ]]; then
+      load_data_copy_flag="false"
+      echo "RECONCILE_EXTERNAL_DATA=true - bootstrap LOAD will be metadata-only; data copy is done via manual distcp after LOAD completes."
+    fi
+
     LOAD_CMD="REPL LOAD ${HIVE_DB_NAME} INTO ${HIVE_DB_NAME} WITH(
 ${HDFS_TOKEN_EXCLUDE_PROP}
 $(ha_config_props)
 'hive.repl.rootdir'='${REPL_ROOT_DIR_DST}',
-'hive.repl.run.data.copy.tasks.on.target'='true',
+'hive.repl.run.data.copy.tasks.on.target'='${load_data_copy_flag}',
 'hive.repl.include.external.tables'='true',
 'hive.repl.bootstrap.external.tables'='true',
 'hive.repl.dump.metadata.only.for.external.table'='false',
@@ -1581,6 +1966,14 @@ $(materialized_view_props)
       return 1
     fi
     echo ""
+
+    if [[ "${RECONCILE_EXTERNAL_DATA,,}" == "true" ]]; then
+      if ! reconcile_external_table_data; then
+        echo "ERROR: External data reconciliation failed for ${HIVE_DB_NAME}"
+        trap - ERR
+        return 1
+      fi
+    fi
 
     ########################################
     # Step 5: Post-load validation
