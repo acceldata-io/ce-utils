@@ -8,6 +8,47 @@
 #            between the two clusters.
 # ==============================================================================
 #
+# QUICK REFERENCE - POSITIONAL ARGUMENTS & ENV VARS
+# ----------------------------------------------------------------------------
+#   Full explanations further down in this file. This block is just the
+#   name/default/order lookup.
+#
+#   Pos  Name                      Default
+#   ---  ------------------------  ----------------------------------------
+#    1   HIVE_DB                   (required)
+#    2   SRC_NAMESERVICE           (required)
+#    3   DST_NAMESERVICE           (required)
+#    4   SRC_JDBC_URL              (required)
+#    5   DST_JDBC_URL              (required)
+#    6   YARN_QUEUE                default
+#    7   REPL_BASE_DIR             /user/hive/repl/
+#    8   LOG_DIR                   /var/log/hive-replication
+#    9   HDFS_USER                 hdfs
+#   10   HIVE_USER                 hdfs
+#   11   FAILOVER_MODE             false
+#   12   RECONCILE_EXTERNAL_DATA   false
+#
+#   Env-only (no positional slot):
+#     METADATA_ONLY               false
+#     DISTCP_OPTS                 --strategy dynamic -direct -update -pugptx -skipcrccheck
+#     HIVE_REPL_SNAPSHOT_COPY      false
+#     HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS   false
+#     HA_CONFIG_IN_WITH_CLAUSE     false
+#     SRC_NN_HOSTS / DST_NN_HOSTS  (required if HA_CONFIG_IN_WITH_CLAUSE=true)
+#     AUTOMATIC_FAILOVER_ENABLED   true
+#     HIVE_LDAP_ENABLED / HIVE_PASSWORD   false / (unset)
+#     INCREMENTAL_LOCK_DIR         /var/tmp/hive-bdr-incremental-locks
+#     SNAP_LOCK_DIR                /var/tmp/hive-bdr-snapshot-setup-locks
+#     HIVE_EXTERNAL_WAREHOUSE_DIR  /warehouse/tablespace/external/hive
+#     BEELINE_VERBOSE              false
+#     HEARTBEAT_INTERVAL_SECONDS   30
+#     BEELINE_COMMAND_TIMEOUT_SECONDS   0
+#
+#   To change a default: edit the corresponding line in the "Read
+#   positional arguments" block (search for the variable name) further
+#   down in this script.
+# ==============================================================================
+#
 # WHAT THIS SCRIPT DOES
 # ----------------------------------------------------------------------------
 #   Hive's built-in replication (REPL DUMP on the source, REPL LOAD on the
