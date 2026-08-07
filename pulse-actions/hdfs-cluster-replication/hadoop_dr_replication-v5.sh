@@ -40,7 +40,7 @@
 #   cluster free from replication workload.
 #
 # Usage:
-#   ./hadoop_dr_replication_4.2.0.sh \
+#   ./hadoop_dr_replication.sh \
 #     "<SOURCE_NN_HOST:PORT>"   \
 #     "<DEST_NN_HOST:PORT>"     \
 #     "<DIR1,DIR2,...>"         \
