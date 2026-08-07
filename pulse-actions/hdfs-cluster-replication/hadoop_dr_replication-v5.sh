@@ -112,7 +112,7 @@
 #                              Values: "pull" or "push"
 #                              "pull" = YARN runs on DR/target cluster, source has no compute overhead
 #                              "push" = YARN runs on source/production cluster
-#   15) LOG_PATH            - Path to log file (default: /var/log/hadoop-dr-replicate.log)
+#   15) LOG_PATH            - Path to log file (default: /var/log/hadoop-replication/hadoop-dr-replicate.log)
 #   16) REVERSE_DIFF_BOOTSTRAP - Attempt incremental reverse-diff bootstrap on a detected
 #                              failover/failback direction reversal (optional, default: "no")
 #                              Values: "yes" or "no". Also settable via the
@@ -297,7 +297,7 @@
 #     "no" \
 #     "" \
 #     "pull" \
-#     "/var/log/hadoop-dr-replicate.log"
+#     "/var/log/hadoop-replication/hadoop-dr-replicate.log"
 #
 #   With path exclusion filter and push mode (patterns passed inline, NOT a
 #   file path -- the script generates and manages the actual filter file):
@@ -311,7 +311,7 @@
 #     "no" \
 #     ".*dir4/sub2.*,.*/staging/.*" \
 #     "push" \
-#     "/var/log/hadoop-dr-replicate.log"
+#     "/var/log/hadoop-replication/hadoop-dr-replicate.log"
 #
 # Purpose & properties:
 #   - Idempotent and safe for repeated runs.
@@ -423,7 +423,7 @@
 #   • YARN queue for DistCp jobs must exist on the target cluster.
 #
 # -----------------------------------------------------------------------------
-# ./hadoop_dr_replication_4.2.0.sh "prod-namenode-1.example.com:8020" "dr-namenode-1.example.com:8020" "/data/warehouse,/data/analytics" "dr_snap" 3 "hdfs" "hdfs" "-update -pugpx" "default" "no" "no" "no" "" "pull" "/var/log/hadoop-dr-replicate.log"
+# ./hadoop_dr_replication_4.2.0.sh "prod-namenode-1.example.com:8020" "dr-namenode-1.example.com:8020" "/data/warehouse,/data/analytics" "dr_snap" 3 "hdfs" "hdfs" "-update -pugpx" "default" "no" "no" "no" "" "pull" "/var/log/hadoop-replication/hadoop-dr-replicate.log"
 #
 
 set -euo pipefail
@@ -536,7 +536,7 @@ REPLICATION_MODE_ARG="${14:-}"
 # Kept ahead of REVERSE_DIFF_BOOTSTRAP (arg 16) so existing arg-15 invocations
 # of this script don't shift; new flags get appended after it instead.
 ###############################################################################
-LOG="${15:-/var/log/hadoop-dr-replicate.log}"
+LOG="${15:-/var/log/hadoop-replication/hadoop-dr-replicate.log}"
 
 ###############################################################################
 # Reverse-diff bootstrap for failover/failback (priority: CLI arg 16 -> env var -> default)
@@ -4591,7 +4591,7 @@ main "$@"
 #
 # ── ARTIFACTS: LOCAL DISK (node running this script) ────────────────────────
 #
-#   [1] $LOG  (default: /var/log/hadoop-dr-replicate.log)
+#   [1] $LOG  (default: /var/log/hadoop-replication/hadoop-dr-replicate.log)
 #         Full run log. Previous log is backed up (never overwritten in
 #         place) as ${LOG}.<timestamp>, or ${LOG}.prev as a fallback.
 #
