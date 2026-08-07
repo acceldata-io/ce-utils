@@ -409,6 +409,27 @@
 #     TABLE DATA" above for the full explanation.
 #     Default: false
 #
+#   METADATA_ONLY
+#     "true" or "false". Not a positional argument. When "true", every REPL
+#     DUMP/LOAD this script runs (bootstrap, incremental, failover)
+#     replicates Hive metastore metadata only - no table data (managed or
+#     external) is ever copied:
+#       - DUMP sets 'hive.repl.dump.metadata.only.for.external.table'='true'
+#         instead of 'false' - Hive does not even write external-table
+#         file-list manifests into the dump.
+#       - LOAD sets 'hive.repl.run.data.copy.tasks.on.target'='false'
+#         instead of 'true' - no data-copy YARN job runs on the load
+#         target for either managed or external tables.
+#     Use this for a metadata-only DR catalog (schema/DDL parity without
+#     the storage cost/time of copying data), or to validate DUMP/LOAD
+#     mechanics quickly before committing to a full data replication run.
+#     Mutually exclusive with RECONCILE_EXTERNAL_DATA=true - that flag
+#     exists specifically to backfill real data via manual distcp after a
+#     metadata-only bootstrap LOAD, which contradicts METADATA_ONLY's
+#     "never copy data" intent. The script fails fast, before REPL
+#     DUMP/LOAD runs at all, if both are set to "true".
+#     Default: false
+#
 #   DISTCP_OPTS
 #     Tool-specific flags passed to the manual `hadoop distcp` calls this
 #     script runs when RECONCILE_EXTERNAL_DATA=true (see above). Not used
@@ -416,7 +437,8 @@
 #     never runs `hadoop distcp` itself; REPL LOAD performs its own
 #     internal data copy. Not a positional argument, since it is only
 #     relevant together with RECONCILE_EXTERNAL_DATA=true.
-#     Default: "-p -update -skipcrccheck"
+#     Default: "--strategy dynamic -direct -update -pugptx -skipcrccheck"
+#     (matches hadoop_dr_replication.sh's COPY_OPTS default)
 #
 # EXAMPLES
 # ----------------------------------------------------------------------------
@@ -571,6 +593,30 @@ FAILOVER_MODE="${11:-${FAILOVER_MODE:-false}}"
 # all, if this is "true" for a database containing a non-external table.
 RECONCILE_EXTERNAL_DATA="${12:-${RECONCILE_EXTERNAL_DATA:-false}}"
 
+# METADATA_ONLY - "true" or "false" (default: false). Not a positional
+# argument - environment-only, same pattern as DISTCP_OPTS below. When
+# "true", every REPL DUMP/LOAD this script runs (bootstrap, incremental,
+# failover) replicates Hive metastore metadata only - no table data
+# (managed or external) is ever copied:
+#   - DUMP sets 'hive.repl.dump.metadata.only.for.external.table'='true'
+#     instead of 'false' - Hive does not even write external-table
+#     file-list manifests into the dump.
+#   - LOAD sets 'hive.repl.run.data.copy.tasks.on.target'='false' instead
+#     of 'true' - no data-copy YARN job runs on the load target for either
+#     managed or external tables.
+# Mutually exclusive with RECONCILE_EXTERNAL_DATA=true - that flag exists
+# specifically to backfill real data via manual distcp after a
+# metadata-only bootstrap LOAD, which contradicts METADATA_ONLY's "never
+# copy data" intent. The script fails fast, before REPL DUMP/LOAD runs at
+# all, if both are set to "true".
+# Example: METADATA_ONLY=true ./hive_bdr.sh ...
+METADATA_ONLY="${METADATA_ONLY:-false}"
+
+if [[ "${METADATA_ONLY,,}" == "true" && "${RECONCILE_EXTERNAL_DATA,,}" == "true" ]]; then
+  echo "[ERROR] METADATA_ONLY=true and RECONCILE_EXTERNAL_DATA=true are mutually exclusive - RECONCILE_EXTERNAL_DATA backfills real data after a metadata-only LOAD, which contradicts METADATA_ONLY's 'never copy data' intent. Set RECONCILE_EXTERNAL_DATA=false (or omit it) when using METADATA_ONLY=true." >&2
+  exit 1
+fi
+
 # DISTCP_OPTS - tool-specific `hadoop distcp` flags used only by the manual
 # distcp calls this script runs when RECONCILE_EXTERNAL_DATA=true (see
 # reconcile_external_table_data() below). Not a positional argument - only
@@ -580,8 +626,15 @@ RECONCILE_EXTERNAL_DATA="${12:-${RECONCILE_EXTERNAL_DATA:-false}}"
 # settings that are not part of the common/required call shape.
 # "-update"/"-skipcrccheck" are what make distcp genuinely compare source
 # vs. destination and skip files that already match - this is the actual
-# mechanism that avoids re-copying pre-existing, unchanged data.
-DISTCP_OPTS="${DISTCP_OPTS:--p -update -skipcrccheck}"
+# mechanism that avoids re-copying pre-existing, unchanged data. The full
+# default below matches hadoop_dr_replication.sh's COPY_OPTS default
+# exactly, for consistency between this script's manual distcp and that
+# script's: "-strategy dynamic" rebalances file assignment across mappers
+# as the job runs (instead of a fixed static split up front), "-direct"
+# writes straight to the final destination path instead of via a temp
+# location, and "-pugptx" preserves permissions/user/group/checksum-type/
+# timestamp/xattr from source to destination.
+DISTCP_OPTS="${DISTCP_OPTS:---strategy dynamic -direct -update -pugptx -skipcrccheck}"
 
 # Fixed relocation settings for replicated external table data on the
 # destination cluster. These intentionally have no positional argument or
@@ -1338,6 +1391,33 @@ materialized_view_props() {
   fi
 }
 
+# metadata_only_dump_prop: print the
+# 'hive.repl.dump.metadata.only.for.external.table' WITH-clause property
+# (ending in a comma) for a REPL DUMP - 'true' when METADATA_ONLY=true,
+# 'false' otherwise (the default/original behavior).
+metadata_only_dump_prop() {
+  if [[ "${METADATA_ONLY,,}" == "true" ]]; then
+    printf "%s\n" "'hive.repl.dump.metadata.only.for.external.table'='true',"
+  else
+    printf "%s\n" "'hive.repl.dump.metadata.only.for.external.table'='false',"
+  fi
+}
+
+# load_data_copy_prop: print the value ('true'/'false') for
+# 'hive.repl.run.data.copy.tasks.on.target' on a REPL LOAD - 'false' when
+# METADATA_ONLY=true, 'true' otherwise (the default/original behavior).
+# Bootstrap LOAD has its own separate load_data_copy_flag local (see
+# replicate_one_db) since it also accounts for RECONCILE_EXTERNAL_DATA -
+# this helper is for the incremental/failover call sites, which have no
+# such second flag to reconcile with.
+load_data_copy_prop() {
+  if [[ "${METADATA_ONLY,,}" == "true" ]]; then
+    printf "%s" "false"
+  else
+    printf "%s" "true"
+  fi
+}
+
 # Step counters used purely for the progress messages printed to the log
 # (e.g. "[2/5] Running REPL DUMP..."). TOTAL_STEPS covers a normal
 # replication run (replicate_one_db); FAILOVER_TOTAL_STEPS covers a
@@ -1415,7 +1495,7 @@ $(ha_config_props)
 'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
 'hive.repl.include.external.tables'='true',
 'hive.repl.bootstrap.external.tables'='false',
-'hive.repl.dump.metadata.only.for.external.table'='false',
+$(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
@@ -1442,10 +1522,10 @@ $(materialized_view_props)
 ${HDFS_TOKEN_EXCLUDE_PROP}
 $(ha_config_props)
 'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
-'hive.repl.run.data.copy.tasks.on.target'='true',
+'hive.repl.run.data.copy.tasks.on.target'='$(load_data_copy_prop)',
 'hive.repl.include.external.tables'='true',
 'hive.repl.bootstrap.external.tables'='false',
-'hive.repl.dump.metadata.only.for.external.table'='false',
+$(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
@@ -1519,7 +1599,7 @@ $(ha_config_props)
 'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
 'hive.repl.include.external.tables'='true',
 'hive.repl.bootstrap.external.tables'='false',
-'hive.repl.dump.metadata.only.for.external.table'='false',
+$(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
@@ -1540,10 +1620,10 @@ $(materialized_view_props)
 ${HDFS_TOKEN_EXCLUDE_PROP}
 $(ha_config_props)
 'hive.repl.rootdir'='${REPL_ROOT_DIR_DST}',
-'hive.repl.run.data.copy.tasks.on.target'='true',
+'hive.repl.run.data.copy.tasks.on.target'='$(load_data_copy_prop)',
 'hive.repl.include.external.tables'='true',
 'hive.repl.bootstrap.external.tables'='false',
-'hive.repl.dump.metadata.only.for.external.table'='false',
+$(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
@@ -1896,7 +1976,7 @@ $(ha_config_props)
 'hive.repl.rootdir'='${REPL_ROOT_DIR_SRC}',
 'hive.repl.include.external.tables'='true',
 'hive.repl.bootstrap.external.tables'='true',
-'hive.repl.dump.metadata.only.for.external.table'='false',
+$(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
@@ -1925,17 +2005,25 @@ $(materialized_view_props)
     # itself. Leaving this at "false" would silently skip copying
     # external table data, so it is always set explicitly here.
     #
-    # EXCEPTION: when RECONCILE_EXTERNAL_DATA=true, this is deliberately
+    # EXCEPTION 1: when RECONCILE_EXTERNAL_DATA=true, this is deliberately
     # set to "false" instead - REPL LOAD then recreates metadata only (no
     # data copy at all), and reconcile_external_table_data() (called below)
     # does the data copy itself via a manual per-table `hadoop distcp`,
     # which can genuinely skip files already present/unchanged on the load
     # target. See "RECONCILING PRE-EXISTING EXTERNAL TABLE DATA" near the
     # top of this file for why this exists.
+    # EXCEPTION 2: when METADATA_ONLY=true, this is also set to "false" -
+    # but unlike RECONCILE_EXTERNAL_DATA, no distcp backfill follows; data
+    # is never copied at all. The two flags are mutually exclusive
+    # (enforced earlier, at script startup) so only one of these
+    # exceptions can be active in a given run.
     local load_data_copy_flag="true"
     if [[ "${RECONCILE_EXTERNAL_DATA,,}" == "true" ]]; then
       load_data_copy_flag="false"
       echo "RECONCILE_EXTERNAL_DATA=true - bootstrap LOAD will be metadata-only; data copy is done via manual distcp after LOAD completes."
+    elif [[ "${METADATA_ONLY,,}" == "true" ]]; then
+      load_data_copy_flag="false"
+      echo "METADATA_ONLY=true - bootstrap LOAD will be metadata-only; no table data will be copied."
     fi
 
     LOAD_CMD="REPL LOAD ${HIVE_DB_NAME} INTO ${HIVE_DB_NAME} WITH(
@@ -1945,7 +2033,7 @@ $(ha_config_props)
 'hive.repl.run.data.copy.tasks.on.target'='${load_data_copy_flag}',
 'hive.repl.include.external.tables'='true',
 'hive.repl.bootstrap.external.tables'='true',
-'hive.repl.dump.metadata.only.for.external.table'='false',
+$(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
