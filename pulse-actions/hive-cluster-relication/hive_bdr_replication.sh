@@ -885,7 +885,24 @@ derive_db_vars() {
   if [[ "$spec" == *.* ]]; then
     HIVE_DB_NAME="${spec%%.*}"
     HIVE_TABLE_PATTERN="${spec#*.}"
-    HIVE_REPL_SPEC="${spec}"
+    # REPL DUMP's table-level grammar takes the table pattern as its own
+    # quoted StringLiteral, not dot-joined with the db name (REPL DUMP
+    # <db_name> ['<table_pattern>'] WITH(...)) - splicing "db.table"
+    # straight in produces "ParseException ... expecting StringLiteral".
+    #
+    # A multi-table regex (e.g. "sales.'(orders|customers)'") must already
+    # be single-quoted by the caller - that is what protects its "|" from
+    # being treated as a database separator by parse_db_specs() above. If
+    # HIVE_TABLE_PATTERN is already wrapped in a matching pair of single
+    # quotes, use it as-is; only add quotes here for a bare, unquoted
+    # single table name (e.g. "sales.orders"), so it is never quoted twice
+    # (a doubled '' ... '' also produces "ParseException ... expecting
+    # StringLiteral").
+    if [[ "$HIVE_TABLE_PATTERN" == \'*\' ]]; then
+      HIVE_REPL_SPEC="${HIVE_DB_NAME} ${HIVE_TABLE_PATTERN}"
+    else
+      HIVE_REPL_SPEC="${HIVE_DB_NAME} '${HIVE_TABLE_PATTERN}'"
+    fi
   else
     HIVE_DB_NAME="${spec}"
     HIVE_TABLE_PATTERN=""
@@ -1714,7 +1731,20 @@ check_all_tables_external() {
   tables=$(echo "$tables_output" | grep -E "^[A-Za-z0-9_]+$")
 
   if [[ -n "$HIVE_TABLE_PATTERN" ]]; then
-    tables=$(echo "$tables" | grep -E "^${HIVE_TABLE_PATTERN}$" || true)
+    # HIVE_TABLE_PATTERN may still be wrapped in the single quotes the
+    # caller supplied (see derive_db_vars()) - those quotes are only
+    # meaningful to parse_db_specs()/REPL DUMP's grammar, not to grep, so
+    # strip one matched pair before using this as a raw -E regex. Without
+    # this, a documented pattern like "sales.'(orders|customers)'" would
+    # produce grep -E "^'(orders|customers)'$", which cannot match any
+    # real table name and silently short-circuits the EXTERNAL_TABLE
+    # safety check to "no tables to check - pass".
+    local table_pattern_regex="$HIVE_TABLE_PATTERN"
+    if [[ "$table_pattern_regex" == \'*\' ]]; then
+      table_pattern_regex="${table_pattern_regex#\'}"
+      table_pattern_regex="${table_pattern_regex%\'}"
+    fi
+    tables=$(echo "$tables" | grep -E "^${table_pattern_regex}$" || true)
   fi
 
   if [[ -z "$tables" ]]; then
