@@ -1263,19 +1263,37 @@ repl_status_last_id() {
   local jdbc_url="$1"
   local db="$2"
   local output
-  output=$(beeline_exec "${jdbc_url}" -e "REPL STATUS ${db};" 2>&1) || return 1
-  # beeline prints results as a bordered ASCII table, e.g.:
-  #   +--------------+---------------+
-  #   |  dump_dir    | last_repl_id  |
-  #   +--------------+---------------+
-  #   | hdfs://...   | 10884         |
-  #   +--------------+---------------+
+  local repl_status_cmd="REPL STATUS ${db};"
+  echo "Executing on ${jdbc_url}: ${repl_status_cmd}" >&${HEARTBEAT_FD}
+  output=$(beeline_exec "${jdbc_url}" -e "$repl_status_cmd" 2>&1) || return 1
+  # beeline prints results as a bordered ASCII table. The shape varies:
+  #   Two columns (a database that has itself been a DUMP source at some
+  #   point, so it also carries a dump_dir):
+  #     +--------------+---------------+
+  #     |  dump_dir    | last_repl_id  |
+  #     +--------------+---------------+
+  #     | hdfs://...   | 10884         |
+  #     +--------------+---------------+
+  #   One column (the common case - a database queried on a cluster that
+  #   has only ever been a LOAD target, never itself dumped from):
+  #     +---------------+
+  #     | last_repl_id  |
+  #     +---------------+
+  #     | 11166         |
+  #     +---------------+
+  # Confirmed via testing: the one-column shape is what a normal DR
+  # replica returns, and the original pattern set here only matched the
+  # two-column shape - a real, non-NULL last_repl_id on a one-column
+  # result silently produced no match at all, which the caller could not
+  # tell apart from a genuine NULL/not-yet-a-replica database. The
+  # `/^\| *[0-9]+ *\|$/` alternative below (a row that is just one bare
+  # numeric column) closes that gap.
   # last_repl_id is the LAST "|"-delimited column of the one data row
   # (the row that is not the header/border). Extract it directly rather
   # than filtering by shape, since the surrounding connection/session
   # chatter never matches this table format.
   echo "$output" | awk -F'|' '
-    /^\| *[Hh]dfs:\/\// || /^\| *[Nn][Uu][Ll][Ll] *\|/ || /^\|.*\|.*[0-9].*\|/ {
+    /^\| *[Hh]dfs:\/\// || /^\| *[Nn][Uu][Ll][Ll] *\|/ || /^\|.*\|.*[0-9].*\|/ || /^\| *[0-9][0-9]* *\|$/ {
       n = NF
       val = $(n-1)
       gsub(/^[ \t]+|[ \t]+$/, "", val)
@@ -1286,16 +1304,25 @@ repl_status_last_id() {
 
 # preflight_check_direction_change: before reversing replication direction
 # (a DUMP with 'hive.repl.failover.start'='true'), confirm that Hive's own
-# metastore already considers the CURRENT replica (the side about to
-# become the new dump source's replica... no - about to become the new
-# LOAD target) a caught-up replica, i.e. it has a non-NULL last_repl_id
-# from a previous successful REPL LOAD in the current direction.
+# metastore already considers the CURRENT replica - the side that has been
+# receiving replication in the direction ABOUT TO BE REVERSED FROM, i.e.
+# the side about to become the NEW dump source - a caught-up replica, i.e.
+# it has a non-NULL last_repl_id from a previous successful REPL LOAD in
+# the current (pre-reversal) direction.
 #
-# This check must be run against the current LOAD side (LOAD_NAMESERVICE),
-# not the current DUMP side: Hive only records last_repl_id on the side
-# that gets loaded into, never on the dump/source side. Checking the wrong
-# side would always report "not caught up" even when replication is
-# healthy.
+# This must be run against the NEW DUMP side (DUMP_NAMESERVICE, as already
+# resolved for the target REPLICATION_DIRECTION by derive_db_vars()), NOT
+# the NEW LOAD side (LOAD_NAMESERVICE): Hive only records last_repl_id on
+# whichever side has actually been loaded into so far, and in a reversal
+# that is always the side about to become the new dump source (it was the
+# load target under the direction being reversed FROM). The new load side
+# (LOAD_NAMESERVICE) is, by definition, the side that has never yet been a
+# replica in this pairing - checking it there would always report "not
+# caught up", even on a legitimate first-ever failover, since it has no
+# replication history to have recorded a checkpoint into. Confirmed via
+# testing: querying LOAD_NAMESERVICE here made a first-time failover
+# unconditionally fail pre-flight, regardless of how caught-up the real
+# current replica (DUMP_NAMESERVICE, post-reversal) actually was.
 #
 # Only called from failover_one_db(), i.e. only when the caller explicitly
 # requested a direction change for this invocation.
@@ -1525,7 +1552,7 @@ failover_one_db() {
   ########################################
   echo "$SUBSEP"
   echo "[1/${FAILOVER_TOTAL_STEPS}] Pre-flight check..."
-  if ! preflight_check_direction_change "$LOAD_JDBC_URL" "$LOAD_NAMESERVICE"; then
+  if ! preflight_check_direction_change "$DUMP_JDBC_URL" "$DUMP_NAMESERVICE"; then
     echo "ERROR: Aborting direction change for ${HIVE_DB_NAME} - see pre-flight error above"
     return 1
   fi
@@ -2186,7 +2213,33 @@ $(materialized_view_props)
 
 mkdir -p "$LOG_DIR"
 SESSION_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-SESSION_LOG_FILE="$LOG_DIR/hive_bdr_session_${SESSION_TIMESTAMP}.log"
+
+# Fold the database name(s) for this invocation into the session log
+# filename so it can be identified from `ls` alone, without opening the
+# file - the per-database log files already do this (see LOG_FILE in
+# replicate_one_db()/failover_one_db()), but until now the session log
+# covering the whole run did not. A single DB spec contributes its DB name
+# only (the table pattern, if any, is dropped - it can contain regex
+# characters unsafe for a filename); multiple DB specs are joined with
+# "+"; beyond 3 DBs, the name is truncated to the first 3 plus a count, to
+# keep the filename from growing unbounded for a large multi-DB run.
+SESSION_DB_LABEL=""
+for db_spec in "${DB_SPECS[@]}"; do
+  db_name_only="${db_spec%%.*}"
+  db_name_only="${db_name_only//[^A-Za-z0-9_]/}"
+  [[ -z "$db_name_only" ]] && continue
+  if [[ -z "$SESSION_DB_LABEL" ]]; then
+    SESSION_DB_LABEL="$db_name_only"
+  else
+    SESSION_DB_LABEL="${SESSION_DB_LABEL}+${db_name_only}"
+  fi
+done
+if [[ ${#DB_SPECS[@]} -gt 3 ]]; then
+  SESSION_DB_LABEL=$(printf '%s\n' "${DB_SPECS[@]:0:3}" | sed -E 's/\..*$//; s/[^A-Za-z0-9_]//g' | paste -sd+ -)
+  SESSION_DB_LABEL="${SESSION_DB_LABEL}+${#DB_SPECS[@]}dbs"
+fi
+
+SESSION_LOG_FILE="$LOG_DIR/hive_bdr_session_${SESSION_DB_LABEL}_${SESSION_TIMESTAMP}.log"
 
 exec > >(tee -a "$SESSION_LOG_FILE") 2>&1
 
