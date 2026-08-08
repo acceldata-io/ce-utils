@@ -885,23 +885,22 @@ derive_db_vars() {
   if [[ "$spec" == *.* ]]; then
     HIVE_DB_NAME="${spec%%.*}"
     HIVE_TABLE_PATTERN="${spec#*.}"
-    # REPL DUMP's table-level grammar takes the table pattern as its own
-    # quoted StringLiteral, not dot-joined with the db name (REPL DUMP
-    # <db_name> ['<table_pattern>'] WITH(...)) - splicing "db.table"
-    # straight in produces "ParseException ... expecting StringLiteral".
-    #
+    # REPL DUMP's table-level grammar takes <db_name>.'<table_pattern>' -
+    # dot-joined, with the table pattern as its own quoted StringLiteral.
+    # Confirmed directly against HiveServer2 (Hive 4.0.1) via beeline:
+    #   REPL DUMP db 'table' WITH(...)   -> ParseException: missing EOF
+    #                                        at ''table'' near 'db'
+    #   REPL DUMP db.'table' WITH(...)   -> succeeds
     # A multi-table regex (e.g. "sales.'(orders|customers)'") must already
     # be single-quoted by the caller - that is what protects its "|" from
     # being treated as a database separator by parse_db_specs() above. If
     # HIVE_TABLE_PATTERN is already wrapped in a matching pair of single
     # quotes, use it as-is; only add quotes here for a bare, unquoted
-    # single table name (e.g. "sales.orders"), so it is never quoted twice
-    # (a doubled '' ... '' also produces "ParseException ... expecting
-    # StringLiteral").
+    # single table name (e.g. "sales.orders"), so it is never quoted twice.
     if [[ "$HIVE_TABLE_PATTERN" == \'*\' ]]; then
-      HIVE_REPL_SPEC="${HIVE_DB_NAME} ${HIVE_TABLE_PATTERN}"
+      HIVE_REPL_SPEC="${HIVE_DB_NAME}.${HIVE_TABLE_PATTERN}"
     else
-      HIVE_REPL_SPEC="${HIVE_DB_NAME} '${HIVE_TABLE_PATTERN}'"
+      HIVE_REPL_SPEC="${HIVE_DB_NAME}.'${HIVE_TABLE_PATTERN}'"
     fi
   else
     HIVE_DB_NAME="${spec}"
@@ -2204,6 +2203,7 @@ DB_COUNT=${#DB_SPECS[@]}
 
 echo "$SEP"
 echo " Hive Cluster Replication Script Started"
+echo "demo test"
 echo "$SEP"
 echo "Timestamp    : $(date)"
 echo "Databases    : ${DB_COUNT} (${HIVE_DB})"
