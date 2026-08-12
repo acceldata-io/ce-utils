@@ -2256,7 +2256,6 @@ DB_COUNT=${#DB_SPECS[@]}
 
 echo "$SEP"
 echo " Hive Cluster Replication Script Started"
-echo "demo test"
 echo "$SEP"
 echo "Timestamp    : $(date)"
 echo "Databases    : ${DB_COUNT} (${HIVE_DB})"
