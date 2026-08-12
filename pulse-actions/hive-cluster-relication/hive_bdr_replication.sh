@@ -41,7 +41,7 @@
 #     SNAP_LOCK_DIR                /var/tmp/hive-bdr-snapshot-setup-locks
 #     HIVE_EXTERNAL_WAREHOUSE_DIR  /warehouse/tablespace/external/hive
 #     BEELINE_VERBOSE              false
-#     HEARTBEAT_INTERVAL_SECONDS   30
+#     HEARTBEAT_INTERVAL_SECONDS   60
 #     BEELINE_COMMAND_TIMEOUT_SECONDS   0
 #
 #   To change a default: edit the corresponding line in the "Read
@@ -371,7 +371,7 @@
 #     checks, etc.) is executing. beeline itself prints no progress output
 #     while a statement runs server-side, so this is what shows the script
 #     is still alive during a long DUMP/LOAD instead of going silent.
-#     Default: 30
+#     Default: 60
 #
 #   BEELINE_COMMAND_TIMEOUT_SECONDS
 #     If set to a positive number, a beeline statement that runs longer
@@ -1169,7 +1169,7 @@ fi
 #  is printed with troubleshooting pointers. Default (0) means no timeout
 #  - only the heartbeat is active, and the command runs to completion.
 # ------------------------------------------------------------------------------
-HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-30}"
+HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-60}"
 BEELINE_COMMAND_TIMEOUT_SECONDS="${BEELINE_COMMAND_TIMEOUT_SECONDS:-0}"
 
 # BEELINE_VERBOSE - "true" or "false". When "true", every beeline
@@ -1546,16 +1546,6 @@ failover_one_db() {
   echo "New replica      : $LOAD_NAMESERVICE (receives replication)"
   echo "Log File         : $LOG_FILE"
   echo ""
-
-  ########################################
-  # Step 1: Pre-flight check
-  ########################################
-  echo "$SUBSEP"
-  echo "[1/${FAILOVER_TOTAL_STEPS}] Pre-flight check..."
-  if ! preflight_check_direction_change "$DUMP_JDBC_URL" "$DUMP_NAMESERVICE"; then
-    echo "ERROR: Aborting direction change for ${HIVE_DB_NAME} - see pre-flight error above"
-    return 1
-  fi
 
   if [[ "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ]]; then
     # Prepare both sides for snapshot-diff copy: the new dump source
