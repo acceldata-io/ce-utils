@@ -4,33 +4,6 @@
 # Version: 4.2.0
 # Copyright (c) 2025 Acceldata Inc. All rights reserved.
 #
-# Changes in 4.2.0 (vs earlier hadoop_dr_replication.sh):
-#   - Merged the old DISTCP_FILTER_ENABLED + DISTCP_FILTER_FILE pair into a
-#     single positional argument, DISTCP_EXCLUDE_PATTERNS: empty = disabled,
-#     a non-empty value (comma-separated regex patterns, passed INLINE --
-#     not a file path) enables path-exclusion filtering. Frees up one CLI
-#     slot and removes the need for the operator to hand-create a file.
-#   - The script itself materializes the actual DistCp -filters file, keyed
-#     deterministically per replication job (SOURCE_CLUSTER + DEST_CLUSTER +
-#     SNAP_PREFIX) under /var/tmp/dr-distcp-filters/ -- unique across the
-#     hundreds of concurrently-running replication pairs, and idempotently
-#     overwritten (not uniquified) on every run of the SAME job, so reruns
-#     never pile up stray files.
-#   - Every pattern is validated at startup (each must compile as a regex)
-#     instead of failing deep inside a running DistCp/YARN job.
-#   - LOG_PATH moved from positional arg 10 to the LAST positional slot, so it
-#     no longer shifts every time a new flag is appended.
-#   - DIR_BOOTSTRAP_MODE removed entirely from the CLI/env surface and
-#     HARDCODED to "yes" (auto-bootstrap missing destination directories).
-#     No positional slot, no environment variable override.
-#   - REVERSE_DIFF_BOOTSTRAP and HDFS_STATE_DIR (previously env-var-only, no
-#     CLI slot reserved) are now also positional arguments (16 and 17), so
-#     orchestration wrappers can set them explicitly per invocation instead
-#     of only via environment variables. Env var override still works as a
-#     fallback when the CLI argument is omitted/empty.
-#   - Net result: 17 positional args -> 17 positional args (15 core args,
-#     unchanged in count from before this rework, plus these 2 previously
-#     env-only knobs now also exposed positionally).
 #
 # Description:
 #   Pull-based HDFS disaster recovery replication script.
@@ -112,7 +85,7 @@
 #                              Values: "pull" or "push"
 #                              "pull" = YARN runs on DR/target cluster, source has no compute overhead
 #                              "push" = YARN runs on source/production cluster
-#   15) LOG_PATH            - Path to log file (default: /var/log/hadoop-replication/hadoop-dr-replicate.log)
+#   15) LOG_PATH            - Path to log file (default: /var/log/hadoop-dr-replicate.log)
 #   16) REVERSE_DIFF_BOOTSTRAP - Attempt incremental reverse-diff bootstrap on a detected
 #                              failover/failback direction reversal (optional, default: "no")
 #                              Values: "yes" or "no". Also settable via the
@@ -175,6 +148,17 @@
 #     the operator guidance printed at the relevant failure points (direction
 #     reversal, split-brain, reverse-diff-bootstrap divergent writes) for the
 #     exact commands.
+#     AND clearing all three copies is itself no longer sufficient to force a
+#     re-baseline: Stage 3 confirms the "brand new" verdict against LIVE snapshot
+#     listings on both clusters before creating a baseline (see
+#     confirm_brand_new_against_live_snapshots), because state-cache absence is
+#     NOT evidence that a directory was never replicated -- treating it as such
+#     could re-baseline an already-replicating directory on top of live data and
+#     silently gap DR. With state cleared but snapshots still present, Stage 3
+#     REHYDRATES state from the live snapshots instead of baselining. To force a
+#     real re-baseline, either delete every ${SNAP_PREFIX}_* snapshot for the
+#     directory on BOTH clusters (preferred), or set FORCE_REBASELINE=yes to
+#     override the live confirmation explicitly (see that env var below).
 #
 # Environment Variables (Optional):
 #   - REVERSE_DIFF_BOOTSTRAP - Attempt incremental reverse-diff bootstrap on failover (default: "no")
@@ -253,6 +237,24 @@
 #     generic scratch space safe to delete. Do not rename this to a generic
 #     or hidden (dotfile) name.
 #     Example: export HDFS_STATE_DIR=/tmp/pulse_replication_action
+#   - FORCE_REBASELINE - Override Stage 3's live-snapshot confirmation of the
+#     "brand new directory" verdict (default: "no"). Values: "yes" or "no".
+#     Env var only (no CLI argument slot), since it is only used interactively
+#     during operator recovery.
+#     Stage 3 no longer decides "brand new" from state-file absence alone -- it
+#     confirms that against live ".snapshot" listings on both clusters, and:
+#       - shared snapshot found  -> REHYDRATES state from it, skips baseline
+#       - unshared snapshots only, or a listing failed -> REFUSES to baseline
+#       - nothing found          -> baselines as before
+#     That closes a silent-data-gap hole (see the HDFS STATE MIRROR notes above
+#     and confirm_brand_new_against_live_snapshots), but it also means the
+#     documented "clear state to force a re-baseline" recovery no longer works on
+#     its own. Set this to "yes" to make Stage 3 trust cleared state and baseline
+#     anyway. It only affects directories whose state is ALREADY absent
+#     (directories with intact state never reach the gate), so clearing state for
+#     one directory plus this flag re-baselines exactly that directory.
+#     WARNING: a re-baseline performs a FULL copy that overwrites the destination.
+#     Example: export FORCE_REBASELINE=yes
 #   - HADOOP_CLIENT_OPTS    - JVM options for the DistCp DRIVER/client (NOT the YARN mappers).
 #     Default applied by this script if unset: -Xmx5g
 #     The client builds the copy listing and computes snapshot diffs in-process; the Hadoop
@@ -297,7 +299,7 @@
 #     "no" \
 #     "" \
 #     "pull" \
-#     "/var/log/hadoop-replication/hadoop-dr-replicate.log"
+#     "/var/log/hadoop-dr-replicate.log"
 #
 #   With path exclusion filter and push mode (patterns passed inline, NOT a
 #   file path -- the script generates and manages the actual filter file):
@@ -311,7 +313,7 @@
 #     "no" \
 #     ".*dir4/sub2.*,.*/staging/.*" \
 #     "push" \
-#     "/var/log/hadoop-replication/hadoop-dr-replicate.log"
+#     "/var/log/hadoop-dr-replicate.log"
 #
 # Purpose & properties:
 #   - Idempotent and safe for repeated runs.
@@ -343,9 +345,17 @@
 #            - Each directory has its own marker file recording whether Stage 2 last
 #              succeeded (informational only -- never gates re-running allowSnapshot)
 #   Stage 3: Baseline snapshot creation (idempotent)
-#            - Create initial snapshot ${SNAP_PREFIX}_0 on source and destination for
-#              directories lacking a state file.
-#            - If baseline snapshots were created:
+#            - For directories lacking a state file, CONFIRM they are really brand new
+#              against live ".snapshot" listings on both clusters before baselining
+#              (confirm_brand_new_against_live_snapshots). State-cache absence alone is
+#              not evidence a directory was never replicated:
+#                * a snapshot shared by both clusters -> real history: rehydrate state
+#                  from it and skip baselining (no full copy)
+#                * unshared snapshots on both sides, destination-only history, or a
+#                  failed listing -> refuse to baseline, fail the directory
+#                * nothing found (or FORCE_REBASELINE=yes) -> create ${SNAP_PREFIX}_0
+#                  on source and destination
+#            - If baseline snapshots were created (only for those directories):
 #                * If AUTO_FULL_DISTCP="yes": Automatically runs full DistCp for each
 #                  directory, creates new baseline snapshot on destination (post-DistCp state),
 #                  then exits. Operator must re-run script for incremental sync.
@@ -423,7 +433,7 @@
 #   • YARN queue for DistCp jobs must exist on the target cluster.
 #
 # -----------------------------------------------------------------------------
-# ./hadoop_dr_replication_4.2.0.sh "prod-namenode-1.example.com:8020" "dr-namenode-1.example.com:8020" "/data/warehouse,/data/analytics" "dr_snap" 3 "hdfs" "hdfs" "-update -pugpx" "default" "no" "no" "no" "" "pull" "/var/log/hadoop-replication/hadoop-dr-replicate.log"
+# ./hadoop_dr_replication_4.2.0.sh "prod-namenode-1.example.com:8020" "dr-namenode-1.example.com:8020" "/data/warehouse,/data/analytics" "dr_snap" 3 "hdfs" "hdfs" "-update -pugpx" "default" "no" "no" "no" "" "pull" "/var/log/hadoop-dr-replicate.log"
 #
 
 set -euo pipefail
@@ -536,7 +546,7 @@ REPLICATION_MODE_ARG="${14:-}"
 # Kept ahead of REVERSE_DIFF_BOOTSTRAP (arg 16) so existing arg-15 invocations
 # of this script don't shift; new flags get appended after it instead.
 ###############################################################################
-LOG="${15:-/var/log/hadoop-replication/hadoop-dr-replicate.log}"
+LOG="${15:-/var/log/hadoop-dr-replicate.log}"
 
 ###############################################################################
 # Reverse-diff bootstrap for failover/failback (priority: CLI arg 16 -> env var -> default)
@@ -595,6 +605,31 @@ else
 fi
 
 ###############################################################################
+# FORCE_REBASELINE: operator escape hatch for Stage 3's brand-new-directory gate.
+#
+# Stage 3 no longer decides "is this directory brand new?" from state-file
+# presence alone -- it confirms that verdict against LIVE snapshot listings on
+# both clusters (see confirm_brand_new_against_live_snapshots). That closed a
+# real data-loss hole (total state loss -> re-baselining an already-replicating
+# directory on top of live data), but it also means that clearing state files is
+# by itself no longer enough to force a deliberate re-baseline: the gate would
+# simply rehydrate the state from the live snapshots it finds.
+#
+# Set FORCE_REBASELINE=yes to make Stage 3 trust the cleared state and baseline
+# anyway, for the documented manual-recovery procedures (no-common-snapshot,
+# split-brain, direction reversal) printed at the relevant failure points.
+#
+# SCOPING: this is a global flag, but it only has any effect on directories
+# whose state is ALREADY absent -- directories with intact state never reach the
+# gate at all. So "clear state for directory X + FORCE_REBASELINE=yes"
+# re-baselines exactly X, leaving every other directory on its normal
+# incremental path. Env var only (no CLI slot), since it is only ever used
+# interactively during operator recovery.
+# Example: export FORCE_REBASELINE=yes
+###############################################################################
+FORCE_REBASELINE="${FORCE_REBASELINE:-no}"
+
+###############################################################################
 # Per-NameService HA client config injection (env var only for now -> default OFF). No CLI argument slot
 # reserved yet -- same CLI-arg/env-var/default pattern as REVERSE_DIFF_BOOTSTRAP/HDFS_STATE_DIR.
 #
@@ -641,7 +676,7 @@ fi
 #
 # Example: export HA_CONFIG_IN_WITH_CLAUSE=yes
 ###############################################################################
-HA_CONFIG_IN_WITH_CLAUSE="${HA_CONFIG_IN_WITH_CLAUSE:-no}"
+HA_CONFIG_IN_WITH_CLAUSE="${HA_CONFIG_IN_WITH_CLAUSE:-false}"
 
 ###############################################################################
 # SRC_NN_HOSTS / DST_NN_HOSTS - required when HA_CONFIG_IN_WITH_CLAUSE=true. Comma-separated
@@ -656,7 +691,7 @@ HA_CONFIG_IN_WITH_CLAUSE="${HA_CONFIG_IN_WITH_CLAUSE:-no}"
 #
 # Example:
 #   export SRC_NN_HOSTS="nn1=atlasdemo-01.adsre.com:8020,nn2=atlasdemo-02.adsre.com:8020"
-#   export DST_NN_HOSTS="nn1=repl1.adsre.com:8020,nn2=repl2.adsre.com:8020"
+#   export DST_NN_HOSTS=""nn1=odplab001.adsre.com:8020,nn2=odplab002.adsre.com:8020"
 #
 # NN ids (nn1/nn2/...) can be any short token -- they only need to be unique within one NameService, and are
 # used verbatim in "dfs.ha.namenodes.<ns>" and "dfs.namenode.rpc-address.<ns>.<nnid>". Two NN entries is the
@@ -670,7 +705,7 @@ HA_CONFIG_IN_WITH_CLAUSE="${HA_CONFIG_IN_WITH_CLAUSE:-no}"
 ###############################################################################
 SRC_NN_HOSTS="${SRC_NN_HOSTS:-}"
 DST_NN_HOSTS="${DST_NN_HOSTS:-}"
-
+#
 #
 # ROLLBACK_ON_FAILURE for DR Cluster is a safeguard for handling the common snapshot-modified error "DistCp:
 # The target has been modified since snapshot" during DistCp (when DR data has diverged from expected snapshot
@@ -1116,13 +1151,172 @@ _derive_one_cluster_ha_props() {
 }
 
 derive_nameservice_ha_conf() {
-    _derive_one_cluster_ha_props "$SOURCE_CLUSTER" "$SRC_NN_HOSTS" "SOURCE"
-    _derive_one_cluster_ha_props "$DEST_CLUSTER" "$DST_NN_HOSTS" "DEST"
+    # Keyed by SRC_URI_NS/DST_URI_NS (set in main(), BEFORE this is called), not raw SOURCE_CLUSTER/
+    # DEST_CLUSTER -- identical in the normal (non-colliding) case, but SRC_URI_NS becomes a synthetic alias
+    # ("<name>-SRCALIAS") and DST_URI_NS becomes a bare, resolved host:port when SOURCE_CLUSTER and
+    # DEST_CLUSTER share the same nameservice name. See the SRC_URI_NS/DST_URI_NS doc comment in main() for
+    # the full "why" of that aliasing design.
+    #
+    # SAME-NAMESERVICE COLLISION CASE (confirmed by direct testing -- a real, distinct bug from the aliasing
+    # design itself): "dfs.nameservices" is not merged with this node's own native hdfs-site.xml value, it is
+    # REPLACED by whatever this "-D" flag sets. This node's native "dfs.nameservices" already lists the real
+    # shared name (e.g. "ODP-Phoenix", since DR was built from the same blueprint as production) -- and
+    # something UNRELATED to any URI this script builds needs that native entry to keep resolving: YARN's own
+    # internal "FileContext"/"YARNRunner" cluster-startup code resolves "fs.defaultFS" (also
+    # "hdfs://ODP-Phoenix" on this node) using whatever "dfs.nameservices" is in effect for the process. If
+    # our injected "-D" replaces the list with only the alias, that startup code fails hard with "Could not
+    # find any configured addresses for URI hdfs://ODP-Phoenix" -- confirmed reproducing this exact error via
+    # direct testing, and confirmed fixed by keeping the real native name in the list alongside the alias
+    # rather than replacing it.
+    #
+    # DST_URI_NS gets NO HA properties at all in the collision case: it is already a concrete, resolved
+    # "host:port" (see resolve_active_namenode_hostport), not an HA nameservice name, and confirmed by direct
+    # testing to need no "dfs.ha.namenodes.*"/"dfs.namenode.rpc-address.*" entries and no membership in
+    # "dfs.nameservices" -- DistCp/YARN address it directly via the bare host:port already embedded in every
+    # "hdfs://$DST_URI_NS" URI this script builds.
+    _derive_one_cluster_ha_props "$SRC_URI_NS" "$SRC_NN_HOSTS" "SOURCE"
+    local nameservices_csv
+    if [[ "$SAME_NAMESERVICE_COLLISION" == "true" ]]; then
+        nameservices_csv="${SOURCE_CLUSTER},${SRC_URI_NS}"
+        log "[INFO] [NAMESERVICE-CONF] Same-nameservice collision: keeping native nameservice '$SOURCE_CLUSTER' in dfs.nameservices alongside alias '$SRC_URI_NS' (required for YARN's own internal cluster-startup resolution of fs.defaultFS -- confirmed by direct testing). DST_URI_NS ($DST_URI_NS) is a bare host:port and is intentionally NOT added here."
+    else
+        _derive_one_cluster_ha_props "$DST_URI_NS" "$DST_NN_HOSTS" "DEST"
+        nameservices_csv="${SRC_URI_NS},${DST_URI_NS}"
+    fi
     # Combined dfs.nameservices (ONE value listing both names -- see the DESIGN note above for why this must
     # never be two separate "-D" flags) and automatic-failover flag, matching the reference invocation.
-    NAMESERVICE_HA_ARGS+="-Ddfs.nameservices=${SOURCE_CLUSTER},${DEST_CLUSTER}"$'\n'
+    NAMESERVICE_HA_ARGS+="-Ddfs.nameservices=${nameservices_csv}"$'\n'
     NAMESERVICE_HA_ARGS+="-Ddfs.ha.automatic-failover.enabled=true"$'\n'
-    log "[INFO] [NAMESERVICE-CONF] Derived combined HA client config for SOURCE_CLUSTER ($SOURCE_CLUSTER) and DEST_CLUSTER ($DEST_CLUSTER) from SRC_NN_HOSTS/DST_NN_HOSTS."
+    log "[INFO] [NAMESERVICE-CONF] Derived combined HA client config for SOURCE_CLUSTER ($SRC_URI_NS) and DEST_CLUSTER ($DST_URI_NS) from SRC_NN_HOSTS/DST_NN_HOSTS."
+}
+
+# Render NAMESERVICE_HA_ARGS as a single space-joined string of "-D..." flags, suitable for splicing into a
+# command line PRINTED for an operator to copy-paste (e.g. the manual-DistCp instructions in Stage 3).
+#
+# WHY THIS EXISTS: run_as_hdfs()/run_as_distcp() inject these same properties automatically for any command
+# the SCRIPT ITSELF runs (see _collect_nameservice_inject_args), so a same-nameservice-alias URI like
+# "hdfs://<name>-SRCALIAS" resolves correctly whenever this script is the one invoking hadoop/hdfs. But Stage 3's
+# manual-mode DistCp instructions are printed text the OPERATOR runs by hand in their own shell, completely
+# outside run_as_distcp -- copy-pasting the bare "hadoop distcp ... hdfs://<alias>/path ..." command without
+# these flags fails, because no hdfs-site.xml anywhere defines the synthetic alias. Prefixing the printed
+# command with the same "-D" set makes it correctly self-contained and runnable standalone.
+#
+# Returns empty string (safe to prefix unconditionally) when HA_CONFIG_IN_WITH_CLAUSE is disabled or nothing
+# has been derived yet -- callers should call this only after derive_nameservice_ha_conf() has run.
+render_nameservice_ha_args_for_display() {
+    if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" != "yes" ]] || [[ -z "$NAMESERVICE_HA_ARGS" ]]; then
+        printf ''
+        return 0
+    fi
+    local -a props
+    readarray -t props <<<"$NAMESERVICE_HA_ARGS"
+    local prop out=""
+    for prop in "${props[@]}"; do
+        [[ -n "$prop" ]] && out+="$prop "
+    done
+    printf '%s' "$out"
+}
+
+# -----------------------------------------------------------------------------
+# resolve_active_namenode_hostport: for the same-nameservice-collision case (see main()'s SRC_URI_NS/
+# DST_URI_NS doc comment), find the DR/destination side's CURRENTLY ACTIVE NameNode and return its bare
+# "host:port" so DST_URI_NS can target it directly, instead of an ambiguous nameservice name.
+#
+# WHY THIS EXISTS: a bare, real NameNode host:port has none of the ambiguity problems a nameservice NAME
+# does in the same-nameservice-collision case (see the SRC_URI_NS aliasing doc comment in main() for the
+# full "why", including two confirmed-by-direct-testing failure modes: YARN token renewal/container
+# localization cannot resolve a synthetic alias name, and fs.defaultFS becomes ambiguous if the real shared
+# name is ever injected as a "-D" property for either side). YARN's RM/NM already know how to renew and
+# localize against any concrete host:port using the cluster's normal Kerberos/token machinery, with no name
+# ambiguity involved anywhere in the job.
+#
+# HOW IT WORKS (JMX-based, NOT haadmin): queries each nn-id's own NameNode web UI JMX endpoint directly --
+# "http(s)://<host>:<web-port>/jmx?qry=Hadoop:service=NameNode,name=FSNamesystem" -- and reads the
+# "tag.HAState" field, exactly the same technique check_cluster_health() already uses elsewhere in this
+# script to determine ACTIVE/STANDBY. This was chosen over "hdfs haadmin -getServiceState <alias>.<nn-id>"
+# after direct testing showed haadmin does NOT accept ad-hoc "-D" HA properties as a resolvable
+# nameservice the way "hdfs dfs"/"hdfs dfsadmin" do: even with the exact same derived HA properties
+# haadmin failed with "Illegal argument: Unable to determine service address for namenode
+# '<alias>.<nn-id>'" -- HAAdmin's own target-address resolution needs the nameservice statically present
+# in hdfs-site.xml, not just passed as generic options. JMX has no such requirement: it is a plain HTTP
+# call directly against a concrete host:port (no nameservice, alias, or hdfs-site.xml lookup involved at
+# all), so it works identically regardless of whether this node's config knows about the DR nameservice.
+#
+# CAVEAT (accepted tradeoff, not fixable without a cluster config change): this resolves the active
+# NameNode ONCE, near the top of main(). If the DR cluster's own internal NameNode HA fails over WHILE this
+# script is running (a real failover of the DR cluster's own two NameNodes, not a DR drill), every
+# subsequent hdfs/distcp call in this run would keep targeting the now-standby host and fail with
+# "Operation category ... not supported in state standby" -- the operator would need to re-run the script,
+# at which point this function re-resolves the (new) active NameNode fresh.
+#
+# FAILOVER/FAILBACK CORRECTNESS: this function always resolves whichever physical NameNode pair is
+# CURRENTLY named by DST_NN_HOSTS -- it has no hardcoded notion of "prod" or "DR". Combined with the
+# existing, already-documented operator requirement (see the SRC_NN_HOSTS/DST_NN_HOSTS doc comment above)
+# to swap the VALUES of SRC_NN_HOSTS/DST_NN_HOSTS whenever SOURCE_CLUSTER/DEST_CLUSTER are swapped after a
+# role reversal, this makes all three DR lifecycle directions work correctly with zero special-casing:
+#   Prod -> DR (forward)  : DST_NN_HOSTS = DR's NN pair    -> resolves DR's active NameNode
+#   DR -> Prod (failover) : DST_NN_HOSTS = Prod's NN pair  -> resolves Prod's active NameNode
+#   Prod -> DR (failback) : DST_NN_HOSTS = DR's NN pair    -> resolves DR's active NameNode (again)
+# In every direction, "the destination" is resolved by NAME (SRC_NN_HOSTS/DST_NN_HOSTS content), never by
+# which physical cluster the operator mentally considers "production" -- exactly mirroring how
+# SOURCE_CLUSTER/DEST_CLUSTER themselves already work as pure role labels elsewhere in this script.
+#
+# WHICH HTTP SCHEME/PORT: uses DEST_HTTP_SCHEME/DEST_NN_WEB_PORT (the same env vars check_cluster_health
+# uses for DEST_CLUSTER) since DST_NN_HOSTS always describes whichever NameService is CURRENTLY the
+# destination -- consistent with the FAILOVER/FAILBACK CORRECTNESS note above.
+#
+# Sets the global RESOLVED_ACTIVE_NN_HOSTPORT ("host:port") on success. FAILS FAST (exit 19) if no nn-id in
+# DST_NN_HOSTS reports itself active -- proceeding without a confirmed active target would let every later
+# hdfs/distcp call in this run hang or fail with a far more confusing standby-state error deep inside a
+# stage, instead of one clear message here.
+# -----------------------------------------------------------------------------
+resolve_active_namenode_hostport() {
+    local nn_hosts="$1"
+    RESOLVED_ACTIVE_NN_HOSTPORT=""
+
+    local -a pairs=()
+    IFS=',' read -r -a pairs <<<"$nn_hosts"
+
+    local pair nn_id nn_addr nn_host jmx_url jmx_response ha_state
+    for pair in "${pairs[@]}"; do
+        [[ -z "$pair" ]] && continue
+        nn_id="${pair%%=*}"
+        nn_addr="${pair#*=}"
+        [[ -z "$nn_id" || -z "$nn_addr" ]] && continue
+        nn_host="${nn_addr%%:*}"
+
+        jmx_url="${DEST_HTTP_SCHEME}://${nn_host}:${DEST_NN_WEB_PORT}/jmx?qry=Hadoop:service=NameNode,name=FSNamesystem"
+        log "[DEBUG] [ACTIVE-NN-RESOLVE] Checking service state of ${nn_id} ($nn_addr) via JMX: $jmx_url"
+
+        if [[ "$KERBEROS_ENABLED" == "yes" ]]; then
+            jmx_response=$(curl -ik --silent --max-time 10 --fail --negotiate -u : "$jmx_url" 2>/dev/null || true)
+            if [[ -z "$jmx_response" ]] || ! echo "$jmx_response" | grep -q "FSNamesystem"; then
+                jmx_response=$(curl -ik --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
+            fi
+        else
+            jmx_response=$(curl -ik --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
+        fi
+
+        if [[ -z "$jmx_response" ]] || ! echo "$jmx_response" | grep -q "FSNamesystem"; then
+            log "[DEBUG] [ACTIVE-NN-RESOLVE] ${nn_id} ($nn_addr) unreachable or no FSNamesystem JMX bean at $jmx_url"
+            continue
+        fi
+
+        ha_state=$(echo "$jmx_response" | grep -o '"tag.HAState"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null | head -1 | sed -E 's/.*"tag.HAState"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/' || true)
+
+        if [[ "${ha_state,,}" == "active" ]]; then
+            RESOLVED_ACTIVE_NN_HOSTPORT="$nn_addr"
+            log "[INFO] [ACTIVE-NN-RESOLVE] ${nn_id} ($nn_addr) is ACTIVE (via JMX). Using it directly for DST_URI_NS (bypasses the alias for all subsequent hdfs/distcp calls)."
+            return 0
+        fi
+        log "[DEBUG] [ACTIVE-NN-RESOLVE] ${nn_id} ($nn_addr) is not active (HAState: ${ha_state:-<unknown>})"
+    done
+
+    echo "[ERROR] Could not find an ACTIVE NameNode among DST_NN_HOSTS ('$nn_hosts') via JMX." >&2
+    echo "[ERROR] Verify manually, e.g.: curl -sk \"${DEST_HTTP_SCHEME}://<nn-host>:${DEST_NN_WEB_PORT}/jmx?qry=Hadoop:service=NameNode,name=FSNamesystem\"" >&2
+    echo "[ERROR] Every nn-id reported non-active or unreachable -- see [DEBUG] [ACTIVE-NN-RESOLVE] lines" >&2
+    echo "[ERROR] above (re-run with DISTCP_DEBUG=yes if those were suppressed) for the per-NameNode detail." >&2
+    exit 19
 }
 
 # Scan "$@" for ANY "hdfs://" reference (covers both the "-fs hdfs://<ns>" form used by hdfs
@@ -1369,12 +1563,12 @@ resolve_state_file() {
     # needed, and this requires reading both mirrors rather than short-circuiting on the first.
     local hydrated_content="" source_candidate="" dest_candidate=""
     local source_usable=false dest_usable=false
-    if source_candidate="$(_read_hdfs_state_mirror "$key" "$SOURCE_CLUSTER")" && _hdfs_mirror_content_is_complete "$source_candidate"; then
+    if source_candidate="$(_read_hdfs_state_mirror "$key" "$SRC_URI_NS")" && _hdfs_mirror_content_is_complete "$source_candidate"; then
         source_usable=true
     elif [[ -n "${source_candidate:-}" ]]; then
         log "[WARN] [HDFS-STATE-MIRROR] HDFS mirror on SOURCE_CLUSTER ($SOURCE_CLUSTER) for key=$key looks empty/unreadable (likely raced an in-flight write). Ignoring it rather than hydrating a bogus fast-path hint."
     fi
-    if dest_candidate="$(_read_hdfs_state_mirror "$key" "$DEST_CLUSTER")" && _hdfs_mirror_content_is_complete "$dest_candidate"; then
+    if dest_candidate="$(_read_hdfs_state_mirror "$key" "$DST_URI_NS")" && _hdfs_mirror_content_is_complete "$dest_candidate"; then
         dest_usable=true
     elif [[ -n "${dest_candidate:-}" ]]; then
         log "[WARN] [HDFS-STATE-MIRROR] HDFS mirror on DEST_CLUSTER ($DEST_CLUSTER) for key=$key looks truncated/incomplete. Ignoring it."
@@ -1498,6 +1692,100 @@ resolve_state_file_and_check_new() {
     RESOLVED_STATE_FILE="$state_file"
 }
 
+# -----------------------------------------------------------------------------
+# confirm_brand_new_against_live_snapshots: corroborate IS_BRAND_NEW_DIR against LIVE snapshot listings on both
+# clusters before Stage 3 is allowed to create a ${SNAP_PREFIX}_0 baseline.
+#
+# WHY THIS EXISTS (data-loss hole this closes): IS_BRAND_NEW_DIR is derived purely from state-file PRESENCE --
+# three [[ -f ]]/-cat probes (local path, old local path, both HDFS mirrors). "No state file anywhere" was then
+# used as a proxy for "this directory has never been replicated", but those are NOT the same statement. Lose all
+# three copies at once (node rebuilt + /var/tmp wiped + an HDFS_STATE_DIR cleanup, or a fresh node during a
+# failover before any mirror was readable) and the proxy lies, with two outcomes:
+#
+#   (1) ${SNAP_PREFIX}_0 still exists on both clusters -> createSnapshot returns "already a snapshot with the
+#       same name", Stage 3 treats that as idempotent success, and (AUTO_FULL_DISTCP=yes) a needless FULL copy
+#       of an already-synced directory runs. Wasteful, but recoverable.
+#   (2) ${SNAP_PREFIX}_0 was already pruned by retention (SNAP_RETAIN defaults to 3, and cleanup deletes
+#       oldest-first, so index 0 is the FIRST to go) -> a FRESH ${SNAP_PREFIX}_0 is created on each cluster
+#       capturing each side's CURRENT, DIVERGENT content. On the next run, ${SNAP_PREFIX}_1 is absent from the
+#       destination too (also pruned), so verify_cached_snap_fast_path CONFIRMS the bogus baseline and Stage 4
+#       runs "distcp -diff ${SNAP_PREFIX}_0 ${SNAP_PREFIX}_1". Every source change made between the last real
+#       sync and the state loss lives INSIDE source's new ${SNAP_PREFIX}_0, so it is never in the diff and is
+#       never copied -- a SILENT data gap on DR, with no error raised on any run.
+#
+# The fix is to stop treating cache absence as evidence about the clusters, and instead ask the clusters, using
+# the same live listing-and-intersection algorithm Stage 4 already trusts for direction safety
+# (derive_direction_state). A snapshot present on BOTH clusters is proof of real replication history no matter
+# what the state cache says or doesn't say.
+#
+# Sets (globals; plain-statement calling convention -- this function calls log() internally and MUST NOT be
+# invoked via command substitution, same rule as derive_direction_state / resolve_state_file):
+#   BRAND_NEW_VERDICT        - "new"         genuinely brand new; safe to baseline.
+#                              "has_history" real shared history exists; the state cache was lost. Caller must
+#                                            REHYDRATE state from $BRAND_NEW_RECOVERED_SNAP and NOT baseline.
+#                              "unsafe"      cannot confirm; caller MUST NOT baseline (fail the directory).
+#   BRAND_NEW_VERDICT_REASON - human-readable reason, for logs and operator output.
+#   BRAND_NEW_RECOVERED_SNAP - live last common snapshot name; set only for "has_history".
+#
+# Returns 0 always -- the verdict is the output, not the exit status.
+# -----------------------------------------------------------------------------
+confirm_brand_new_against_live_snapshots() {
+    local d="$1"
+    BRAND_NEW_VERDICT="unsafe"
+    BRAND_NEW_VERDICT_REASON=""
+    BRAND_NEW_RECOVERED_SNAP=""
+
+    # Operator escape hatch: the documented manual-recovery procedures (no-common-snapshot, split-brain,
+    # direction reversal) deliberately clear state to force a re-baseline. Those procedures also instruct
+    # deleting every ${SNAP_PREFIX}_* snapshot on both clusters, which would make the live check below agree
+    # anyway -- but FORCE_REBASELINE=yes lets an operator who has confirmed the authoritative side proceed
+    # without that step. See the FORCE_REBASELINE block near the top of this script.
+    if [[ "${FORCE_REBASELINE,,}" == "yes" ]]; then
+        BRAND_NEW_VERDICT="new"
+        BRAND_NEW_VERDICT_REASON="FORCE_REBASELINE=yes -- live snapshot confirmation deliberately bypassed by operator"
+        log "[WARN] [BRAND-NEW-GATE] $d: FORCE_REBASELINE=yes -- skipping live snapshot confirmation and treating this directory as brand new. This creates ${SNAP_PREFIX}_0 and triggers a FULL copy that overwrites the destination."
+        return 0
+    fi
+
+    derive_direction_state "$d"
+
+    # Fail closed on an unreadable listing. Baselining blind is exactly outcome (2) above; also catches the case
+    # where Stage 2's allowSnapshot failed (logged there as a [WARN], non-fatal), which leaves "$d/.snapshot"
+    # nonexistent and unlistable on that cluster.
+    if [[ "$DIRECTION_STATE_OK" != "true" ]]; then
+        BRAND_NEW_VERDICT="unsafe"
+        BRAND_NEW_VERDICT_REASON="live snapshot listing failed on one or both clusters (see the [ERROR] [DIRECTION-DERIVE] lines above; if Stage 2 reported an allowSnapshot [WARN] for this directory, fix that first)"
+        return 0
+    fi
+
+    # THE LOAD-BEARING CHECK: a snapshot present on both clusters is real shared replication history.
+    if ((LAST_COMMON_SNAP_INDEX >= 0)); then
+        BRAND_NEW_VERDICT="has_history"
+        BRAND_NEW_RECOVERED_SNAP="$LAST_COMMON_SNAP_NAME"
+        BRAND_NEW_VERDICT_REASON="live listings show '$LAST_COMMON_SNAP_NAME' present on BOTH clusters -- this directory has real replication history despite its state cache being absent"
+        return 0
+    fi
+
+    # No shared snapshot, but one side has history: divergence, not a fresh directory. Baselining here would
+    # copy SOURCE over a destination that may hold the only copy of something.
+    if [[ "$SPLIT_BRAIN_DETECTED" == "true" ]]; then
+        BRAND_NEW_VERDICT="unsafe"
+        BRAND_NEW_VERDICT_REASON="both clusters hold ${SNAP_PREFIX}_* snapshots but share none -- independent divergence, not a fresh directory"
+        return 0
+    fi
+    if [[ "$DIRECTION_REVERSED" == "true" ]]; then
+        BRAND_NEW_VERDICT="unsafe"
+        BRAND_NEW_VERDICT_REASON="DEST_CLUSTER holds ${SNAP_PREFIX}_* snapshots that SOURCE_CLUSTER lacks, with no shared snapshot -- DEST_CLUSTER may be the authoritative side (post-failover), so baselining would overwrite it"
+        return 0
+    fi
+
+    # No shared snapshot and no destination-side history: either both sides are clean, or only SOURCE has
+    # leftover snapshots with no common point. Both genuinely need a full baseline.
+    BRAND_NEW_VERDICT="new"
+    BRAND_NEW_VERDICT_REASON="no ${SNAP_PREFIX}_* snapshot is shared by both clusters and DEST_CLUSTER has no snapshot history -- genuinely brand new"
+    return 0
+}
+
 # Idempotently ensure ${HDFS_STATE_DIR} exists on the given cluster. Best-effort: logs [WARN] and returns 0
 # (never aborts the script) on any failure -- an unreachable cluster, permission denied, or any other mkdir
 # error just means the cross-node LAST-SNAP PERFORMANCE-HINT CACHE mirror is degraded for this run; local-disk
@@ -1584,8 +1872,8 @@ mirror_state_file_to_hdfs() {
         return 0
     fi
 
-    _mirror_one_cluster "$key" "$mirror_tmp" "$SOURCE_CLUSTER" "SOURCE"
-    _mirror_one_cluster "$key" "$mirror_tmp" "$DEST_CLUSTER" "DEST"
+    _mirror_one_cluster "$key" "$mirror_tmp" "$SRC_URI_NS" "SOURCE"
+    _mirror_one_cluster "$key" "$mirror_tmp" "$DST_URI_NS" "DEST"
 
     rm -f "$mirror_tmp" 2>/dev/null || true
 }
@@ -1780,7 +2068,7 @@ derive_direction_state() {
     # empirically verified). The array of matched snapshot names is then read from the file separately.
     local src_snaps=() dst_snaps=()
     local src_ls_rc dst_ls_rc
-    if run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -ls "$d/.snapshot" 2>"$src_ls_err" |
+    if run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -ls "$d/.snapshot" 2>"$src_ls_err" |
         awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' |
         grep "^${SNAP_PREFIX}_" >"$src_ls_out"; then
         :
@@ -1788,7 +2076,7 @@ derive_direction_state() {
     src_ls_rc="${PIPESTATUS[0]}"
     mapfile -t src_snaps <"$src_ls_out"
 
-    if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>"$dst_ls_err" |
+    if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -ls "$d/.snapshot" 2>"$dst_ls_err" |
         awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' |
         grep "^${SNAP_PREFIX}_" >"$dst_ls_out"; then
         :
@@ -1889,10 +2177,10 @@ verify_cached_snap_fast_path() {
 
     [[ -z "$cached_snap" ]] && return 0
 
-    if ! run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -test -e "$d/.snapshot/$cached_snap" 2>/dev/null; then
+    if ! run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -test -e "$d/.snapshot/$cached_snap" 2>/dev/null; then
         return 0
     fi
-    if ! run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -test -e "$d/.snapshot/$cached_snap" 2>/dev/null; then
+    if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -test -e "$d/.snapshot/$cached_snap" 2>/dev/null; then
         return 0
     fi
 
@@ -1900,7 +2188,7 @@ verify_cached_snap_fast_path() {
     idx="${cached_snap##*_}"
     [[ "$idx" =~ ^[0-9]+$ ]] || return 0
     next_on_dest="${SNAP_PREFIX}_$((idx + 1))"
-    if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -test -e "$d/.snapshot/$next_on_dest" 2>/dev/null; then
+    if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -test -e "$d/.snapshot/$next_on_dest" 2>/dev/null; then
         # DEST has advanced beyond the cached common point -- possible reversal. Do NOT confirm the fast path;
         # force the full algorithm.
         return 0
@@ -2573,7 +2861,7 @@ rollback_once_for_failure() {
     rollback_snap="${SNAP_PREFIX}_rollback_$(date +%s)"
     log_substage "Rollback Step 1: Creating rollback snapshot $rollback_snap on destination"
     log "[ROLLBACK] Creating rollback snapshot $rollback_snap on destination $d"
-    if ! run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$rollback_snap"; then
+    if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -createSnapshot "$d" "$rollback_snap"; then
         echo "[ERROR] FAILED to create rollback snapshot '$rollback_snap' on DESTINATION: $d"
         log "[ERROR] Failed to create rollback snapshot $rollback_snap on destination $d"
         log "[ERROR] Rollback aborted. No marker created - rollback can be retried on next run if issue is resolved."
@@ -2582,10 +2870,10 @@ rollback_once_for_failure() {
 
     # Determine prev_snap to restore to. Prefer the 'from_snap' if present on DR; otherwise choose latest snapshot as fallback.
     local prev_snap="$from_snap"
-    if ! run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "${d}/.snapshot" 2>/dev/null | grep -q "/${prev_snap}\$"; then
+    if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -ls "${d}/.snapshot" 2>/dev/null | grep -q "/${prev_snap}\$"; then
         log "[WARN] Expected prev_snap '$prev_snap' not found on DR. Choosing latest available snapshot on DR as fallback."
         mapfile -t snaps_dst < <(
-            run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "${d}/.snapshot" 2>/dev/null |
+            run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -ls "${d}/.snapshot" 2>/dev/null |
                 awk '$1 ~ /^d/ {print $6, $7, $8}' |
                 sort |
                 awk -F/ '{print $NF}' || true
@@ -2593,7 +2881,7 @@ rollback_once_for_failure() {
         if [[ ${#snaps_dst[@]} -eq 0 ]]; then
             log "[ERROR] No snapshots found on DR for $d. Cannot perform automated rollback."
             # Clean up the rollback snapshot we just created
-            run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -deleteSnapshot "$d" "$rollback_snap" 2>/dev/null || true
+            run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -deleteSnapshot "$d" "$rollback_snap" 2>/dev/null || true
             log "[ERROR] Rollback aborted. No marker created - rollback can be retried on next run if issue is resolved."
             return 1
         fi
@@ -2614,7 +2902,7 @@ rollback_once_for_failure() {
     # require full manual reconciliation. Verifying here, before the
     # destructive -rdiff runs, catches this while it's still a clean abort
     # instead of a silent data-loss-adjacent state.
-    if ! run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -ls "${d}/.snapshot" 2>/dev/null | grep -q "/${prev_snap}\$"; then
+    if ! run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -ls "${d}/.snapshot" 2>/dev/null | grep -q "/${prev_snap}\$"; then
         echo "[ERROR] Rollback target snapshot '$prev_snap' does NOT exist on SOURCE_CLUSTER ($SOURCE_CLUSTER): $d"
         log "[ERROR] [ROLLBACK] prev_snap '$prev_snap' not found on SOURCE_CLUSTER. Refusing to -rdiff DEST to a"
         log "[ERROR] [ROLLBACK] snapshot with no matching history on SOURCE -- this would orphan the directory"
@@ -2623,7 +2911,7 @@ rollback_once_for_failure() {
         log "[ERROR] [ROLLBACK] whether a full re-baseline is needed for $d."
         # Clean up the rollback snapshot we just created (mirrors the
         # "no snapshots found on DR" failure path above).
-        run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -deleteSnapshot "$d" "$rollback_snap" 2>/dev/null || true
+        run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -deleteSnapshot "$d" "$rollback_snap" 2>/dev/null || true
         log "[ERROR] Rollback aborted. No marker created - rollback can be retried on next run if issue is resolved."
         return 1
     fi
@@ -2633,12 +2921,12 @@ rollback_once_for_failure() {
     diff_out="/var/log/dr_rollback_diff_${key}_from_${rollback_snap}_to_${prev_snap}_$(date +%s).txt"
     log_substage "Rollback Step 2: Capturing snapshot diff for audit"
     log "[ROLLBACK] Capturing snapshotDiff between $rollback_snap and $prev_snap to $diff_out"
-    run_as_hdfs hdfs snapshotDiff -fs "hdfs://$DEST_CLUSTER" "$d" "$rollback_snap" "$prev_snap" >"$diff_out" 2>&1 ||
+    run_as_hdfs hdfs snapshotDiff -fs "hdfs://$DST_URI_NS" "$d" "$rollback_snap" "$prev_snap" >"$diff_out" 2>&1 ||
         log "[WARN] snapshotDiff returned non-zero; check $diff_out for details."
 
     # Run DistCp rdiff to restore prev_snap -> live path on DR
-    local src_snap_path="hdfs://$DEST_CLUSTER${d}"
-    local dst_live_path="hdfs://$DEST_CLUSTER${d}"
+    local src_snap_path="hdfs://$DST_URI_NS${d}"
+    local dst_live_path="hdfs://$DST_URI_NS${d}"
     # DISTCP_ROLLBACK_OPTS carries the flags STRUCTURALLY required for a -rdiff
     # restore (rollback/prev snapshot names, dynamic strategy, direct write,
     # update semantics, preserve-status flags) followed by $COPY_OPTS (arg 8) so
@@ -2734,7 +3022,7 @@ rollback_once_for_failure() {
         log "[ROLLBACK] DistCp rollback succeeded for $d. Audit diff saved to $diff_out"
         # Best-effort: delete the temporary rollback snapshot to keep snapshot list tidy
         log_substage "Rollback Step 4: Cleaning up temporary rollback snapshot"
-        if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -deleteSnapshot "$d" "$rollback_snap"; then
+        if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -deleteSnapshot "$d" "$rollback_snap"; then
             log "[ROLLBACK] Deleted temporary rollback snapshot $rollback_snap on destination"
         else
             log "[WARN] Could not delete temporary snapshot $rollback_snap (manual cleanup may be required)"
@@ -2784,8 +3072,8 @@ reconcile_and_rebaseline_dest() {
     local baseline_snap="$2"
     local key
     key=$(sanitize "$d")
-    local src_base_uri="hdfs://$SOURCE_CLUSTER${d}/.snapshot/${baseline_snap}"
-    local dst_uri="hdfs://$DEST_CLUSTER${d}"
+    local src_base_uri="hdfs://$SRC_URI_NS${d}/.snapshot/${baseline_snap}"
+    local dst_uri="hdfs://$DST_URI_NS${d}"
 
     log_substage "Baseline bootstrap: reconciling destination to source snapshot $baseline_snap"
     log "[INIT] Reconciling destination $d to source snapshot $baseline_snap (one-time bootstrap safeguard)"
@@ -2809,13 +3097,13 @@ reconcile_and_rebaseline_dest() {
     fi
 
     # Step 2: refresh the destination baseline snapshot to match the reconciled state
-    if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${baseline_snap}\$"; then
+    if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${baseline_snap}\$"; then
         log "[DEBUG] Deleting destination baseline snapshot $baseline_snap to refresh it"
-        if ! run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -deleteSnapshot "$d" "$baseline_snap" 2>/dev/null; then
+        if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -deleteSnapshot "$d" "$baseline_snap" 2>/dev/null; then
             log "[WARN] Failed to delete destination baseline snapshot $baseline_snap (will attempt recreate anyway)"
         fi
     fi
-    if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$baseline_snap"; then
+    if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -createSnapshot "$d" "$baseline_snap"; then
         log "[INFO] Destination baseline snapshot $baseline_snap refreshed to reconciled state for $d"
     else
         echo "[ERROR] FAILED to recreate destination baseline snapshot $baseline_snap for $d"
@@ -2870,6 +3158,12 @@ reconcile_reverse_diff_bootstrap() {
     key=$(sanitize "$d")
     resolve_state_file "$key"
     state="$RESOLVED_STATE_PATH"
+    # See the matching variable in Stage 4's per-directory loop for the full rationale: prefixes every
+    # "hdfs"/"hadoop" command PRINTED below as manual operator recovery guidance so it is runnable standalone
+    # (needed in the same-nameservice-collision case, where SRC_URI_NS is a synthetic alias). Empty string,
+    # safe to prefix unconditionally, when HA_CONFIG_IN_WITH_CLAUSE is disabled.
+    local nameservice_ha_display_args
+    nameservice_ha_display_args="$(render_nameservice_ha_args_for_display)"
 
     local idx reverse_next_snap
     idx=${last_snap##*_}
@@ -2879,13 +3173,13 @@ reconcile_reverse_diff_bootstrap() {
     log "[REVERSE-BOOTSTRAP] Direction reversal for $d: attempting incremental reverse diff $last_snap -> $reverse_next_snap"
 
     # --- Precondition: common ancestor snapshot must exist on BOTH clusters ---
-    if ! run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${last_snap}\$"; then
+    if ! run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${last_snap}\$"; then
         echo "[ERROR] Reverse-diff bootstrap: common snapshot '$last_snap' NOT FOUND on new source ($SOURCE_CLUSTER) for $d"
         log "[ERROR] [REVERSE-BOOTSTRAP] Missing '$last_snap' on new source for $d. Cannot compute incremental diff."
         log "[ERROR] This can happen if snapshot retention (SNAP_RETAIN) pruned '$last_snap' on this cluster. Manual reconciliation or full DistCp required."
         return 1
     fi
-    if ! run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${last_snap}\$"; then
+    if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${last_snap}\$"; then
         echo "[ERROR] Reverse-diff bootstrap: common snapshot '$last_snap' NOT FOUND on new destination ($DEST_CLUSTER) for $d"
         log "[ERROR] [REVERSE-BOOTSTRAP] Missing '$last_snap' on new destination for $d. Cannot compute incremental diff."
         log "[ERROR] This can happen if snapshot retention (SNAP_RETAIN) pruned '$last_snap' on this cluster. Manual reconciliation or full DistCp required."
@@ -2895,7 +3189,7 @@ reconcile_reverse_diff_bootstrap() {
     # --- Step 1: create the next snapshot on the NEW source (idempotent) ---
     log_substage "Reverse-diff bootstrap Step 1: creating $reverse_next_snap on new source ($SOURCE_CLUSTER)"
     local out_src
-    out_src=$(run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -createSnapshot "$d" "$reverse_next_snap" 2>&1 | grep -v "^SLF4J:" || true) || true
+    out_src=$(run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -createSnapshot "$d" "$reverse_next_snap" 2>&1 | grep -v "^SLF4J:" || true) || true
     if echo "$out_src" | grep -q "already a snapshot with the same name"; then
         log "[WARN] [REVERSE-BOOTSTRAP] Snapshot $reverse_next_snap already exists on new source for $d"
     elif echo "$out_src" | grep -q "Created snapshot"; then
@@ -2908,8 +3202,8 @@ reconcile_reverse_diff_bootstrap() {
 
     # --- Step 2: incremental distcp -diff from new-source to new-destination ---
     local src_uri dst_uri copy_opts_no_update
-    src_uri="hdfs://$SOURCE_CLUSTER${d}"
-    dst_uri="hdfs://$DEST_CLUSTER${d}"
+    src_uri="hdfs://$SRC_URI_NS${d}"
+    dst_uri="hdfs://$DST_URI_NS${d}"
     copy_opts_no_update=$(strip_update_flag "$COPY_OPTS")
 
     local bootstrap_err="/tmp/distcp_reverse_bootstrap_err_${key}_$$.log"
@@ -2952,7 +3246,7 @@ reconcile_reverse_diff_bootstrap() {
             echo ""
             echo "  --- Option 1: Manually reconcile divergent writes on $DEST_CLUSTER ---"
             echo "    Inspect what changed since '$last_snap':"
-            echo "      hdfs snapshotDiff -fs hdfs://$DEST_CLUSTER $d $last_snap ."
+            echo "      hdfs ${nameservice_ha_display_args}snapshotDiff -fs hdfs://$DST_URI_NS $d $last_snap ."
             echo "    Reconcile or archive the divergent files, then re-run this script."
             echo ""
             echo "  --- Option 2: force a full re-baseline (explicit, discards diff optimization) ---"
@@ -2961,8 +3255,8 @@ reconcile_reverse_diff_bootstrap() {
             echo "    from scratch in the CURRENT direction:"
             echo ""
             echo "      rm -f $state"
-            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
-            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
             echo ""
             echo "    IMPORTANT: Deleting only the local file ($state) is NOT sufficient and will"
             echo "    NOT work as expected -- an HDFS-mirrored copy of this state (written on both"
@@ -2982,11 +3276,17 @@ reconcile_reverse_diff_bootstrap() {
             echo "    destination to a state from BEFORE this recovery completed, discarding it."
             echo "    List and delete them explicitly, e.g.:"
             echo ""
-            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
-            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -ls $d/.snapshot"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -ls $d/.snapshot"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -ls $d/.snapshot"
             echo "      # for each ${SNAP_PREFIX}_<N> snapshot listed on EITHER cluster:"
-            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
-            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo ""
+            echo "    Deleting those snapshots is also what makes Stage 3 agree to re-baseline: it"
+            echo "    confirms 'brand new' against live snapshot listings, not just against a missing"
+            echo "    state file, and refuses to baseline while unshared ${SNAP_PREFIX}_* snapshots"
+            echo "    remain. If you deliberately keep them, re-run with FORCE_REBASELINE=yes to"
+            echo "    override that check -- but deleting them is the safer path."
             echo ""
             echo "    Then re-run. This performs a FULL distcp (not incremental) and creates a new"
             echo "    ${SNAP_PREFIX}_0 baseline in the CURRENT direction ($SOURCE_CLUSTER -> $DEST_CLUSTER)."
@@ -2995,8 +3295,8 @@ reconcile_reverse_diff_bootstrap() {
             echo "    whatever divergent data exists on $DEST_CLUSTER."
             echo ""
             echo "  --- Option 3: Inspect .snapshot dirs on both clusters ---"
-            echo "    hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
-            echo "    hdfs dfs -fs hdfs://$DEST_CLUSTER -ls $d/.snapshot"
+            echo "    hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -ls $d/.snapshot"
+            echo "    hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS -ls $d/.snapshot"
             echo ""
             echo "=========================================================================================================================================="
             log "[ERROR] [REVERSE-BOOTSTRAP] Divergent writes detected on $DEST_CLUSTER for $d. Manual reconciliation required. No automatic rollback attempted (by design)."
@@ -3007,7 +3307,7 @@ reconcile_reverse_diff_bootstrap() {
         # Best-effort cleanup: remove the snapshot we created on the new source this attempt, so a re-run
         # doesn't see a stale "already exists" and skip re-checking it. (Left in place is also safe; harmless
         # either way. Removing keeps retry semantics closest to "nothing happened yet".)
-        run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -deleteSnapshot "$d" "$reverse_next_snap" 2>/dev/null || true
+        run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -deleteSnapshot "$d" "$reverse_next_snap" 2>/dev/null || true
 
         return 1
     fi
@@ -3017,7 +3317,7 @@ reconcile_reverse_diff_bootstrap() {
     # --- Step 3: create matching snapshot on the NEW destination ---
     log_substage "Reverse-diff bootstrap Step 3: creating $reverse_next_snap on new destination ($DEST_CLUSTER)"
     local out_dst
-    out_dst=$(run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$reverse_next_snap" 2>&1 | grep -v "^SLF4J:" || true) || true
+    out_dst=$(run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -createSnapshot "$d" "$reverse_next_snap" 2>&1 | grep -v "^SLF4J:" || true) || true
     if echo "$out_dst" | grep -q "already a snapshot with the same name"; then
         log "[WARN] [REVERSE-BOOTSTRAP] Snapshot $reverse_next_snap already exists on new destination for $d"
     elif echo "$out_dst" | grep -q "Created snapshot"; then
@@ -3039,8 +3339,8 @@ reconcile_reverse_diff_bootstrap() {
     METRICS_SUCCESSFUL_DIRECTORIES=$((METRICS_SUCCESSFUL_DIRECTORIES + 1))
 
     # --- Step 5: cleanup old snapshots on both clusters (same as normal Stage 4 4g/4h) ---
-    cleanup_old_snapshots "$SOURCE_CLUSTER" "$d" "source" "$SNAP_RETAIN" "$SNAP_PREFIX"
-    cleanup_old_snapshots "$DEST_CLUSTER" "$d" "destination" "$SNAP_RETAIN" "$SNAP_PREFIX"
+    cleanup_old_snapshots "$SRC_URI_NS" "$d" "source" "$SNAP_RETAIN" "$SNAP_PREFIX"
+    cleanup_old_snapshots "$DST_URI_NS" "$d" "destination" "$SNAP_RETAIN" "$SNAP_PREFIX"
 
     return 0
 }
@@ -3049,13 +3349,113 @@ reconcile_reverse_diff_bootstrap() {
 # main()
 # -----------------------------------------------------------------------------
 main() {
-    # Safety check: refuse to run if source and destination clusters are the same
+    # -------------------------------------------------------------------------
+    # Same-nameservice DR support: SOURCE_CLUSTER and DEST_CLUSTER are ROLE LABELS (and, for state-file keys,
+    # job tags, and log lines, remain exactly what the operator passed) -- but the actual "hdfs://<name>" URIs
+    # this script builds, and the HA client -D properties derived for HA_CONFIG_IN_WITH_CLAUSE, need each
+    # cluster to resolve to a DISTINCT set of NameNodes. That's normally satisfied automatically because
+    # production and DR nameservices have different names. It breaks when a DR cluster is built from the same
+    # blueprint as production and BOTH sides legitimately use the same nameservice ID (e.g. both "ODP-Phoenix")
+    # -- a single Hadoop client cannot bind two different NameNode sets to one nameservice name at the same
+    # time, so a bare "hdfs://ODP-Phoenix" would be ambiguous about which physical cluster it means.
+    #
+    # SRC_URI_NS / DST_URI_NS below are the names actually used in every "hdfs://" URI and in the derived HA
+    # -D properties (see derive_nameservice_ha_conf). In the normal (non-colliding) case they are just
+    # SOURCE_CLUSTER/DEST_CLUSTER unchanged. In the colliding case, SRC_URI_NS becomes a synthetic,
+    # script-internal alias ("<name>-SRCALIAS") and DST_URI_NS becomes the DR cluster's real, resolved bare
+    # host:port (see the aliasing doc comment inside the collision branch below for the full "why" -- source
+    # is aliased, not destination, specifically to avoid ever injecting the real shared nameservice name as a
+    # "-D" property, which would make fs.defaultFS itself ambiguous). The real nameservice name is never
+    # renamed on either cluster; the alias only ever appears in THIS script's own "-D" injected HA config and
+    # the URIs it builds, both of which are process-local and thrown away when the script exits.
+    #
+    # This requires HA_CONFIG_IN_WITH_CLAUSE=yes with SRC_NN_HOSTS/DST_NN_HOSTS set: aliasing the source only
+    # fixes the ambiguity if the script is ALSO the thing supplying that alias's NameNode addresses via
+    # injected -D properties. Without that, "hdfs://<alias>" would resolve nowhere (no hdfs-site.xml on earth
+    # defines the synthetic alias), so we fail fast here instead of letting every later hdfs/distcp call hang
+    # or error deep inside a stage.
+    # -------------------------------------------------------------------------
+    SRC_URI_NS="$SOURCE_CLUSTER"
+    DST_URI_NS="$DEST_CLUSTER"
+    SAME_NAMESERVICE_COLLISION="false"
     if [[ "$SOURCE_CLUSTER" == "$DEST_CLUSTER" ]]; then
-        echo "[ERROR] SOURCE_CLUSTER and DEST_CLUSTER are identical: '$SOURCE_CLUSTER'"
-        echo "Refusing to run to prevent self-replication or data corruption."
-        exit 2
+        if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" != "yes" ]]; then
+            echo "[ERROR] SOURCE_CLUSTER and DEST_CLUSTER are identical: '$SOURCE_CLUSTER'" >&2
+            echo "[ERROR] This is only supported when the two are the SAME nameservice name shared by two" >&2
+            echo "[ERROR] DIFFERENT physical clusters (e.g. a DR cluster built from the same blueprint as" >&2
+            echo "[ERROR] production) -- and even then, this script needs HA_CONFIG_IN_WITH_CLAUSE=yes with" >&2
+            echo "[ERROR] SRC_NN_HOSTS/DST_NN_HOSTS set so it can tell the two clusters apart internally." >&2
+            echo "[ERROR] Set those three variables, or pass distinct nameservice names / host:port values" >&2
+            echo "[ERROR] for SOURCE_CLUSTER (arg 1) and DEST_CLUSTER (arg 2)." >&2
+            exit 2
+        fi
+        SAME_NAMESERVICE_COLLISION="true"
+        # -------------------------------------------------------------------------
+        # ALIAS THE SOURCE, NOT THE DESTINATION. An earlier version of this fix aliased the
+        # destination ("<name>-DRDST") and, once the destination was resolved to a bare
+        # host:port, injected "dfs.nameservices=<real-name>" (e.g. "ODP-Phoenix") for the
+        # SOURCE side directly -- since in the normal case SOURCE_CLUSTER/DEST_CLUSTER just
+        # ARE the real name already. This seemed safe (the real name is a real, resolvable
+        # nameservice, unlike a synthetic alias) but broke two ways, both confirmed by direct
+        # testing on odplab001/odplab002 (DR) against atlasdemo-01/02 (prod), both literally
+        # named "ODP-Phoenix" since DR was built from the same blueprint as prod:
+        #
+        #   1) fs.defaultFS on BOTH clusters is statically "hdfs://ODP-Phoenix" (their own
+        #      native hdfs-site.xml -- normally correct, since it means "this cluster" on
+        #      each). Injecting "-Ddfs.nameservices=ODP-Phoenix" pointed at PRODUCTION's
+        #      NameNode addresses makes fs.defaultFS ITSELF ambiguous for the lifetime of the
+        #      process: every scheme-less path this run touches (MapReduce's own job-staging
+        #      directory, "/user/<user>/.staging/job_<id>", not overridable via a simple "-D")
+        #      silently resolves to PRODUCTION instead of local DR HDFS. That staging dir then
+        #      gets localized by the AM container using the SOURCE token -- which pull mode
+        #      correctly excludes from renewal (YARN doesn't run on the source), so the token
+        #      is non-renewable and the AM container fails: "Token for real user: , can't be
+        #      found in cache" at FSDownload.verifyAndCopy -- confirmed by direct testing.
+        #   2) The obvious counter-fix, "-Dfs.defaultFS=hdfs://<bare-DR-host:port>", DOES fix
+        #      the localization failure above, but breaks resolution of the fully-qualified
+        #      "hdfs://ODP-Phoenix/..." SOURCE URI itself: confirmed by direct testing that
+        #      even a plain "hdfs dfs -Dfs.defaultFS=hdfs://<DR-host:port> -ls
+        #      hdfs://ODP-Phoenix/<real-path>" (no DistCp involved at all) returns "No such
+        #      file or directory" for a path that demonstrably exists. Hadoop's internal
+        #      FileSystem/HA-proxy-provider cache keys by authority STRING, not by which "-D"
+        #      property introduced it, so overriding fs.defaultFS to a different literal
+        #      value while ALSO injecting "dfs.nameservices=ODP-Phoenix" (same string
+        #      fs.defaultFS used to be) corrupts resolution of that name for the rest of the
+        #      process -- a genuine Hadoop client-side ambiguity, not fixable by choosing a
+        #      different property to override.
+        #
+        # The fix that avoids BOTH failure modes: never inject the literal string "ODP-Phoenix"
+        # (or whatever SOURCE_CLUSTER's real name is) as a "-D" property AT ALL. Alias the
+        # SOURCE side instead -- SRC_URI_NS becomes "<name>-SRCALIAS", with its OWN
+        # "dfs.namenode.rpc-address.<alias>.*" entries pointing at production's real NameNode
+        # addresses. fs.defaultFS ("hdfs://ODP-Phoenix") is then NEVER touched by anything this
+        # script injects, so it keeps resolving via each cluster's own native, unmodified
+        # hdfs-site.xml exactly as it always has -- no ambiguity, no staging-dir localization
+        # failure, and (since the framework path is also scheme-less and default-FS-relative)
+        # no need for the mapreduce.application.framework.path override either -- that
+        # override existed ONLY to counteract fs.defaultFS becoming ambiguous, which no longer
+        # happens under this design.
+        #
+        # DESTINATION SIDE IS UNCHANGED: DST_URI_NS is still resolved to the DR cluster's real,
+        # currently-ACTIVE bare host:port (see resolve_active_namenode_hostport below) --
+        # that part of the original design was already confirmed working via direct testing
+        # (successful DistCp job submission, token renewal, AM localization all succeeded
+        # once the alias was replaced with a concrete destination host:port) and is orthogonal
+        # to the source-side ambiguity fixed here.
+        # -------------------------------------------------------------------------
+        SRC_URI_NS="${SOURCE_CLUSTER}-SRCALIAS"
+        log "[INFO] [NAMESERVICE-ALIAS] SOURCE_CLUSTER and DEST_CLUSTER share nameservice '$SOURCE_CLUSTER'."
+        log "[INFO] [NAMESERVICE-ALIAS] Using internal alias '$SRC_URI_NS' for SOURCE hdfs:// URIs and HA"
+        log "[INFO] [NAMESERVICE-ALIAS] client config only -- the real production nameservice name is never"
+        log "[INFO] [NAMESERVICE-ALIAS] injected as a '-D' property, so fs.defaultFS ('hdfs://$SOURCE_CLUSTER'"
+        log "[INFO] [NAMESERVICE-ALIAS] on both clusters, since DR shares prod's blueprint) is never made"
+        log "[INFO] [NAMESERVICE-ALIAS] ambiguous -- confirmed necessary because aliasing the destination"
+        log "[INFO] [NAMESERVICE-ALIAS] alone let scheme-less paths (the MapReduce job staging directory)"
+        log "[INFO] [NAMESERVICE-ALIAS] silently resolve against production using a non-renewable token."
+        log "[INFO] [NAMESERVICE-ALIAS] DEST_URI_NS is separately resolved to the DR cluster's real, currently-"
+        log "[INFO] [NAMESERVICE-ALIAS] ACTIVE NameNode host:port below (see resolve_active_namenode_hostport)."
     fi
-    
+
     # -------------------------------------------------------------------------
     # Validate arguments FIRST (before any system-dependent checks like check_prerequisites) so that argument
     # errors are reported immediately regardless of whether hadoop/hdfs/curl are installed.
@@ -3220,8 +3620,26 @@ main() {
     # Configure DistCp MapReduce options based on replication mode The cluster where YARN does NOT run must be
     # excluded from token renewal, because the local ResourceManager cannot renew remote delegation tokens.
     DISTCP_MAPREDUCE_OPTS=""
-    SRC_NAMESERVICE="${SOURCE_CLUSTER%%:*}"
-    DST_NAMESERVICE="${DEST_CLUSTER%%:*}"
+    # Keyed by SRC_URI_NS/DST_URI_NS (the alias-aware names -- see main()'s doc comment), not raw
+    # SOURCE_CLUSTER/DEST_CLUSTER, so the token-renewal-exclude property below always names whatever
+    # dfs.nameservices/dfs.ha.namenodes.* (or, in the same-nameservice-collision case, the bare resolved
+    # host:port -- see resolve_active_namenode_hostport) actually appears in the "hdfs://..." URIs this run
+    # builds, never the ambiguous shared name.
+    #
+    # IMPORTANT: used verbatim, WITHOUT a "${VAR%%:*}" strip. An earlier version of this stripped everything
+    # after the first ":" (intended to turn a "host:port" into a bare nameservice name for the normal case,
+    # where SRC_URI_NS/DST_URI_NS never contain a colon anyway, making the strip a harmless no-op there). In
+    # the same-nameservice-collision case, DST_URI_NS is a real, resolved "host:port" (e.g.
+    # "odplab002.adsre.com:8020") -- stripping at the first ":" silently truncated it to just the bare
+    # hostname, losing ":8020". PUSH mode uses DST_NAMESERVICE for
+    # "-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${DST_NAMESERVICE}", so a truncated value there
+    # would never match the real "host:port" authority actually present in every "hdfs://$DST_URI_NS" URI
+    # this script builds, silently defeating the exclude and risking the exact token-renewal failure this
+    # property exists to prevent. (PULL mode, the only mode confirmed by live testing so far, uses
+    # SRC_NAMESERVICE instead, which is always a bare name with no colon -- collision or not -- so this bug
+    # was dormant/untested until PUSH mode is exercised in the collision case.)
+    SRC_NAMESERVICE="${SRC_URI_NS}"
+    DST_NAMESERVICE="${DST_URI_NS}"
 
     case "${REPLICATION_MODE,,}" in
         ""|pull)
@@ -3271,6 +3689,23 @@ main() {
     fi
     
     # -----------------------------------------------------------------------------
+    # Same-nameservice collision: resolve DST_URI_NS to the DR cluster's real, currently-ACTIVE NameNode
+    # host:port BEFORE deriving any HA client config below. This must happen first (not after, as an earlier
+    # version of this fix had it) so that derive_nameservice_ha_conf() never sees DST_URI_NS still equal to
+    # the raw DEST_CLUSTER value (the literal shared nameservice name, e.g. "ODP-Phoenix") -- injecting that
+    # literal name as a "-D" property is exactly the ambiguity the SRC_URI_NS aliasing above exists to avoid
+    # (see the doc comment on SRC_URI_NS's aliasing, above), and it would defeat that fix if it slipped in via
+    # the destination side instead. resolve_active_namenode_hostport() needs no "-D" HA properties itself (it
+    # queries each candidate NameNode's own JMX endpoint directly by host:port -- see its doc comment), so it
+    # has no ordering dependency on derive_nameservice_ha_conf() either way.
+    # -----------------------------------------------------------------------------
+    if [[ "$SAME_NAMESERVICE_COLLISION" == "true" ]]; then
+        resolve_active_namenode_hostport "$DST_NN_HOSTS"
+        DST_URI_NS="$RESOLVED_ACTIVE_NN_HOSTPORT"
+        log "[INFO] [NAMESERVICE-ALIAS] DST_URI_NS resolved to active NameNode: $DST_URI_NS"
+    fi
+
+    # -----------------------------------------------------------------------------
     # Derive combined HA NameService client config (HA_CONFIG_IN_WITH_CLAUSE), UNCONDITIONALLY and BEFORE any
     # Stage 1 branching below.
     #
@@ -3289,6 +3724,16 @@ main() {
     # flag had been ignored -- reproducing the exact multi-minute-hang failure this feature exists to prevent.
     # Deriving here, unconditionally, ahead of all Stage 1 branches, ensures the feature applies regardless of
     # SKIP_HEALTH_CHECKS or which cluster-address form is used.
+    #
+    # SAME-NAMESERVICE COLLISION CASE: by the time this runs, SRC_URI_NS is already the "<name>-SRCALIAS"
+    # alias (set at the top of main(), before argument validation) and DST_URI_NS is already the real,
+    # resolved bare host:port from the block immediately above -- derive_nameservice_ha_conf() therefore
+    # derives "dfs.ha.namenodes.<name>-SRCALIAS.*"/"dfs.namenode.rpc-address.<name>-SRCALIAS.*" HA properties
+    # for the SOURCE alias only (DST_URI_NS being a bare host:port needs, and must never receive, any HA
+    # client config -- _derive_one_cluster_ha_props is never called for it). The combined
+    # "dfs.nameservices=<name>-SRCALIAS,<bare-host>:<port>" property this produces is harmless: Hadoop simply
+    # never finds "dfs.ha.namenodes.<bare-host>:<port>" for the second entry and treats it as a plain,
+    # non-HA filesystem reference, which is exactly what it is.
     # -----------------------------------------------------------------------------
     if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" == "yes" ]]; then
         derive_nameservice_ha_conf
@@ -3307,10 +3752,10 @@ main() {
     log_stage "1" "Cluster Health Checks"
     log_substage "Verifying superuser privilege on both clusters"
     superuser_ok=true
-    if ! check_superuser_privilege "$SOURCE_CLUSTER" "SOURCE"; then
+    if ! check_superuser_privilege "$SRC_URI_NS" "SOURCE"; then
         superuser_ok=false
     fi
-    if ! check_superuser_privilege "$DEST_CLUSTER" "DEST"; then
+    if ! check_superuser_privilege "$DST_URI_NS" "DEST"; then
         superuser_ok=false
     fi
     if [[ "$superuser_ok" != "true" ]]; then
@@ -3343,20 +3788,20 @@ main() {
                 # effect, regardless of which one is in bare-NameService form (a non-HA host:port cluster
                 # paired with an HA one can still benefit from the combined config if this host's native
                 # config only knows one side).
-                if ! check_nameservice_reachable "$SOURCE_CLUSTER" "SOURCE"; then
+                if ! check_nameservice_reachable "$SRC_URI_NS" "SOURCE"; then
                     reachability_ok=false
                 fi
-                if ! check_nameservice_reachable "$DEST_CLUSTER" "DEST"; then
+                if ! check_nameservice_reachable "$DST_URI_NS" "DEST"; then
                     reachability_ok=false
                 fi
             else
                 if [[ "$source_is_ha" == "true" ]]; then
-                    if ! check_nameservice_reachable "$SOURCE_CLUSTER" "SOURCE"; then
+                    if ! check_nameservice_reachable "$SRC_URI_NS" "SOURCE"; then
                         reachability_ok=false
                     fi
                 fi
                 if [[ "$dest_is_ha" == "true" ]]; then
-                    if ! check_nameservice_reachable "$DEST_CLUSTER" "DEST"; then
+                    if ! check_nameservice_reachable "$DST_URI_NS" "DEST"; then
                         reachability_ok=false
                     fi
                 fi
@@ -3395,8 +3840,8 @@ main() {
     # filesystems). Best-effort: failure here does NOT abort the run. It only means HDFS state mirroring will
     # be unavailable this run (mirror_state_file_to_hdfs's own -put calls will then also fail and log [WARN],
     # but local-only operation continues normally).
-    ensure_hdfs_state_dir "$SOURCE_CLUSTER" "SOURCE"
-    ensure_hdfs_state_dir "$DEST_CLUSTER" "DEST"
+    ensure_hdfs_state_dir "$SRC_URI_NS" "SOURCE"
+    ensure_hdfs_state_dir "$DST_URI_NS" "DEST"
 
     log "[DEBUG] Enabling snapshots on source and destination directories"
     for d in "${SOURCE_DIRS[@]}"; do
@@ -3415,9 +3860,9 @@ main() {
         # would skip straight past it while Stage 3/4 kept failing with "Directory is not a
         # snapshottable directory".
         log "[DEBUG] Enabling snapshots for directory: $d"
-        log_substage "Enabling on SOURCE ($SOURCE_CLUSTER): $d"
+        log_substage "Enabling on SOURCE ($SRC_URI_NS): $d"
         log "[DEBUG] Allowing snapshot on source dir: $d"
-        allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$SOURCE_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
+        allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$SRC_URI_NS" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
         allow_snap_rc=$?
         if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
             [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
@@ -3432,15 +3877,15 @@ main() {
         fi
 
         # Check if destination dir exists
-        log_substage "Enabling on DESTINATION ($DEST_CLUSTER): $d"
-        if ! run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -test -d "$d"; then
+        log_substage "Enabling on DESTINATION ($DST_URI_NS): $d"
+        if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -test -d "$d"; then
             # auto mode: create dummy dir with source perms/ownership
             if [[ "$DIR_BOOTSTRAP_MODE" == "yes" ]]; then
                 log "[INIT] Destination dir $d missing. Creating with same owner/permissions as source."
                 # Capture output and filter out log lines (lines starting with timestamps like
                 # "2026-01-03") Get only the actual stat output (should be in format "owner:group
                 # permissions")
-                prod_meta=$(run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -stat "%u:%g %a" "$d" 2>/dev/null | grep -v "^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}" | tail -1 || true)
+                prod_meta=$(run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -stat "%u:%g %a" "$d" 2>/dev/null | grep -v "^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}" | tail -1 || true)
                 owner_group=$(echo "$prod_meta" | awk '{print $1}' || echo "")
                 perms=$(echo "$prod_meta" | awk '{print $2}' || echo "")
                 # Validate that we got valid owner:group format
@@ -3450,12 +3895,12 @@ main() {
                     log "[WARN] Skipping chown, will use default permissions"
                     owner_group=""
                 fi
-                run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -mkdir -p "$d"
+                run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -mkdir -p "$d"
                 if [[ -n "$owner_group" ]]; then
-                    run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -chown "$owner_group" "$d"
+                    run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -chown "$owner_group" "$d"
                 fi
                 if [[ -n "$perms" ]]; then
-                    run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -chmod "$perms" "$d"
+                    run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -chmod "$perms" "$d"
                 fi
             else
                 log "[INIT] Destination dir $d missing in manual mode. It will be created by full DistCp."
@@ -3464,7 +3909,7 @@ main() {
 
         # Now allowSnapshot on destination (whether just created or already exists)
         log "[DEBUG] Allowing snapshot on destination dir: $d"
-        allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
+        allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$DST_URI_NS" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
         allow_snap_rc=$?
         if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
             [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
@@ -3495,21 +3940,87 @@ main() {
     log_stage "3" "Baseline Snapshot Creation"
     log "[DEBUG] Checking baseline snapshots for each directory"
     need_init=false
+    # Directories this run ACTUALLY baselined, and those whose baseline attempt failed.
+    #
+    # The $need_init blocks below (full DistCp, destination post-DistCp re-baseline, manual command printout)
+    # MUST iterate these arrays rather than "${SOURCE_DIRS[@]}". They previously looped over every configured
+    # directory and used "state file exists" to mean "this was baselined this run" -- but an ordinary,
+    # long-running, already-syncing directory also has a state file. Consequence: adding ONE new directory to a
+    # config with N already-replicating ones set need_init=true and then ran a FULL DistCp against all N+1 and
+    # deleted+recreated the destination ${SNAP_PREFIX}_0 snapshot for all N+1. Tracking the baselined set
+    # explicitly is also what makes the brand-new gate below safe: a directory it rehydrates must not be handed
+    # to those blocks.
+    BASELINED_DIRS=()
+    BASELINE_FAILED_DIRS=()
     for d in "${SOURCE_DIRS[@]}"; do
         log "[DEBUG] Checking baseline snapshot for directory: $d"
         key=$(sanitize "$d")
         resolve_state_file_and_check_new "$key"
         state="$RESOLVED_STATE_FILE"
         if [[ "$IS_BRAND_NEW_DIR" == "true" ]]; then
+            # The state cache says "brand new". Confirm that against LIVE snapshot listings on both clusters
+            # before creating a baseline: total state loss is indistinguishable from "never replicated" by cache
+            # absence alone, and baselining an already-replicating directory can silently gap DR forever. See
+            # confirm_brand_new_against_live_snapshots for the two concrete failure modes this closes.
+            confirm_brand_new_against_live_snapshots "$d"
+
+            if [[ "$BRAND_NEW_VERDICT" == "has_history" ]]; then
+                log "[INFO] [BRAND-NEW-GATE] $d: state cache absent, but $BRAND_NEW_VERDICT_REASON. Rehydrating state from live snapshots and SKIPPING baseline creation (no full copy needed)."
+                if write_state_file "$state" "$(build_state_content "$BRAND_NEW_RECOVERED_SNAP")" "$key"; then
+                    log "[INFO] [BRAND-NEW-GATE] $d: state rebuilt at $state from live snapshot '$BRAND_NEW_RECOVERED_SNAP' (and re-mirrored to both clusters). Stage 4 continues incrementally from there."
+                else
+                    log "[ERROR] [BRAND-NEW-GATE] $d: recovered last common snapshot '$BRAND_NEW_RECOVERED_SNAP' from live listings but FAILED to write state file $state (check disk space/permissions on $(dirname "$state")). Failing this directory rather than baselining over real data."
+                    BASELINE_FAILED_DIRS+=("$d")
+                    continue
+                fi
+                # Deliberately NOT added to BASELINED_DIRS, and need_init is left untouched: nothing was
+                # baselined here, so this directory gets no full DistCp and no destination re-baseline.
+                continue
+            fi
+
+            if [[ "$BRAND_NEW_VERDICT" != "new" ]]; then
+                echo ""
+                echo "=========================================================================================================================================="
+                echo ">>> [ERROR] CANNOT CONFIRM $d IS BRAND NEW -- REFUSING TO CREATE A BASELINE <<<"
+                echo "=========================================================================================================================================="
+                echo ""
+                echo "  This directory has no state file (local or HDFS-mirrored), which normally means"
+                echo "  \"never replicated\". That could NOT be confirmed against the clusters:"
+                echo ""
+                echo "    $BRAND_NEW_VERDICT_REASON"
+                echo ""
+                echo "  Creating a ${SNAP_PREFIX}_0 baseline now could overwrite live data on"
+                echo "  $DEST_CLUSTER, or leave a bogus baseline that makes later incremental diffs"
+                echo "  silently skip real changes. Refusing to do either."
+                echo ""
+                echo "  Inspect both sides and decide which holds authoritative data:"
+                echo "    hdfs $(render_nameservice_ha_args_for_display)dfs -fs hdfs://$SRC_URI_NS -ls $d/.snapshot"
+                echo "    hdfs $(render_nameservice_ha_args_for_display)dfs -fs hdfs://$DST_URI_NS -ls $d/.snapshot"
+                echo ""
+                echo "  If you have confirmed that a full re-baseline in the CURRENT direction"
+                echo "  ($SOURCE_CLUSTER -> $DEST_CLUSTER) is what you want, re-run with:"
+                echo ""
+                echo "    export FORCE_REBASELINE=yes"
+                echo ""
+                echo "  WARNING: that performs a FULL copy which overwrites $DEST_CLUSTER."
+                echo ""
+                echo "=========================================================================================================================================="
+                echo ""
+                log "[ERROR] [BRAND-NEW-GATE] $d: refusing to create a baseline -- $BRAND_NEW_VERDICT_REASON"
+                BASELINE_FAILED_DIRS+=("$d")
+                continue
+            fi
+
+            log "[INFO] [BRAND-NEW-GATE] $d: confirmed brand new -- $BRAND_NEW_VERDICT_REASON. Proceeding with baseline creation."
             need_init=true
             base="${SNAP_PREFIX}_0"
             local src_snap_created=false
             local dst_snap_created=false
             local out_base_src out_base_dst
 
-            log_substage "Creating on SOURCE ($SOURCE_CLUSTER): $d"
+            log_substage "Creating on SOURCE ($SRC_URI_NS): $d"
             log "[INIT] Creating baseline snapshot '$base' on source: $d"
-            out_base_src=$(run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -createSnapshot "$d" "$base" 2>&1 | grep -v "^SLF4J:" || true) || true
+            out_base_src=$(run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -createSnapshot "$d" "$base" 2>&1 | grep -v "^SLF4J:" || true) || true
             if echo "$out_base_src" | grep -q "already a snapshot with the same name"; then
                 [[ -n "$out_base_src" ]] && echo "$out_base_src"
                 log "[WARN] Baseline snapshot '$base' already exists on source for $d (idempotent re-run, e.g. after 'rm -f' state-file recovery guidance)"
@@ -3526,9 +4037,9 @@ main() {
                 src_snap_created=false
             fi
 
-            log_substage "Creating on DESTINATION ($DEST_CLUSTER): $d"
+            log_substage "Creating on DESTINATION ($DST_URI_NS): $d"
             log "[INIT] Creating baseline snapshot '$base' on destination: $d"
-            out_base_dst=$(run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$base" 2>&1 | grep -v "^SLF4J:" || true) || true
+            out_base_dst=$(run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -createSnapshot "$d" "$base" 2>&1 | grep -v "^SLF4J:" || true) || true
             if echo "$out_base_dst" | grep -q "already a snapshot with the same name"; then
                 [[ -n "$out_base_dst" ]] && echo "$out_base_dst"
                 log "[WARN] Baseline snapshot '$base' already exists on destination for $d (idempotent re-run, e.g. after 'rm -f' state-file recovery guidance)"
@@ -3550,8 +4061,14 @@ main() {
             if [[ "$src_snap_created" == "true" ]] && [[ "$dst_snap_created" == "true" ]]; then
                 if write_state_file "$state" "$(build_state_content "$base")" "$key"; then
                     log "[INIT] Recorded baseline snapshot state in $state"
+                    # Baseline genuinely created for this directory this run -> it (and only it) needs the full
+                    # DistCp and destination re-baseline below.
+                    BASELINED_DIRS+=("$d")
                 else
                     log "[ERROR] Failed to write state file $state"
+                    # Matches pre-existing behavior: with no state file this directory was skipped by the
+                    # DistCp/manual blocks as "baseline creation failed".
+                    BASELINE_FAILED_DIRS+=("$d")
                 fi
             else
                 echo ""
@@ -3573,6 +4090,7 @@ main() {
                 log "[ERROR]   - Snapshot not enabled: Ensure allowSnapshot was successful in Stage 2"
                 log "[ERROR]   - Directory doesn't exist: Ensure the directory exists on both clusters"
                 echo ""
+                BASELINE_FAILED_DIRS+=("$d")
                 # Continue to next directory instead of exiting, so other directories can still be processed
                 continue
             fi
@@ -3612,29 +4130,30 @@ main() {
             
             # Run full DistCp for each directory that successfully created baseline snapshots
             DISTCP_ALL_OK=true
-            for d in "${SOURCE_DIRS[@]}"; do
-                key=$(sanitize "$d")
-                resolve_state_file_and_check_new "$key"
-                state="$RESOLVED_STATE_FILE"
 
-                # Skip directories that don't have state files (baseline creation failed)
-                if [[ "$IS_BRAND_NEW_DIR" == "true" ]]; then
-                    echo ""
-                    echo "=========================================================================================================================================="
-                    echo ">>> [WARNING] SKIPPING DistCp for directory: $d <<<"
-                    echo "=========================================================================================================================================="
-                    echo ">>> Reason: Baseline snapshot creation failed for this directory"
-                    echo ">>> Action: Fix the issues reported above and re-run the script"
-                    echo "=========================================================================================================================================="
-                    echo ""
-                    log "[WARN] Skipping DistCp for $d - baseline snapshot creation failed (no state file)"
-                    DISTCP_ALL_OK=false
-                    continue
-                fi
-                
-                src_uri="hdfs://$SOURCE_CLUSTER${d}"
-                dst_uri="hdfs://$DEST_CLUSTER${d}"
-                distcp_cmd="hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS $src_uri $dst_uri"
+            # Report directories that did NOT get a baseline this run. Previously detected by re-resolving state
+            # inside the copy loop below; now tracked explicitly in Stage 3 (see BASELINED_DIRS) so that an
+            # already-syncing directory with an intact state file is never mistaken for one awaiting a full copy.
+            for d in ${BASELINE_FAILED_DIRS[@]+"${BASELINE_FAILED_DIRS[@]}"}; do
+                echo ""
+                echo "=========================================================================================================================================="
+                echo ">>> [WARNING] SKIPPING DistCp for directory: $d <<<"
+                echo "=========================================================================================================================================="
+                echo ">>> Reason: Baseline snapshot creation failed, or was refused by the brand-new gate"
+                echo ">>> Action: Fix the issues reported above and re-run the script"
+                echo "=========================================================================================================================================="
+                echo ""
+                log "[WARN] Skipping DistCp for $d - no baseline was created this run"
+                DISTCP_ALL_OK=false
+            done
+
+            for d in ${BASELINED_DIRS[@]+"${BASELINED_DIRS[@]}"}; do
+                src_uri="hdfs://$SRC_URI_NS${d}"
+                dst_uri="hdfs://$DST_URI_NS${d}"
+                # Prefix with the same "-D" HA properties run_as_distcp injects automatically below, so the
+                # PRINTED command (log_cmd/echo, for operator visibility) matches what actually executes --
+                # see render_nameservice_ha_args_for_display's doc comment.
+                distcp_cmd="hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS $src_uri $dst_uri"
 
                 log_cmd "Running Full DistCp for Directory: $d"
                 echo "📁 Directory: $d"
@@ -3704,11 +4223,13 @@ main() {
                 exit 1
             fi
             
-            # Re-enable snapshots on destination (they may have been disabled during DistCp)
+            # Re-enable snapshots on destination (they may have been disabled during DistCp).
+            # Scoped to the directories this run actually baselined + copied -- every other configured directory
+            # was already made snapshottable in Stage 2 and was not touched by the copies above.
             log_substage "Re-enabling snapshots on destination directories"
-            for d in "${SOURCE_DIRS[@]}"; do
+            for d in ${BASELINED_DIRS[@]+"${BASELINED_DIRS[@]}"}; do
                 log "[DEBUG] Re-enabling snapshot on destination dir: $d"
-                allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$DEST_CLUSTER" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
+                allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$DST_URI_NS" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
                 allow_snap_rc=$?
                 if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
                     [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
@@ -3722,16 +4243,20 @@ main() {
             # After full DistCp, the destination has been modified and no longer matches dr_snap_0. Create a
             # new baseline snapshot on destination to capture the current state after DistCp. This ensures
             # that on the next run, incremental sync will work correctly.
+            # Scoped to BASELINED_DIRS: this block DELETES and recreates the destination's ${SNAP_PREFIX}_0.
+            # Run against an already-replicating directory (which it was, when this looped over every configured
+            # directory) it would destroy that directory's real baseline snapshot and replace it with one
+            # capturing unrelated current content.
             log_substage "Creating post-DistCp baseline snapshot on destination"
-            for d in "${SOURCE_DIRS[@]}"; do
+            for d in ${BASELINED_DIRS[@]+"${BASELINED_DIRS[@]}"}; do
                 key=$(sanitize "$d")
                 base="${SNAP_PREFIX}_0"
                 log "[DEBUG] Creating post-DistCp baseline snapshot for directory: $d"
                 
                 # Delete the old dr_snap_0 on destination (from before DistCp)
-                if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${base}\$"; then
+                if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${base}\$"; then
                     log "[DEBUG] Deleting old baseline snapshot $base on destination (pre-DistCp state)"
-                    if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -deleteSnapshot "$d" "$base" 2>/dev/null; then
+                    if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -deleteSnapshot "$d" "$base" 2>/dev/null; then
                         log "[INFO] Deleted old baseline snapshot $base on destination"
                     else
                         log "[WARN] Failed to delete old baseline snapshot $base on destination (may proceed anyway)"
@@ -3740,7 +4265,7 @@ main() {
                 
                 # Create new baseline snapshot on destination (post-DistCp state)
                 log "[INIT] Creating new baseline snapshot '$base' on destination (post-DistCp state): $d"
-                if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$base"; then
+                if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -createSnapshot "$d" "$base"; then
                     log "[INFO] New baseline snapshot '$base' created on destination for $d (post-DistCp state)"
                 else
                     echo "[ERROR] FAILED to create post-DistCp baseline snapshot '$base' on DESTINATION: $d"
@@ -3794,27 +4319,33 @@ main() {
             echo "------------------------------------------------------------------------------------------------------------------------------------------"
             echo ""
             local has_valid_dirs=false
-            for d in "${SOURCE_DIRS[@]}"; do
-                key=$(sanitize "$d")
-                resolve_state_file_and_check_new "$key"
-                state="$RESOLVED_STATE_FILE"
 
-                # Skip directories that don't have state files (baseline creation failed)
-                if [[ "$IS_BRAND_NEW_DIR" == "true" ]]; then
-                    echo "📁 Directory: $d"
-                    echo ""
-                    echo "   [WARNING] SKIPPED: Baseline snapshot creation failed for this directory"
-                    echo "   Please fix the issues reported above and re-run the script."
-                    echo ""
-                    echo "------------------------------------------------------------------------------------------------------------------------------------------"
-                    echo ""
-                    continue
-                fi
-                
+            # Directories that got no baseline this run (see BASELINED_DIRS in Stage 3). Reported, but no DistCp
+            # command is printed for them.
+            for d in ${BASELINE_FAILED_DIRS[@]+"${BASELINE_FAILED_DIRS[@]}"}; do
+                echo "📁 Directory: $d"
+                echo ""
+                echo "   [WARNING] SKIPPED: baseline snapshot creation failed, or was refused by the brand-new gate"
+                echo "   Please fix the issues reported above and re-run the script."
+                echo ""
+                echo "------------------------------------------------------------------------------------------------------------------------------------------"
+                echo ""
+            done
+
+            # Only directories actually baselined by THIS run need a full DistCp. Printing a full-copy command
+            # for an already-syncing directory (which iterating all of SOURCE_DIRS did) invites an operator to
+            # overwrite a healthy destination by hand.
+            for d in ${BASELINED_DIRS[@]+"${BASELINED_DIRS[@]}"}; do
                 has_valid_dirs=true
-                src_uri="hdfs://$SOURCE_CLUSTER${d}"
-                dst_uri="hdfs://$DEST_CLUSTER${d}"
-                distcp_cmd="hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS $src_uri $dst_uri"
+                src_uri="hdfs://$SRC_URI_NS${d}"
+                dst_uri="hdfs://$DST_URI_NS${d}"
+                # This command is copy-pasted and run BY HAND by the operator, entirely outside
+                # run_as_distcp -- prefix with the same "-D" HA properties run_as_distcp would inject
+                # automatically, so a same-nameservice alias like "$DST_URI_NS" actually resolves when run
+                # standalone in the operator's own shell. See render_nameservice_ha_args_for_display's doc
+                # comment.
+                nameservice_ha_display_args="$(render_nameservice_ha_args_for_display)"
+                distcp_cmd="hadoop distcp ${nameservice_ha_display_args}$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS $src_uri $dst_uri"
                 echo "📁 Directory: $d"
                 echo ""
                 echo "   Run this command to sync baseline snapshots:"
@@ -3826,8 +4357,8 @@ main() {
                 if [[ "$DIR_BOOTSTRAP_MODE" == "no" ]]; then
                     echo "   After running DistCp, run the following commands to re-enable snapshots:"
                     echo ""
-                    echo "   hdfs dfsadmin -fs hdfs://$DEST_CLUSTER -allowSnapshot $d"
-                    echo "   hdfs dfs -fs hdfs://$DEST_CLUSTER -ls $d/.snapshot   # verify"
+                    echo "   hdfs ${nameservice_ha_display_args}dfsadmin -fs hdfs://$DST_URI_NS -allowSnapshot $d"
+                    echo "   hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS -ls $d/.snapshot   # verify"
                     echo ""
                 fi
                 echo "------------------------------------------------------------------------------------------------------------------------------------------"
@@ -3874,19 +4405,34 @@ main() {
         log_cmd "Processing Directory: $d"
         log "[DEBUG] Starting incremental sync for directory: $d"
         key=$(sanitize "$d")
+        # Computed once per directory for prefixing every "hdfs"/"hadoop" command PRINTED below as manual
+        # operator recovery guidance (direction reversal, split-brain, no-common-snapshot, reverse-diff-
+        # bootstrap divergent writes, post-rollback-retry failure, etc.) -- these are copy-paste instructions
+        # run by hand in the operator's own shell, entirely outside run_as_hdfs/run_as_distcp's automatic "-D"
+        # injection. Without this prefix, any command referencing "hdfs://$SRC_URI_NS" in the same-nameservice-
+        # collision case (where SRC_URI_NS is a synthetic alias -- see main()'s doc comment) fails immediately
+        # if copy-pasted, since no hdfs-site.xml anywhere defines the alias. Same rationale as Stage 3's
+        # existing use of this same helper -- see render_nameservice_ha_args_for_display's doc comment. Empty
+        # string (safe to prefix unconditionally) when HA_CONFIG_IN_WITH_CLAUSE is disabled or nothing has
+        # been derived (the normal, non-colliding case).
+        nameservice_ha_display_args="$(render_nameservice_ha_args_for_display)"
         resolve_state_file_and_check_new "$key"
         state="$RESOLVED_STATE_FILE"
 
         # --- Direction / bootstrap decision ------------------------------------- (a) No state file at all
-        # (local OR HDFS-mirrored) -> impossible here:
-        #     Stage 3 guarantees state (local, migrated, or HDFS-hydrated) exists
-        #     for every directory that reached Stage 4 successfully. (Directories
-        #     whose Stage 3 baseline failed `continue`d out of Stage 3 and are
-        #     simply absent from processing; see existing behavior.) The check
-        #     below is defense-in-depth only, to catch a future regression of
-        #     that invariant rather than silently mis-processing the directory.
+        # (local OR HDFS-mirrored) -> Stage 3 did not establish state for this
+        #     directory. Two ways to get here, both already reported in Stage 3:
+        #       - its baseline snapshot creation failed, or
+        #       - confirm_brand_new_against_live_snapshots REFUSED to baseline it
+        #         (unshared snapshots on both sides, destination-only history, or
+        #         a failed live listing) -- see the [BRAND-NEW-GATE] output above.
+        #     Either way the only safe action is to fail the directory: with no
+        #     established last-common snapshot there is nothing to diff from, and
+        #     guessing one risks copying over authoritative data. Directories that
+        #     Stage 3 rehydrated from live snapshots DO have state and pass this
+        #     check normally.
         if [[ "$IS_BRAND_NEW_DIR" == "true" ]]; then
-            log "[ERROR] [Stage 4] Invariant violated: directory $d has no state file (local or HDFS-mirrored) at Stage 4 entry. This should be impossible -- Stage 3 must have created or hydrated state for every directory reaching here. Failing this directory defensively."
+            log "[ERROR] [Stage 4] Directory $d has no state file (local or HDFS-mirrored) at Stage 4 entry -- Stage 3 neither created nor rehydrated state for it (baseline failure, or the [BRAND-NEW-GATE] refused to baseline it; see the Stage 3 output above for the specific reason and the remedy). Failing this directory rather than guessing a diff base."
             METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
             ALL_OK=false
             continue
@@ -3928,8 +4474,8 @@ main() {
             echo "  --- To recover ---"
             echo "    1. Resolve the underlying issue (connectivity, permissions) reported above."
             echo "    2. Verify manually:"
-            echo "         hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
-            echo "         hdfs dfs -fs hdfs://$DEST_CLUSTER   -ls $d/.snapshot"
+            echo "         hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -ls $d/.snapshot"
+            echo "         hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -ls $d/.snapshot"
             echo "    3. Re-run this script; the live check will be retried."
             echo ""
             echo "=========================================================================================================================================="
@@ -3956,14 +4502,25 @@ main() {
             echo ""
             echo "  This cannot be safely auto-resolved. Manual reconciliation required:"
             echo "    1. Inspect snapshots on both clusters:"
-            echo "         hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
-            echo "         hdfs dfs -fs hdfs://$DEST_CLUSTER   -ls $d/.snapshot"
+            echo "         hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -ls $d/.snapshot"
+            echo "         hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -ls $d/.snapshot"
             echo "    2. Decide which side holds authoritative data."
             echo "    3. Clear local AND HDFS-mirrored state to force a full re-baseline:"
             echo "         rm -f $state"
-            echo "         hdfs dfs -fs hdfs://$SOURCE_CLUSTER -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
-            echo "         hdfs dfs -fs hdfs://$DEST_CLUSTER   -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
-            echo "    4. Re-run this script."
+            echo "         hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "         hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "    4. Re-run this script with FORCE_REBASELINE=yes:"
+            echo "         export FORCE_REBASELINE=yes"
+            echo ""
+            echo "       Clearing state alone is NOT enough here. Stage 3 confirms 'brand new' against"
+            echo "       live snapshot listings before it will baseline, and it will REFUSE to baseline a"
+            echo "       directory whose clusters still hold unshared ${SNAP_PREFIX}_* snapshots (exactly"
+            echo "       the situation above). FORCE_REBASELINE=yes is the explicit override, and only"
+            echo "       affects directories whose state you cleared."
+            echo "       Alternatively, delete every ${SNAP_PREFIX}_* snapshot for $d on BOTH clusters"
+            echo "       instead, which makes the directory genuinely brand new and needs no override."
+            echo ""
+            echo "       WARNING: either way this performs a FULL copy that overwrites $DEST_CLUSTER."
             echo ""
             echo "=========================================================================================================================================="
             log "[ERROR] [Stage 4] No common snapshot index found for $d despite an existing state file. Likely retention pruning removed all shared history. Manual reconciliation required."
@@ -3999,12 +4556,12 @@ main() {
             echo "  histories. Automatic resolution is never attempted for this condition."
             echo ""
             echo "  --- Option 1: Manually inspect both clusters' snapshot history ---"
-            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
-            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -ls $d/.snapshot"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -ls $d/.snapshot"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -ls $d/.snapshot"
             echo "    Identify which snapshots exist only on one side, and inspect the underlying"
             echo "    data changes with snapshotDiff, e.g.:"
-            echo "      hdfs snapshotDiff -fs hdfs://$SOURCE_CLUSTER $d $last_snap ."
-            echo "      hdfs snapshotDiff -fs hdfs://$DEST_CLUSTER   $d $last_snap ."
+            echo "      hdfs ${nameservice_ha_display_args}snapshotDiff -fs hdfs://$SRC_URI_NS $d $last_snap ."
+            echo "      hdfs ${nameservice_ha_display_args}snapshotDiff -fs hdfs://$DST_URI_NS   $d $last_snap ."
             echo ""
             echo "  --- Option 2: Decide authoritative side and force a full re-baseline ---"
             echo "    Confirm which cluster's post-'$last_snap' history is authoritative, then"
@@ -4013,8 +4570,8 @@ main() {
             echo "    ($SOURCE_CLUSTER -> $DEST_CLUSTER):"
             echo ""
             echo "      rm -f $state"
-            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
-            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
             echo ""
             echo "    ALSO REQUIRED: delete every existing ${SNAP_PREFIX}_* snapshot for $d on BOTH"
             echo "    clusters BEFORE re-running -- direction/continuation is derived live from actual"
@@ -4023,11 +4580,11 @@ main() {
             echo "    from before this recovery instead of the fresh ${SNAP_PREFIX}_0 baseline, and"
             echo "    (if ROLLBACK_ON_FAILURE=yes) rolling back to a pre-recovery state:"
             echo ""
-            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
-            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -ls $d/.snapshot"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -ls $d/.snapshot"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -ls $d/.snapshot"
             echo "      # for each ${SNAP_PREFIX}_<N> snapshot listed on EITHER cluster:"
-            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
-            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
             echo ""
             echo "    WARNING: this performs a FULL distcp that OVERWRITES $DEST_CLUSTER with"
             echo "    $SOURCE_CLUSTER's data, discarding whatever independent history existed only"
@@ -4116,13 +4673,15 @@ main() {
             echo "    from scratch in the CURRENT direction:"
             echo ""
             echo "      rm -f $state"
-            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
-            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -rm -f ${HDFS_STATE_DIR}/dr-last-snap-${key}.txt"
             echo ""
-            echo "    NOTE: clearing state here only forces Stage 3's brand-new-directory gate; it"
-            echo "    is no longer what determines direction safety (that is now derived live from"
-            echo "    snapshot listings every run) -- but it is still required to make Stage 3"
-            echo "    re-baseline instead of Stage 4 continuing to detect the same reversal."
+            echo "    NOTE: clearing state is necessary but NOT sufficient. It is not what determines"
+            echo "    direction safety (that is derived live from snapshot listings every run), and"
+            echo "    Stage 3 now also confirms 'brand new' against those live listings before it will"
+            echo "    baseline -- so with state cleared but snapshots still present it will REFUSE to"
+            echo "    re-baseline. Complete the snapshot deletion below, or re-run with"
+            echo "    FORCE_REBASELINE=yes to override that confirmation explicitly."
             echo ""
             echo "    ALSO REQUIRED: delete every existing ${SNAP_PREFIX}_* snapshot for $d on BOTH"
             echo "    clusters BEFORE re-running. Since direction is derived live from actual"
@@ -4131,11 +4690,11 @@ main() {
             echo "    of the fresh ${SNAP_PREFIX}_0 baseline, and (if ROLLBACK_ON_FAILURE=yes) rolling"
             echo "    back to a pre-re-baseline state:"
             echo ""
-            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
-            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -ls $d/.snapshot"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -ls $d/.snapshot"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -ls $d/.snapshot"
             echo "      # for each ${SNAP_PREFIX}_<N> snapshot listed on EITHER cluster:"
-            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
-            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER   -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
+            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -deleteSnapshot $d ${SNAP_PREFIX}_<N>"
             echo ""
             echo "    WARNING: this performs a FULL distcp that overwrites $DEST_CLUSTER with"
             echo "    $SOURCE_CLUSTER's data."
@@ -4156,10 +4715,10 @@ main() {
 
         # 4a) Ensure last_snap exists on destination (create if missing)
         log "[DEBUG] Ensuring last snapshot $last_snap exists on destination directory $d"
-        out_dr_last=$(run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -ls "$d/.snapshot" 2>/dev/null | grep "/$last_snap\$" || true)
+        out_dr_last=$(run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -ls "$d/.snapshot" 2>/dev/null | grep "/$last_snap\$" || true)
         if [[ -z "$out_dr_last" ]]; then
             log "[INFO] Last snapshot $last_snap missing on destination, creating..."
-            if run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$last_snap"; then
+            if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -createSnapshot "$d" "$last_snap"; then
                 log "[INFO] Created last snapshot $last_snap on destination"
             else
                 log_error "FAILED to create last snapshot '$last_snap' on DESTINATION: $d"
@@ -4177,7 +4736,7 @@ main() {
 
         # 4b) Create next_snap snapshot on source before distcp
         log "[DEBUG] Creating next snapshot $next_snap on source directory $d"
-        out_src=$(run_as_hdfs hdfs dfs -fs "hdfs://$SOURCE_CLUSTER" -createSnapshot "$d" "$next_snap" 2>&1 | grep -v "^SLF4J:" || true) || true
+        out_src=$(run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -createSnapshot "$d" "$next_snap" 2>&1 | grep -v "^SLF4J:" || true) || true
         log "[DEBUG] Source snapshot creation output: $out_src"
         if echo "$out_src" | grep -q "already a snapshot with the same name"; then
             log "[WARN] Source snapshot $next_snap already exists"
@@ -4231,8 +4790,8 @@ main() {
         #      NOTE: Uses tee to write distcp stderr to temp file AND to stderr. Since
         #            stderr is redirected to stdout via exec 2>&1, output appears in
         #            real-time through the global tee process without buffering delays.
-        src_uri="hdfs://$SOURCE_CLUSTER${d}"
-        dst_uri="hdfs://$DEST_CLUSTER${d}"
+        src_uri="hdfs://$SRC_URI_NS${d}"
+        dst_uri="hdfs://$DST_URI_NS${d}"
         log_cmd "Syncing directory: $d ($last_snap -> $next_snap)"
         log "[DEBUG] Running distcp diff sync for $d"
         echo ""
@@ -4368,24 +4927,24 @@ main() {
                             echo ""
                             echo "    After it completes:"
                             echo "      - Delete the 'next' snapshot from source (if created this run):"
-                            echo "          hdfs dfs -fs hdfs://$SOURCE_CLUSTER -deleteSnapshot $d $next_snap"
+                            echo "          hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -deleteSnapshot $d $next_snap"
                             echo "      - Re-run this script to resume incremental sync."
                             echo ""
                             echo "  --- Option 2: Inspect .snapshot dirs on both clusters ---"
                             echo ""
                             echo "    Source snapshots:"
-                            echo "      hdfs dfs -fs hdfs://$SOURCE_CLUSTER -ls $d/.snapshot"
+                            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -ls $d/.snapshot"
                             echo ""
                             echo "    Destination snapshots:"
-                            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER -ls $d/.snapshot"
+                            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS -ls $d/.snapshot"
                             echo ""
                             echo "  --- Option 3: Recreate destination '$last_snap' snapshot and retrigger (RECOMMENDED) ---"
                             echo ""
                             echo "    The destination snapshot '$last_snap' may have stale metadata after rollback."
                             echo "    Recreating it refreshes the baseline so incremental DistCp can proceed."
                             echo ""
-                            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER -deleteSnapshot $d $last_snap"
-                            echo "      hdfs dfs -fs hdfs://$DEST_CLUSTER -createSnapshot $d $last_snap"
+                            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS -deleteSnapshot $d $last_snap"
+                            echo "      hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS -createSnapshot $d $last_snap"
                             echo ""
                             echo "    Then re-run this script — incremental sync will resume from $last_snap -> $next_snap."
                             echo ""
@@ -4444,7 +5003,7 @@ main() {
         #     for baseline snapshot creation) so 4f only runs on success.
         echo ""
         log "[DEBUG] Creating next snapshot $next_snap on destination directory $d"
-        out_dr_next=$(run_as_hdfs hdfs dfs -fs "hdfs://$DEST_CLUSTER" -createSnapshot "$d" "$next_snap" 2>&1 | grep -v "^SLF4J:" || true) || true
+        out_dr_next=$(run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -createSnapshot "$d" "$next_snap" 2>&1 | grep -v "^SLF4J:" || true) || true
         log "[DEBUG] Destination snapshot creation output: $out_dr_next"
         dest_snap_ok=false
         if echo "$out_dr_next" | grep -q "already a snapshot with the same name"; then
@@ -4482,10 +5041,10 @@ main() {
         echo ""
 
         # 4g) Cleanup old snapshots on source (retain SNAP_RETAIN most recent, matching current prefix only)
-        cleanup_old_snapshots "$SOURCE_CLUSTER" "$d" "source" "$SNAP_RETAIN" "$SNAP_PREFIX"
+        cleanup_old_snapshots "$SRC_URI_NS" "$d" "source" "$SNAP_RETAIN" "$SNAP_PREFIX"
 
         # 4h) Cleanup old snapshots on destination (retain SNAP_RETAIN most recent, matching current prefix only)
-        cleanup_old_snapshots "$DEST_CLUSTER" "$d" "destination" "$SNAP_RETAIN" "$SNAP_PREFIX"
+        cleanup_old_snapshots "$DST_URI_NS" "$d" "destination" "$SNAP_RETAIN" "$SNAP_PREFIX"
     done
     
     # Stage 4 completion - only show errors if any occurred
@@ -4591,7 +5150,7 @@ main "$@"
 #
 # ── ARTIFACTS: LOCAL DISK (node running this script) ────────────────────────
 #
-#   [1] $LOG  (default: /var/log/hadoop-replication/hadoop-dr-replicate.log)
+#   [1] $LOG  (default: /var/log/hadoop-dr-replicate.log)
 #         Full run log. Previous log is backed up (never overwritten in
 #         place) as ${LOG}.<timestamp>, or ${LOG}.prev as a fallback.
 #
