@@ -13,7 +13,7 @@
 #   cluster free from replication workload.
 #
 # Usage:
-#   ./hadoop_dr_replication.sh \
+#   ./hadoop_dr_replication_4.2.0.sh \
 #     "<SOURCE_NN_HOST:PORT>"   \
 #     "<DEST_NN_HOST:PORT>"     \
 #     "<DIR1,DIR2,...>"         \
@@ -2147,6 +2147,61 @@ derive_direction_state() {
 }
 
 # -----------------------------------------------------------------------------
+# snapshot_content_signature: cheap content fingerprint for a single snapshot path, used to catch the case
+# where a snapshot with the SAME NAME exists on both clusters but was cut at a DIFFERENT point in time (e.g.
+# Stage 3's baseline is created on source and destination via two independent, non-atomic -createSnapshot
+# calls with no copy in between -- a write landing on source between the two calls is silently captured in
+# source's snapshot but not destination's, even though both snapshots share a name/index).
+#
+# Every other check in this script (verify_cached_snap_fast_path's -test -e, derive_direction_state's
+# index-set comparison) treats name/index equality as a proxy for content equality. That proxy is usually
+# true but is NOT guaranteed by HDFS, and nothing previously re-verified it -- a diverged pair of
+# same-named snapshots was silently trusted forever, every run, with distcp -diff computing an empty (or
+# wrong) delta against it.
+#
+# Uses "hdfs dfs -count -q" (dir count, file count, content size) as the fingerprint: cheap (single NN call,
+# no data read), and sufficient to catch an added/removed/resized file -- which is exactly the failure mode
+# seen (5 extra files present on one side's snapshot but not the other's). Prints "" (and returns non-zero)
+# if the count itself fails, so callers can fail safe (treat an unreadable snapshot as "cannot confirm
+# parity") rather than comparing garbage.
+# -----------------------------------------------------------------------------
+snapshot_content_signature() {
+    local cluster_uri="$1"
+    local snapshot_path="$2"
+    local out
+    if ! out=$(run_as_hdfs hdfs dfs -fs "$cluster_uri" -count -q "$snapshot_path" 2>/dev/null); then
+        return 1
+    fi
+    # Columns: QUOTA REM_QUOTA SPACE_QUOTA REM_SPACE_QUOTA DIR_COUNT FILE_COUNT CONTENT_SIZE PATHNAME
+    # Only the last three (DIR_COUNT, FILE_COUNT, CONTENT_SIZE) reflect actual data; quotas are unrelated to
+    # content and would otherwise mask a real mismatch if they happened to differ for unrelated reasons.
+    printf '%s' "$out" | awk '{print $(NF-3), $(NF-2), $(NF-1)}'
+}
+
+# Compares the content signature of the SAME-NAMED snapshot on both clusters. Returns 0 (parity confirmed)
+# only if both signatures were readable AND identical; returns 1 otherwise (mismatch OR unreadable -- both
+# treated as "cannot confirm parity", never as "assume it's fine"). On mismatch, logs an [ERROR] with both
+# signatures so the operator can see exactly what diverged without re-deriving it by hand.
+verify_snapshot_content_parity() {
+    local d="$1"
+    local snap="$2"
+    local src_sig dst_sig
+    src_sig=$(snapshot_content_signature "hdfs://$SRC_URI_NS" "$d/.snapshot/$snap") || {
+        log "[WARN] [CONTENT-PARITY] Could not read content signature for '$snap' on SOURCE_CLUSTER ($SRC_URI_NS) -- cannot confirm parity for $d."
+        return 1
+    }
+    dst_sig=$(snapshot_content_signature "hdfs://$DST_URI_NS" "$d/.snapshot/$snap") || {
+        log "[WARN] [CONTENT-PARITY] Could not read content signature for '$snap' on DEST_CLUSTER ($DST_URI_NS) -- cannot confirm parity for $d."
+        return 1
+    }
+    if [[ "$src_sig" != "$dst_sig" ]]; then
+        log "[ERROR] [CONTENT-PARITY] Snapshot '$snap' for $d has the SAME NAME on both clusters but DIFFERENT content (DIR_COUNT FILE_COUNT CONTENT_SIZE) -- SOURCE: [$src_sig]  DEST: [$dst_sig]. This snapshot cannot be trusted as a common reference point."
+        return 1
+    fi
+    return 0
+}
+
+# -----------------------------------------------------------------------------
 # verify_cached_snap_fast_path: optimistic, LIVE-VERIFIED fast path to avoid a full derive_direction_state
 # double-listing when the cached last_snap is still confirmed current. NEVER trusted blindly -- every field it
 # reports is backed by a live "hdfs dfs -test -e" check performed THIS run, not by assuming the cache is
@@ -2181,6 +2236,17 @@ verify_cached_snap_fast_path() {
         return 0
     fi
     if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -test -e "$d/.snapshot/$cached_snap" 2>/dev/null; then
+        return 0
+    fi
+
+    # Name/existence alone does not prove the two clusters' copies of $cached_snap are the same data (see
+    # snapshot_content_signature doc comment above -- e.g. Stage 3's non-atomic baseline creation can leave
+    # same-named snapshots content-diverged from the very first run). Refuse the fast path on any mismatch
+    # or unreadable signature; derive_direction_state's full listing is not itself a content check either,
+    # but forcing it at least surfaces the divergence in the main [DIRECTION-DERIVE] log path instead of
+    # silently diffing against a cached reference this run has now proven is unsound.
+    if ! verify_snapshot_content_parity "$d" "$cached_snap"; then
+        log "[ERROR] [DIRECTION-DERIVE] Fast-path REFUSED for $d: cached snapshot '$cached_snap' failed content-parity verification (see [CONTENT-PARITY] above). Falling through to full live snapshot listing; if the mismatch persists, this directory needs manual reconciliation (recommend: full DistCp re-baseline)."
         return 0
     fi
 
@@ -2962,7 +3028,7 @@ rollback_once_for_failure() {
 
     log_substage "Rollback Step 3: Running DistCp rollback to restore snapshot state"
     log_cmd "DistCp Rollback Command"
-    echo "  hadoop distcp $DISTCP_ROLLBACK_FULL_OPTS $DISTCP_ROLLBACK_OPTS $src_snap_path $dst_live_path"
+    echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_ROLLBACK_FULL_OPTS $DISTCP_ROLLBACK_OPTS $src_snap_path $dst_live_path"
     echo ""
     log "[ROLLBACK] Running DistCp rollback: hadoop distcp $DISTCP_ROLLBACK_FULL_OPTS $DISTCP_ROLLBACK_OPTS $src_snap_path $dst_live_path"
     # Rollback DistCp stderr goes through global redirection (exec 2>&1), no need to tee to LOG again
@@ -3082,7 +3148,7 @@ reconcile_and_rebaseline_dest() {
     local reconcile_err="/tmp/distcp_reconcile_err_${key}_$$.log"
     TEMP_FILES+=("$reconcile_err")
     log_cmd "Baseline Reconcile DistCp Command"
-    echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS $src_base_uri $dst_uri"
+    echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS $src_base_uri $dst_uri"
     echo ""
     # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
     if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS "$src_base_uri" "$dst_uri" 2> >(tee "$reconcile_err" >&2); then
@@ -3209,7 +3275,7 @@ reconcile_reverse_diff_bootstrap() {
     local bootstrap_err="/tmp/distcp_reverse_bootstrap_err_${key}_$$.log"
     TEMP_FILES+=("$bootstrap_err")
     log_cmd "Reverse-Diff Bootstrap DistCp Command"
-    echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $copy_opts_no_update -update -diff $last_snap $reverse_next_snap $src_uri $dst_uri"
+    echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $copy_opts_no_update -update -diff $last_snap $reverse_next_snap $src_uri $dst_uri"
     echo ""
     local bootstrap_distcp_success
     # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
@@ -4799,7 +4865,7 @@ main() {
         # Remove -update from COPY_OPTS and place it before -diff (required by DistCp) All other options must
         # come before -diff to avoid being treated as source paths
         COPY_OPTS_NO_UPDATE=$(strip_update_flag "$COPY_OPTS")
-        echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
+        echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
         echo "======================"
         echo ""
         echo "[DEBUG MARKER] Starting DistCp execution for $d"
@@ -4881,7 +4947,7 @@ main() {
                         # forensic inspection Use tee to write retry distcp stderr to temp file AND to stderr
                         # Reuse COPY_OPTS_NO_UPDATE from earlier in the function
                         log_cmd "DistCp Retry Command (post-rollback)"
-                        echo "  hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
+                        echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
                         echo "======================"
                         echo ""
                         # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
@@ -5026,6 +5092,39 @@ main() {
             METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
             dir_end_ts=$(date +%s)
             log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds (destination snapshot creation failed)"
+            ALL_OK=false
+            continue
+        fi
+
+        # 4e-bis) Verify source's and destination's $next_snap actually agree on content before trusting
+        # either as the new common reference point. This is the FIRST moment parity is both meaningful and
+        # checkable without a false positive: destination's snapshot was just cut immediately after DistCp
+        # applied source's diff onto it, so the two should now be identical. If they are not, either this
+        # run's DistCp under/over-copied, or $last_snap (the diff base) was itself already diverged (e.g. a
+        # Stage 3 baseline that silently drifted before any incremental ever ran) -- either way, advancing
+        # state past a mismatched $next_snap would permanently hide the gap, exactly as happened when 5
+        # files added on source were never reflected on destination but the run still reported SUCCESS.
+        if ! verify_snapshot_content_parity "$d" "$next_snap"; then
+            echo ""
+            echo "=========================================================================================================================================="
+            echo ">>> [ERROR] [STAGE 4] CONTENT PARITY MISMATCH for: $d <<<"
+            echo "=========================================================================================================================================="
+            echo "  Snapshot '$next_snap' exists on both clusters but its content differs (see"
+            echo "  [CONTENT-PARITY] above for the DIR_COUNT/FILE_COUNT/CONTENT_SIZE on each side)."
+            echo ""
+            echo "  Refusing to advance state past this snapshot -- last_snap remains '$last_snap'."
+            echo ""
+            echo "  --- To recover ---"
+            echo "    1. Compare source and destination directly to see what's missing/extra:"
+            echo "         hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -ls -R $d"
+            echo "         hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -ls -R $d"
+            echo "    2. If destination is missing real data, run a manual full DistCp (not -diff) to"
+            echo "       reconcile, then re-run this script."
+            echo "=========================================================================================================================================="
+            log "[ERROR] [Stage 4] DistCp and destination snapshot creation both reported success for $d, but '$next_snap' fails content-parity verification between SOURCE_CLUSTER and DEST_CLUSTER. Refusing to advance state -- last_snap remains '$last_snap' for this directory. Manual reconciliation required (see guidance above)."
+            METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
+            dir_end_ts=$(date +%s)
+            log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds (content-parity verification failed)"
             ALL_OK=false
             continue
         fi
