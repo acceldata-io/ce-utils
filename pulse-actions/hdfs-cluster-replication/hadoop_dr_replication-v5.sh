@@ -674,12 +674,12 @@ FORCE_REBASELINE="${FORCE_REBASELINE:-no}"
 #         with a clear error rather than silently running without the config
 #         the operator thought they enabled.
 #
-# Example: export HA_CONFIG_IN_WITH_CLAUSE=yes
+# Example: export AUTO_DERIVE_HA_CLIENT_CONFIG=yes
 ###############################################################################
-HA_CONFIG_IN_WITH_CLAUSE="${HA_CONFIG_IN_WITH_CLAUSE:-false}"
+AUTO_DERIVE_HA_CLIENT_CONFIG="${AUTO_DERIVE_HA_CLIENT_CONFIG:-false}"
 
 ###############################################################################
-# SRC_NN_HOSTS / DST_NN_HOSTS - required when HA_CONFIG_IN_WITH_CLAUSE=true. Comma-separated
+# SRC_NN_HOSTS / DST_NN_HOSTS - required when AUTO_DERIVE_HA_CLIENT_CONFIG=true. Comma-separated
 # "<nn-id>=<host>:<port>" pairs describing each NameService's NameNodes -- this is ALL the operator needs to
 # provide; every other HA property (dfs.nameservices, dfs.ha.namenodes.<ns>, the failover proxy provider
 # class) is derived automatically from these two variables. There is no config file to author.
@@ -1055,7 +1055,7 @@ init_kerberos_detection() {
 }
 
 ###############################################################################
-# Per-NameService HA client config: derive + injection helpers. See the HA_CONFIG_IN_WITH_CLAUSE /
+# Per-NameService HA client config: derive + injection helpers. See the AUTO_DERIVE_HA_CLIENT_CONFIG /
 # SRC_NN_HOSTS / DST_NN_HOSTS variable docs above for the full "why". This block is the single choke point
 # that makes the feature apply to EVERY "hdfs dfs"/"hdfs dfsadmin"/"hdfs snapshotDiff"/ "hadoop distcp" call
 # in the script, since all of them already funnel through run_as_hdfs()/run_as_distcp() below -- no other call
@@ -1070,7 +1070,7 @@ init_kerberos_detection() {
 # single value, breaking whichever cluster's name was clobbered; see git history / incident notes for the
 # production failure this caused). All derived properties (both clusters' NN addresses, proxy provider
 # classes, and the combined dfs.nameservices/automatic-failover flag) are ALWAYS injected together as one
-# fixed set whenever HA_CONFIG_IN_WITH_CLAUSE=yes -- there is no per-cluster reachability probing or
+# fixed set whenever AUTO_DERIVE_HA_CLIENT_CONFIG=yes -- there is no per-cluster reachability probing or
 # conditional logic here, by design: injecting the full combined set is always safe (it fully replaces, rather
 # than partially conflicts with, whatever this host's own hdfs-site.xml may already define for either name).
 #
@@ -1099,7 +1099,7 @@ NAMESERVICE_HA_ARGS=""
 #   dfs.client.failover.proxy.provider.<SOURCE_CLUSTER>=...ConfiguredFailoverProxyProvider
 #   dfs.client.failover.proxy.provider.<DEST_CLUSTER>=...ConfiguredFailoverProxyProvider
 #
-# Called ONCE from main(), only when HA_CONFIG_IN_WITH_CLAUSE="yes". FAILS FAST (exit 18) on a malformed/empty
+# Called ONCE from main(), only when AUTO_DERIVE_HA_CLIENT_CONFIG="yes". FAILS FAST (exit 18) on a malformed/empty
 # NN_HOSTS string for either cluster -- an operator who explicitly enabled this flag did so BECAUSE at least
 # one NameService is otherwise unresolvable; silently deriving a broken/partial property set would reproduce
 # the exact hang this feature exists to prevent, just later and with a far more confusing error signature.
@@ -1115,8 +1115,8 @@ _derive_one_cluster_ha_props() {
     local role_label="$3" # "SOURCE" or "DEST", for error messages only
 
     if [[ -z "$nn_hosts" ]]; then
-        echo "[ERROR] HA_CONFIG_IN_WITH_CLAUSE=yes but the NN_HOSTS variable for $role_label ($cluster_name) is empty." >&2
-        echo "[ERROR] Set SRC_NN_HOSTS / DST_NN_HOSTS to '<nn-id>=<host>:<port>,...' pairs, or set HA_CONFIG_IN_WITH_CLAUSE=no." >&2
+        echo "[ERROR] AUTO_DERIVE_HA_CLIENT_CONFIG=yes but the NN_HOSTS variable for $role_label ($cluster_name) is empty." >&2
+        echo "[ERROR] Set SRC_NN_HOSTS / DST_NN_HOSTS to '<nn-id>=<host>:<port>,...' pairs, or set AUTO_DERIVE_HA_CLIENT_CONFIG=no." >&2
         exit 18
     fi
 
@@ -1201,10 +1201,10 @@ derive_nameservice_ha_conf() {
 # these flags fails, because no hdfs-site.xml anywhere defines the synthetic alias. Prefixing the printed
 # command with the same "-D" set makes it correctly self-contained and runnable standalone.
 #
-# Returns empty string (safe to prefix unconditionally) when HA_CONFIG_IN_WITH_CLAUSE is disabled or nothing
+# Returns empty string (safe to prefix unconditionally) when AUTO_DERIVE_HA_CLIENT_CONFIG is disabled or nothing
 # has been derived yet -- callers should call this only after derive_nameservice_ha_conf() has run.
 render_nameservice_ha_args_for_display() {
-    if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" != "yes" ]] || [[ -z "$NAMESERVICE_HA_ARGS" ]]; then
+    if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" != "yes" ]] || [[ -z "$NAMESERVICE_HA_ARGS" ]]; then
         printf ''
         return 0
     fi
@@ -1321,7 +1321,7 @@ resolve_active_namenode_hostport() {
 
 # Scan "$@" for ANY "hdfs://" reference (covers both the "-fs hdfs://<ns>" form used by hdfs
 # dfs/dfsadmin/snapshotDiff, and the bare "hdfs://<ns>/path" URIs hadoop distcp takes as its trailing
-# source/dest args). If HA_CONFIG_IN_WITH_CLAUSE is enabled AND at least one "hdfs://" is referenced, sets the
+# source/dest args). If AUTO_DERIVE_HA_CLIENT_CONFIG is enabled AND at least one "hdfs://" is referenced, sets the
 # global NAMESERVICE_INJECT_ARGS array to the FULL combined property set from NAMESERVICE_HA_ARGS (always the
 # same set, covering both clusters -- see the DESIGN note above for why this is no longer a per-cluster
 # lookup). Empty array if the feature is disabled or no "hdfs://" URI is referenced at all -- callers can
@@ -1341,7 +1341,7 @@ resolve_active_namenode_hostport() {
 # evaluate.
 _collect_nameservice_inject_args() {
     NAMESERVICE_INJECT_ARGS=()
-    if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" != "yes" ]] || [[ -z "$NAMESERVICE_HA_ARGS" ]]; then
+    if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" != "yes" ]] || [[ -z "$NAMESERVICE_HA_ARGS" ]]; then
         return 0
     fi
 
@@ -1374,7 +1374,7 @@ _collect_nameservice_inject_args() {
 # Wrapper function to run commands as HDFS_USER If Kerberos is enabled, run as current user (root) to preserve
 # tickets Otherwise, use sudo to switch to HDFS_USER
 #
-# Also the single choke point for per-NameService HA config injection (HA_CONFIG_IN_WITH_CLAUSE): when
+# Also the single choke point for per-NameService HA config injection (AUTO_DERIVE_HA_CLIENT_CONFIG): when
 # enabled, any derived "-D..." options for a cluster referenced in "$@" (via "hdfs://<cluster>") are spliced
 # in immediately after the subcommand token ("dfs"/"dfsadmin"/"snapshotDiff"), so they are always parsed as
 # client-side Hadoop generic options, never mistaken for the subcommand's own positional arguments.
@@ -3227,7 +3227,7 @@ reconcile_reverse_diff_bootstrap() {
     # See the matching variable in Stage 4's per-directory loop for the full rationale: prefixes every
     # "hdfs"/"hadoop" command PRINTED below as manual operator recovery guidance so it is runnable standalone
     # (needed in the same-nameservice-collision case, where SRC_URI_NS is a synthetic alias). Empty string,
-    # safe to prefix unconditionally, when HA_CONFIG_IN_WITH_CLAUSE is disabled.
+    # safe to prefix unconditionally, when AUTO_DERIVE_HA_CLIENT_CONFIG is disabled.
     local nameservice_ha_display_args
     nameservice_ha_display_args="$(render_nameservice_ha_args_for_display)"
 
@@ -3418,7 +3418,7 @@ main() {
     # -------------------------------------------------------------------------
     # Same-nameservice DR support: SOURCE_CLUSTER and DEST_CLUSTER are ROLE LABELS (and, for state-file keys,
     # job tags, and log lines, remain exactly what the operator passed) -- but the actual "hdfs://<name>" URIs
-    # this script builds, and the HA client -D properties derived for HA_CONFIG_IN_WITH_CLAUSE, need each
+    # this script builds, and the HA client -D properties derived for AUTO_DERIVE_HA_CLIENT_CONFIG, need each
     # cluster to resolve to a DISTINCT set of NameNodes. That's normally satisfied automatically because
     # production and DR nameservices have different names. It breaks when a DR cluster is built from the same
     # blueprint as production and BOTH sides legitimately use the same nameservice ID (e.g. both "ODP-Phoenix")
@@ -3435,7 +3435,7 @@ main() {
     # renamed on either cluster; the alias only ever appears in THIS script's own "-D" injected HA config and
     # the URIs it builds, both of which are process-local and thrown away when the script exits.
     #
-    # This requires HA_CONFIG_IN_WITH_CLAUSE=yes with SRC_NN_HOSTS/DST_NN_HOSTS set: aliasing the source only
+    # This requires AUTO_DERIVE_HA_CLIENT_CONFIG=yes with SRC_NN_HOSTS/DST_NN_HOSTS set: aliasing the source only
     # fixes the ambiguity if the script is ALSO the thing supplying that alias's NameNode addresses via
     # injected -D properties. Without that, "hdfs://<alias>" would resolve nowhere (no hdfs-site.xml on earth
     # defines the synthetic alias), so we fail fast here instead of letting every later hdfs/distcp call hang
@@ -3445,11 +3445,11 @@ main() {
     DST_URI_NS="$DEST_CLUSTER"
     SAME_NAMESERVICE_COLLISION="false"
     if [[ "$SOURCE_CLUSTER" == "$DEST_CLUSTER" ]]; then
-        if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" != "yes" ]]; then
+        if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" != "yes" ]]; then
             echo "[ERROR] SOURCE_CLUSTER and DEST_CLUSTER are identical: '$SOURCE_CLUSTER'" >&2
             echo "[ERROR] This is only supported when the two are the SAME nameservice name shared by two" >&2
             echo "[ERROR] DIFFERENT physical clusters (e.g. a DR cluster built from the same blueprint as" >&2
-            echo "[ERROR] production) -- and even then, this script needs HA_CONFIG_IN_WITH_CLAUSE=yes with" >&2
+            echo "[ERROR] production) -- and even then, this script needs AUTO_DERIVE_HA_CLIENT_CONFIG=yes with" >&2
             echo "[ERROR] SRC_NN_HOSTS/DST_NN_HOSTS set so it can tell the two clusters apart internally." >&2
             echo "[ERROR] Set those three variables, or pass distinct nameservice names / host:port values" >&2
             echo "[ERROR] for SOURCE_CLUSTER (arg 1) and DEST_CLUSTER (arg 2)." >&2
@@ -3561,13 +3561,13 @@ main() {
             ;;
     esac
 
-    # Validate HA_CONFIG_IN_WITH_CLAUSE
-    case "${HA_CONFIG_IN_WITH_CLAUSE,,}" in
+    # Validate AUTO_DERIVE_HA_CLIENT_CONFIG
+    case "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" in
         ""|no|yes)
             : # valid
             ;;
         *)
-            echo "[ERROR] Invalid value for HA_CONFIG_IN_WITH_CLAUSE (env var): '${HA_CONFIG_IN_WITH_CLAUSE}'" >&2
+            echo "[ERROR] Invalid value for AUTO_DERIVE_HA_CLIENT_CONFIG (env var): '${AUTO_DERIVE_HA_CLIENT_CONFIG}'" >&2
             echo "[ERROR] Accepted values: 'yes' or 'no'" >&2
             exit 18
             ;;
@@ -3647,8 +3647,8 @@ main() {
     echo "  Arg 16 (REVERSE_DIFF_BOOTSTRAP) : $REVERSE_DIFF_BOOTSTRAP"
     echo "  Arg 17 (HDFS_STATE_DIR)      : $HDFS_STATE_DIR"
     echo "  DIR_BOOTSTRAP_MODE (fixed)   : $DIR_BOOTSTRAP_MODE (hardcoded, not configurable)"
-    echo "  HA_CONFIG_IN_WITH_CLAUSE     : $HA_CONFIG_IN_WITH_CLAUSE"
-    if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" == "yes" ]]; then
+    echo "  AUTO_DERIVE_HA_CLIENT_CONFIG     : $AUTO_DERIVE_HA_CLIENT_CONFIG"
+    if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" == "yes" ]]; then
         echo "  SRC_NN_HOSTS                 : $SRC_NN_HOSTS"
         echo "  DST_NN_HOSTS                 : $DST_NN_HOSTS"
         echo "  HA config will be derived for: $SOURCE_CLUSTER, $DEST_CLUSTER (at Stage 1)"
@@ -3772,7 +3772,7 @@ main() {
     fi
 
     # -----------------------------------------------------------------------------
-    # Derive combined HA NameService client config (HA_CONFIG_IN_WITH_CLAUSE), UNCONDITIONALLY and BEFORE any
+    # Derive combined HA NameService client config (AUTO_DERIVE_HA_CLIENT_CONFIG), UNCONDITIONALLY and BEFORE any
     # Stage 1 branching below.
     #
     # CRITICAL FIX: this used to be called only from inside the "source_is_ha || dest_is_ha" elif branch of
@@ -3784,7 +3784,7 @@ main() {
     #       dest_is_ha both false, e.g. during testing with host:port values),
     #       so the ENTIRE outer `if` was false and Stage 1 took the plain JMX
     #       health-check `else` branch instead.
-    # In both cases, an operator who explicitly set HA_CONFIG_IN_WITH_CLAUSE=yes (specifically because a
+    # In both cases, an operator who explicitly set AUTO_DERIVE_HA_CLIENT_CONFIG=yes (specifically because a
     # NameService is otherwise unresolvable) got NONE of the derived "-D" HA properties injected into any
     # later hdfs/distcp call, NONE of the fail-fast NN_HOSTS validation, and no indication whatsoever that the
     # flag had been ignored -- reproducing the exact multi-minute-hang failure this feature exists to prevent.
@@ -3801,14 +3801,14 @@ main() {
     # never finds "dfs.ha.namenodes.<bare-host>:<port>" for the second entry and treats it as a plain,
     # non-HA filesystem reference, which is exactly what it is.
     # -----------------------------------------------------------------------------
-    if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" == "yes" ]]; then
+    if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" == "yes" ]]; then
         derive_nameservice_ha_conf
     fi
 
     # -----------------------------------------------------------------------------
     # Stage 1a: Superuser privilege check (runs UNCONDITIONALLY, ahead of the
     # SKIP_HEALTH_CHECKS/HA branching below) -- same rationale as the
-    # HA_CONFIG_IN_WITH_CLAUSE derivation above: a check placed inside only one of Stage
+    # AUTO_DERIVE_HA_CLIENT_CONFIG derivation above: a check placed inside only one of Stage
     # 1's branches would be silently skipped whenever the other branch is the one that
     # fires. Missing superuser privilege on either cluster otherwise surfaces much later
     # and more confusingly, as an allowSnapshot/createSnapshot failure in Stage 2/3 --
@@ -3835,8 +3835,8 @@ main() {
     if [[ "$SKIP_HEALTH_CHECKS" == "yes" ]] || [[ "$source_is_ha" == "true" ]] || [[ "$dest_is_ha" == "true" ]]; then
         if [[ "$SKIP_HEALTH_CHECKS" == "yes" ]]; then
             log "[INFO] Skipping cluster health checks (SKIP_HEALTH_CHECKS=yes)"
-            if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" == "yes" ]]; then
-                log "[WARN] HA_CONFIG_IN_WITH_CLAUSE=yes: HA client config was derived above, but the"
+            if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" == "yes" ]]; then
+                log "[WARN] AUTO_DERIVE_HA_CLIENT_CONFIG=yes: HA client config was derived above, but the"
                 log "[WARN] reachability re-verification normally performed in Stage 1 is ALSO skipped here"
                 log "[WARN] because SKIP_HEALTH_CHECKS=yes. A wrong SRC_NN_HOSTS/DST_NN_HOSTS value will"
                 log "[WARN] now only surface later, as a real hdfs/distcp failure, not as a clear Stage 1 error."
@@ -3847,7 +3847,7 @@ main() {
             log "[INFO] fails fast here rather than hanging on the first real HDFS command later."
 
             reachability_ok=true
-            if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" == "yes" ]]; then
+            if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" == "yes" ]]; then
                 # HA config (both clusters) was already derived above -- see derive_nameservice_ha_conf's doc
                 # comment: this is ALWAYS a single combined "-Ddfs.nameservices=SRC,DST" set, never two
                 # separate competing single-name flags. Verify reachability for BOTH clusters with it in
@@ -4479,7 +4479,7 @@ main() {
         # collision case (where SRC_URI_NS is a synthetic alias -- see main()'s doc comment) fails immediately
         # if copy-pasted, since no hdfs-site.xml anywhere defines the alias. Same rationale as Stage 3's
         # existing use of this same helper -- see render_nameservice_ha_args_for_display's doc comment. Empty
-        # string (safe to prefix unconditionally) when HA_CONFIG_IN_WITH_CLAUSE is disabled or nothing has
+        # string (safe to prefix unconditionally) when AUTO_DERIVE_HA_CLIENT_CONFIG is disabled or nothing has
         # been derived (the normal, non-colliding case).
         nameservice_ha_display_args="$(render_nameservice_ha_args_for_display)"
         resolve_state_file_and_check_new "$key"
