@@ -856,10 +856,16 @@ for d in "${SOURCE_DIRS[@]}"; do
 done
 
 # Validate SNAP_PREFIX doesn't contain invalid characters for HDFS snapshot names HDFS snapshot names cannot
-# contain: / \ : * ? " < > |
-if [[ "$SNAP_PREFIX" =~ [/\\:\*\?\"\<\>\|] ]]; then
+# contain: / \ : * ? " < > |  -- and, separately, SNAP_PREFIX must not contain whitespace either: it is
+# expanded UNQUOTED at every distcp call site (DISTCP_EXCLUDE_OPTS etc. rely on word-splitting for "-D"
+# flags), and it is also embedded unquoted into the generated DistCp -filters file path
+# (resolve_distcp_exclude_file's job_key). A space in SNAP_PREFIX would silently split that path into two
+# bogus command-line arguments at the distcp invocation, the same failure mode as an unquoted line break, just
+# triggered differently -- so it must be rejected here up front rather than relying on sanitize() (which only
+# strips / and :, not whitespace).
+if [[ "$SNAP_PREFIX" =~ [/\\:\*\?\"\<\>\|[:space:]] ]]; then
     echo "[ERROR] SNAP_PREFIX contains invalid characters for HDFS snapshot names: '$SNAP_PREFIX'" >&2
-    echo "[ERROR] Invalid characters: / \\ : * ? \" < > |" >&2
+    echo "[ERROR] Invalid characters: / \\ : * ? \" < > | and whitespace (space/tab/newline)" >&2
     exit 13
 fi
 
@@ -4314,11 +4320,12 @@ main() {
             # directory) it would destroy that directory's real baseline snapshot and replace it with one
             # capturing unrelated current content.
             log_substage "Creating post-DistCp baseline snapshot on destination"
+            POST_DISTCP_BASELINE_FAILED_DIRS=()
             for d in ${BASELINED_DIRS[@]+"${BASELINED_DIRS[@]}"}; do
                 key=$(sanitize "$d")
                 base="${SNAP_PREFIX}_0"
                 log "[DEBUG] Creating post-DistCp baseline snapshot for directory: $d"
-                
+
                 # Delete the old dr_snap_0 on destination (from before DistCp)
                 if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -ls "$d/.snapshot" 2>/dev/null | grep -q "/${base}\$"; then
                     log "[DEBUG] Deleting old baseline snapshot $base on destination (pre-DistCp state)"
@@ -4328,7 +4335,7 @@ main() {
                         log "[WARN] Failed to delete old baseline snapshot $base on destination (may proceed anyway)"
                     fi
                 fi
-                
+
                 # Create new baseline snapshot on destination (post-DistCp state)
                 log "[INIT] Creating new baseline snapshot '$base' on destination (post-DistCp state): $d"
                 if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -createSnapshot "$d" "$base"; then
@@ -4337,9 +4344,40 @@ main() {
                     echo "[ERROR] FAILED to create post-DistCp baseline snapshot '$base' on DESTINATION: $d"
                     log "[ERROR] Failed to create post-DistCp baseline snapshot on destination for $d"
                     log "[ERROR] This may cause issues on the next incremental sync run."
+                    POST_DISTCP_BASELINE_FAILED_DIRS+=("$d")
                 fi
             done
-            
+
+            # A failed post-DistCp baseline snapshot must NOT be reported as full success: a cron/monitoring
+            # wrapper checking only the exit code would never see the [ERROR] lines logged above. This does
+            # not put data at risk -- Stage 4's baseline self-heal (reconcile_and_rebaseline_dest) detects the
+            # stale/missing ${SNAP_PREFIX}_0 on the next run and refreshes it before the first incremental
+            # diff -- but the run must still surface as failed so it gets noticed and re-run deliberately.
+            if [[ ${#POST_DISTCP_BASELINE_FAILED_DIRS[@]} -gt 0 ]]; then
+                echo ""
+                echo "=========================================================================================================================================="
+                echo ">>> [WARNING] BASELINE DISTCP COMPLETED WITH POST-COPY SNAPSHOT ERRORS <<<"
+                echo "=========================================================================================================================================="
+                SCRIPT_END_TS=$(date +%s)
+                echo "Total Runtime       : $((SCRIPT_END_TS - SCRIPT_START_TS)) seconds"
+                echo ""
+                echo "Full DistCp completed for all directories, but the post-DistCp baseline snapshot"
+                echo "could not be (re)created on the destination for:"
+                for d in "${POST_DISTCP_BASELINE_FAILED_DIRS[@]}"; do
+                    echo "    - $d"
+                done
+                echo ""
+                echo "This does NOT put data at risk: Stage 4's baseline self-heal detects the stale/missing"
+                echo "${SNAP_PREFIX}_0 snapshot on the next run and refreshes it before the first incremental"
+                echo "diff. Re-run this script to retry."
+                echo ""
+                echo "=========================================================================================================================================="
+                echo ""
+                log "[WARN] Post-DistCp baseline snapshot creation failed for: ${POST_DISTCP_BASELINE_FAILED_DIRS[*]}. Not fatal (Stage 4 self-heals on next run), but the script must report this run as failed rather than fully successful."
+                log_stage_complete "3" "Baseline Snapshot Creation"
+                exit 1
+            fi
+
             echo ""
             echo "=========================================================================================================================================="
             echo ">>> [SUCCESS] BASELINE DISTCP COMPLETED SUCCESSFULLY <<<"
