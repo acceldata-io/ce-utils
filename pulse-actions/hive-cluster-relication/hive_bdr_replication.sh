@@ -35,8 +35,8 @@
 #     DISTCP_OPTS                 --strategy dynamic -direct -update -pugptx -skipcrccheck
 #     HIVE_REPL_SNAPSHOT_COPY      false
 #     HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS   false
-#     HA_CONFIG_IN_WITH_CLAUSE     false
-#     SRC_NN_HOSTS / DST_NN_HOSTS  (required if HA_CONFIG_IN_WITH_CLAUSE=true)
+#     AUTO_DERIVE_HA_CLIENT_CONFIG     no
+#     SRC_NN_HOSTS / DST_NN_HOSTS  (required if AUTO_DERIVE_HA_CLIENT_CONFIG=yes)
 #     AUTOMATIC_FAILOVER_ENABLED   true
 #     HIVE_LDAP_ENABLED / HIVE_PASSWORD   false / (unset)
 #     INCREMENTAL_LOCK_DIR         /var/tmp/hive-bdr-incremental-locks
@@ -400,18 +400,18 @@
 #     Also positional argument 6. The YARN Capacity Scheduler queue used for REPL LOAD's internal data-copy job on the destination cluster. Only affects REPL LOAD (REPL DUMP does not launch a YARN job).
 #     Default: default
 #
-#   HA_CONFIG_IN_WITH_CLAUSE
-#     "true" or "false". Normally, an HA nameservice must already be resolvable to HiveServer2 through the cluster's own hdfs-site.xml (configured once, cluster-wide, via Ambari or similar). Set this to "true" to have the script instead inject the HA NameNode properties directly into every REPL DUMP/LOAD statement - useful when one cluster's hdfs-site.xml does not yet know about the other cluster's nameservice. Requires SRC_NN_HOSTS and DST_NN_HOSTS to be set.
-#     Default: false
+#   AUTO_DERIVE_HA_CLIENT_CONFIG
+#     "yes" or "no". Normally, an HA nameservice must already be resolvable to HiveServer2 through the cluster's own hdfs-site.xml (configured once, cluster-wide, via Ambari or similar). Set this to "yes" to have the script instead inject the HA NameNode properties directly into every REPL DUMP/LOAD statement - useful when one cluster's hdfs-site.xml does not yet know about the other cluster's nameservice. Requires SRC_NN_HOSTS and DST_NN_HOSTS to be set.
+#     Default: no
 #
 #   SRC_NN_HOSTS / DST_NN_HOSTS
-#     Required when HA_CONFIG_IN_WITH_CLAUSE=true. Comma-separated "<nn-id>=<host>:<port>" pairs describing each cluster's NameNodes.
+#     Required when AUTO_DERIVE_HA_CLIENT_CONFIG=yes. Comma-separated "<nn-id>=<host>:<port>" pairs describing each cluster's NameNodes.
 #     Example:
 #       SRC_NN_HOSTS="nn1=prod-nn1.example.com:8020,nn2=prod-nn2.example.com:8020"
 #       DST_NN_HOSTS="nn1=dr-nn1.example.com:8020,nn2=dr-nn2.example.com:8020"
 #
 #   AUTOMATIC_FAILOVER_ENABLED
-#     "true" or "false". Only used when HA_CONFIG_IN_WITH_CLAUSE=true.
+#     "true" or "false". Only used when AUTO_DERIVE_HA_CLIENT_CONFIG=yes.
 #     Default: true
 #
 #   HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS
@@ -686,7 +686,7 @@ fi
 # reconcile_external_table_data() below). Not a positional argument - only
 # relevant together with RECONCILE_EXTERNAL_DATA=true, and every other
 # environment-only setting in this script (HIVE_REPL_SNAPSHOT_COPY,
-# HA_CONFIG_IN_WITH_CLAUSE, etc.) follows the same env-var-only pattern for
+# AUTO_DERIVE_HA_CLIENT_CONFIG, etc.) follows the same env-var-only pattern for
 # settings that are not part of the common/required call shape.
 # "-update"/"-skipcrccheck" are what make distcp genuinely compare source
 # vs. destination and skip files that already match - this is the actual
@@ -1288,12 +1288,12 @@ else
   HA_ENABLED=false
 fi
 
-# HA_CONFIG_IN_WITH_CLAUSE must be defaulted before the collision check just
-# below can read it - under `set -u`, "${HA_CONFIG_IN_WITH_CLAUSE,,}" on a
+# AUTO_DERIVE_HA_CLIENT_CONFIG must be defaulted before the collision check just
+# below can read it - under `set -u`, "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" on a
 # never-set variable is an unbound-variable error, not an empty string, so
-# this cannot wait until the full HA_CONFIG_IN_WITH_CLAUSE section further
+# this cannot wait until the full AUTO_DERIVE_HA_CLIENT_CONFIG section further
 # down (which still runs too, harmlessly re-applying the same default).
-HA_CONFIG_IN_WITH_CLAUSE="${HA_CONFIG_IN_WITH_CLAUSE:-false}"
+AUTO_DERIVE_HA_CLIENT_CONFIG="${AUTO_DERIVE_HA_CLIENT_CONFIG:-no}"
 
 # ------------------------------------------------------------------------------
 #  SAME_NAMESERVICE_COLLISION - true iff SRC_NAMESERVICE and DST_NAMESERVICE
@@ -1315,7 +1315,7 @@ HA_CONFIG_IN_WITH_CLAUSE="${HA_CONFIG_IN_WITH_CLAUSE:-false}"
 #  building both sides' URIs itself - see the comments at each fix site for
 #  why BOTH sides need aliasing here, not just one.
 #
-#  Requires HA_CONFIG_IN_WITH_CLAUSE=true with SRC_NN_HOSTS/DST_NN_HOSTS set:
+#  Requires AUTO_DERIVE_HA_CLIENT_CONFIG=yes with SRC_NN_HOSTS/DST_NN_HOSTS set:
 #  aliasing only fixes the ambiguity if this script is ALSO the thing
 #  supplying each alias's real NameNode addresses via injected WITH()-clause/
 #  "-D" properties. Without that, an alias would resolve nowhere (no
@@ -1325,11 +1325,11 @@ HA_CONFIG_IN_WITH_CLAUSE="${HA_CONFIG_IN_WITH_CLAUSE:-false}"
 # ------------------------------------------------------------------------------
 if [[ "$SRC_NAMESERVICE" == "$DST_NAMESERVICE" ]]; then
   SAME_NAMESERVICE_COLLISION=true
-  if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" != "true" ]]; then
+  if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" != "yes" ]]; then
     echo "[ERROR] SRC_NAMESERVICE and DST_NAMESERVICE are identical: '${SRC_NAMESERVICE}'" >&2
     echo "[ERROR] This is only supported when the two are the SAME nameservice name shared by two" >&2
     echo "[ERROR] DIFFERENT physical clusters (e.g. a DR cluster built from the same blueprint as" >&2
-    echo "[ERROR] production) - and even then, this script needs HA_CONFIG_IN_WITH_CLAUSE=true with" >&2
+    echo "[ERROR] production) - and even then, this script needs AUTO_DERIVE_HA_CLIENT_CONFIG=yes with" >&2
     echo "[ERROR] SRC_NN_HOSTS/DST_NN_HOSTS set so it can tell the two clusters apart internally." >&2
     echo "[ERROR] Set those three variables, or pass distinct nameservice names / host:port values" >&2
     echo "[ERROR] for SRC_NAMESERVICE (arg 2) and DST_NAMESERVICE (arg 3)." >&2
@@ -1414,7 +1414,7 @@ fi
 # never-set variable is an unbound-variable error, not an empty string, so this
 # cannot wait for its own fully-documented section further down (which still
 # runs too, harmlessly re-applying the same default). Same pattern, and same
-# reason, as HA_CONFIG_IN_WITH_CLAUSE's early default above.
+# reason, as AUTO_DERIVE_HA_CLIENT_CONFIG's early default above.
 RECONCILE_ON_DIRECTION_CHANGE="${RECONCILE_ON_DIRECTION_CHANGE:-true}"
 
 if [[ "${METADATA_ONLY,,}" == "true" ]]; then
@@ -1440,12 +1440,12 @@ fi
 # collision-case rationale.
 
 # ------------------------------------------------------------------------------
-#  HA_CONFIG_IN_WITH_CLAUSE - inject HA NameNode configuration directly
+#  AUTO_DERIVE_HA_CLIENT_CONFIG - inject HA NameNode configuration directly
 #  into REPL DUMP/LOAD statements.
 #
 #  Normally, an HA nameservice must already be resolvable to HiveServer2
 #  through the cluster's own hdfs-site.xml, configured once cluster-wide.
-#  Set HA_CONFIG_IN_WITH_CLAUSE=true to have this script inject the same
+#  Set AUTO_DERIVE_HA_CLIENT_CONFIG=yes to have this script inject the same
 #  properties directly into every REPL DUMP/LOAD statement instead - useful
 #  when one cluster's hdfs-site.xml does not yet know about the other
 #  cluster's nameservice. Requires SRC_NN_HOSTS and DST_NN_HOSTS.
@@ -1454,7 +1454,7 @@ fi
 #  the collision check further up can safely read it under `set -u`.)
 # ------------------------------------------------------------------------------
 
-# SRC_NN_HOSTS / DST_NN_HOSTS - required when HA_CONFIG_IN_WITH_CLAUSE=true.
+# SRC_NN_HOSTS / DST_NN_HOSTS - required when AUTO_DERIVE_HA_CLIENT_CONFIG=yes.
 # Comma-separated "<nn-id>=<host>:<port>" pairs describing each
 # nameservice's NameNodes, for example:
 #   SRC_NN_HOSTS="nn1=prod-nn1.example.com:8020,nn2=prod-nn2.example.com:8020"
@@ -1465,7 +1465,7 @@ DST_NN_HOSTS="${DST_NN_HOSTS:-}"
 #SRC_NN_HOSTS="nn1=atlasdemo-01.adsre.com:8020,nn2=atlasdemo-02.adsre.com:8020"
 #DST_NN_HOSTS="nn1=odplab001.adsre.com:8020,nn2=odplab002.adsre.com:8020"
 
-# AUTOMATIC_FAILOVER_ENABLED - only used when HA_CONFIG_IN_WITH_CLAUSE=true.
+# AUTOMATIC_FAILOVER_ENABLED - only used when AUTO_DERIVE_HA_CLIENT_CONFIG=yes.
 AUTOMATIC_FAILOVER_ENABLED="${AUTOMATIC_FAILOVER_ENABLED:-true}"
 
 # validate_nn_hosts_spec: called directly in the MAIN shell (never via
@@ -1493,9 +1493,9 @@ validate_nn_hosts_spec() {
   done
 }
 
-if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" == "true" ]]; then
+if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" == "yes" ]]; then
   if [[ -z "$SRC_NN_HOSTS" || -z "$DST_NN_HOSTS" ]]; then
-    echo "[ERROR] HA_CONFIG_IN_WITH_CLAUSE=true requires both SRC_NN_HOSTS and DST_NN_HOSTS to be set." >&2
+    echo "[ERROR] AUTO_DERIVE_HA_CLIENT_CONFIG=yes requires both SRC_NN_HOSTS and DST_NN_HOSTS to be set." >&2
     echo "[ERROR] Example: SRC_NN_HOSTS=\"nn1=host1:8020,nn2=host2:8020\"" >&2
     exit 1
   fi
@@ -1718,7 +1718,7 @@ build_nameservice_ha_props() {
 
 # ha_config_props: print the full HA property block for both clusters
 # (each line ending in a comma, ready to splice into a REPL DUMP/LOAD
-# WITH() clause) when HA_CONFIG_IN_WITH_CLAUSE=true. Prints nothing when
+# WITH() clause) when AUTO_DERIVE_HA_CLIENT_CONFIG=yes. Prints nothing when
 # false (the default), since HA resolution is then assumed to already be
 # configured cluster-wide. Called identically for injection into BOTH the
 # REPL DUMP statement (dump-side session) and the REPL LOAD statement
@@ -1744,7 +1744,7 @@ build_nameservice_ha_props() {
 # supplying that name's address for that session's own (non-replication)
 # operations - see derive_db_vars()'s doc comment for the full rationale.
 ha_config_props() {
-  if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" != "true" ]]; then
+  if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" != "yes" ]]; then
     return
   fi
   if [[ "$SAME_NAMESERVICE_COLLISION" == true ]]; then
@@ -2493,7 +2493,7 @@ run_as_hdfs() {
 # nameservice_cli_dgen_args: print the "-D..." generic-option equivalent of
 # build_nameservice_ha_props(), one flag per line, for splicing into a
 # direct `hdfs`/`hadoop` CLI invocation's argument list (as opposed to a
-# REPL DUMP/LOAD WITH() clause). Prints nothing when HA_CONFIG_IN_WITH_CLAUSE
+# REPL DUMP/LOAD WITH() clause). Prints nothing when AUTO_DERIVE_HA_CLIENT_CONFIG
 # is not "true" or SAME_NAMESERVICE_COLLISION is not true - these direct CLI
 # calls (allow_snapshot_idempotent, the -test/-mkdir calls in
 # enable_external_table_snapshots) never got any "-D" injection before this
@@ -2514,7 +2514,7 @@ run_as_hdfs() {
 nameservice_cli_dgen_args() {
   local nameservice="$1"
   local nn_hosts_spec="$2"
-  if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" != "true" ]] || [[ "$SAME_NAMESERVICE_COLLISION" != true ]]; then
+  if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" != "yes" ]] || [[ "$SAME_NAMESERVICE_COLLISION" != true ]]; then
     return 0
   fi
   local nn_ids=()
@@ -3287,7 +3287,7 @@ table_location() {
 # distcp_collision_dgen_args: print the "-D..." generic-option properties
 # needed for a single `hadoop distcp` invocation to correctly resolve BOTH
 # DUMP_URI_NS and LOAD_URI_NS simultaneously, in the same-nameservice-
-# collision case. Prints nothing when HA_CONFIG_IN_WITH_CLAUSE is not "true"
+# collision case. Prints nothing when AUTO_DERIVE_HA_CLIENT_CONFIG is not "yes"
 # or SAME_NAMESERVICE_COLLISION is not true.
 #
 # UNLIKE nameservice_cli_dgen_args() (used by the single-cluster-per-call
@@ -3308,7 +3308,7 @@ table_location() {
 # native name directly (both are rewritten to use DUMP_URI_NS/LOAD_URI_NS -
 # see reconcile_external_table_data() below).
 distcp_collision_dgen_args() {
-  if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" != "true" ]] || [[ "$SAME_NAMESERVICE_COLLISION" != true ]]; then
+  if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" != "yes" ]] || [[ "$SAME_NAMESERVICE_COLLISION" != true ]]; then
     return 0
   fi
   printf -- "-Ddfs.nameservices=%s,%s,%s\n" "$SRC_NAMESERVICE" "$DUMP_URI_NS" "$LOAD_URI_NS"
@@ -3923,11 +3923,11 @@ else
 fi
 echo "Resolved roles for this run (${REPLICATION_DIRECTION}):"
 echo "  REPL DUMP on : ${_banner_dump_label}  jdbc=${_banner_dump_jdbc}"
-if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" == "true" ]]; then
+if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" == "yes" ]]; then
   echo "                 nn=${_banner_dump_nn}"
 fi
 echo "  REPL LOAD on : ${_banner_load_label}  jdbc=${_banner_load_jdbc}"
-if [[ "${HA_CONFIG_IN_WITH_CLAUSE,,}" == "true" ]]; then
+if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" == "yes" ]]; then
   echo "                 nn=${_banner_load_nn}"
 fi
 if [[ "$REPLICATION_DIRECTION" == "dst_to_src" ]]; then
@@ -4067,43 +4067,3 @@ fi
 echo ""
 echo "Session Log: $SESSION_LOG_FILE"
 echo "Run Summary: $RUN_SUMMARY_CSV"
-
-# ==============================================================================
-#  SUGGESTED FUTURE POSITIONAL ARGUMENTS
-# ------------------------------------------------------------------------------
-#  The settings below currently require editing this script (or exporting
-#  an environment variable before running it) to change per environment.
-#  If different environments running this script are expected to need
-#  different values regularly, consider promoting these to positional
-#  arguments (or documented environment variables, if they should stay
-#  optional/advanced) so no manual script edits are needed. Listed in
-#  rough order of how commonly they vary between environments; excludes
-#  HIVE_LDAP_ENABLED / HIVE_PASSWORD, which should stay environment-only
-#  since they carry credentials.
-#
-#    1. HIVE_REPL_SNAPSHOT_COPY
-#       Whether to use HDFS snapshot-diff copying for external tables.
-#       Environments with only small tables may never need this; those
-#       with large (1 TB+) external tables likely always want it on.
-#
-#    2. HIVE_EXTERNAL_WAREHOUSE_DIR
-#       The source cluster's external table warehouse path. Differs
-#       between Hive 3+ clusters (default used here) and older Hive/HDP
-#       clusters (commonly /user/hive/external).
-#
-#    3. HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS
-#       Whether to replicate materialized views. Depends entirely on
-#       whether a given deployment uses materialized views at all.
-#
-#    4. HA_CONFIG_IN_WITH_CLAUSE, SRC_NN_HOSTS, DST_NN_HOSTS,
-#       AUTOMATIC_FAILOVER_ENABLED
-#       Needed only when a cluster's own hdfs-site.xml does not already
-#       know about the other cluster's HA nameservice. Whether this is
-#       needed - and the NameNode host/port values themselves - is
-#       entirely dependent on each customer's network and cluster setup.
-#
-#    5. INCREMENTAL_LOCK_DIR, SNAP_LOCK_DIR
-#       Local lock file directories. Rarely need to change, but
-#       environments with restricted /var/tmp access may require a
-#       different path.
-# ==============================================================================
