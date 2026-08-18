@@ -834,6 +834,19 @@ declare -a TEMP_FILES=()
 # Split SOURCE_DIRS_RAW into array
 IFS=',' read -r -a SOURCE_DIRS <<<"$SOURCE_DIRS_RAW"
 
+# Normalize a single trailing slash off each directory (e.g. "/data/foo/" -> "/data/foo"; the root
+# directory "/" is left as-is). Without this, sanitize() maps "/data/foo" and "/data/foo/" to DIFFERENT
+# keys ("data_foo" vs "data_foo_" -- sanitize() also turns the trailing "/" into a trailing "_") even
+# though they are the SAME real HDFS directory. That would bypass the sanitize()-collision check below
+# (the keys differ, so it isn't flagged as a collision), and if both spellings ever appeared in the same
+# SOURCE_DIRS_RAW, the script would process the same physical directory twice per run under two
+# independent lock/state/rollback identities -- each trying to create the "next" sequential snapshot on
+# the same real path, so the second one fails with a confusing "snapshot already exists" error.
+for _i in "${!SOURCE_DIRS[@]}"; do
+    [[ "${SOURCE_DIRS[$_i]}" != "/" ]] && SOURCE_DIRS[$_i]="${SOURCE_DIRS[$_i]%/}"
+done
+unset _i
+
 # Safety check: ensure at least one source directory is provided
 if [[ ${#SOURCE_DIRS[@]} -eq 0 ]] || [[ -z "${SOURCE_DIRS[0]}" ]]; then
     echo "[ERROR] No source directories provided (SOURCE_DIRS is empty)" >&2
@@ -867,6 +880,49 @@ if [[ "$SNAP_PREFIX" =~ [/\\:\*\?\"\<\>\|[:space:]] ]]; then
     echo "[ERROR] SNAP_PREFIX contains invalid characters for HDFS snapshot names: '$SNAP_PREFIX'" >&2
     echo "[ERROR] Invalid characters: / \\ : * ? \" < > | and whitespace (space/tab/newline)" >&2
     exit 13
+fi
+
+# Validate SNAP_PREFIX doesn't START with "-": every snapshot name built from it ("${SNAP_PREFIX}_<N>",
+# "${SNAP_PREFIX}_rollback_<epoch>") is passed as a bare positional argument to "hdfs dfs -createSnapshot"
+# / "-deleteSnapshot" (see e.g. rollback_once_for_failure, cleanup_old_snapshots). Hadoop's shared
+# CommandFormat CLI argument parser (used by essentially every "hdfs dfs"/"dfsadmin" subcommand) treats
+# any token starting with "-" as a candidate option and fails with "Illegal option ..." if it isn't one
+# it recognizes -- so a leading "-" here would break every snapshot operation for this directory with a
+# confusing Hadoop-side parse error instead of this clean, fast Stage 0 validation failure. A "-" NOT at
+# the start (e.g. "dr-snap") is a normal, legal snapshot-name character and is intentionally still
+# allowed -- only the leading position is unsafe.
+if [[ "$SNAP_PREFIX" == -* ]]; then
+    echo "[ERROR] SNAP_PREFIX must not start with '-': '$SNAP_PREFIX'" >&2
+    echo "[ERROR] A leading '-' would be misparsed as a command-line option by hdfs dfs -createSnapshot/-deleteSnapshot." >&2
+    exit 22
+fi
+
+# Validate SOURCE_CLUSTER / DEST_CLUSTER format. Like SNAP_PREFIX above, both are expanded UNQUOTED
+# at every distcp call site: YARN_APP_TAGS embeds them as "src:${SOURCE_CLUSTER},dst:${DEST_CLUSTER}"
+# and is folded into DISTCP_FULL_OPTS, which is word-split (and glob-expanded, since this script never
+# sets `set -f`) unquoted on every "run_as_distcp hadoop distcp $DISTCP_FULL_OPTS ..." call. They also
+# feed resolve_distcp_exclude_file's job_key via sanitize(), which does not strip whitespace either, so
+# a stray space or glob character here can corrupt either the distcp argv or the generated -filters
+# file path -- the same failure mode already hardened against for SNAP_PREFIX, just not previously
+# applied to these two. Whitelist to the documented "host:port" / bare-NameService-name format instead
+# of blacklisting individual characters, since that format is already exactly what every other part of
+# this script assumes (see the "host:port" / NameService references throughout).
+for _cluster_pair in "SOURCE_CLUSTER:$SOURCE_CLUSTER" "DEST_CLUSTER:$DEST_CLUSTER"; do
+    _cluster_name="${_cluster_pair%%:*}"
+    _cluster_val="${_cluster_pair#*:}"
+    if [[ ! "$_cluster_val" =~ ^[A-Za-z0-9._-]+(:[0-9]+)?$ ]]; then
+        echo "[ERROR] $_cluster_name must be a bare NameService name or 'host:port' (letters, digits, dots, hyphens, underscores, optionally followed by ':<port>'): '$_cluster_val'" >&2
+        exit 20
+    fi
+done
+unset _cluster_pair _cluster_name _cluster_val
+
+# Validate YARN_QUEUE format for the same reason: YARN_QUEUE_OPTS="-Dmapred.job.queue.name=${YARN_QUEUE}"
+# is folded into the same unquoted, word-split DISTCP_FULL_OPTS as SOURCE_CLUSTER/DEST_CLUSTER above.
+# Whitelisted to the standard (possibly hierarchical, e.g. "root.default") YARN queue-name charset.
+if [[ ! "$YARN_QUEUE" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "[ERROR] YARN_QUEUE must contain only letters, digits, dots, hyphens, or underscores: '$YARN_QUEUE'" >&2
+    exit 21
 fi
 
 CURRENT_STAGE=""
@@ -1437,9 +1493,59 @@ log_cmd() {
 }
 
 # Sanitize directory path for safe filenames/keys
+#
+# Implemented with pure bash parameter expansion (no external `sed` process) so this can never
+# silently fail and fall back to returning the RAW, unsanitized input. An earlier version piped
+# through `sed` with an `|| echo "$1"` fallback for when the pipeline failed -- but that fallback
+# returned the input UNCHANGED (slashes and all), which every caller then concatenates directly
+# into a local filesystem path (state/lock/rollback-marker files under /var/tmp). A directory value
+# containing ".." could have escaped the intended directory via that fallback. Pure bash builtins
+# (no fork/exec) remove the failure mode entirely instead of trying to handle it after the fact.
+#
+# NOTE: this mapping is NOT collision-free -- e.g. "/data/foo" and "/data_foo" both sanitize to
+# "data_foo". See the SOURCE_DIRS uniqueness check (near the other Stage 0 validation, above) which
+# guards against two configured directories colliding on this key.
+#
+# NEVER returns an empty string. The only input that would naturally produce one is the root
+# directory "/" itself (or a bare ":", or a value that is only "_") -- "/" becomes "_" after the
+# slash-to-underscore substitution, then the single leading "_" strip consumes the entire string,
+# leaving "". An empty key is worse than merely cosmetic: bash's associative arrays reject an empty
+# string as a subscript outright ("bad array subscript"), which crashed the SOURCE_DIRS uniqueness
+# check above outright the first time "/" was tested as a directory, instead of producing a clean
+# error. Falling back to a fixed, non-empty placeholder keeps every caller's assumption of "sanitize()
+# always returns something usable as a key/filename component" true; if that placeholder ever
+# legitimately collides with another directory's key (e.g. one literally named "/root_dir"), the
+# uniqueness check above still catches it the normal way, with a clean error instead of a crash.
 sanitize() {
-    echo "$1" | sed 's|/|_|g; s|:|_|g; s|^_||' || echo "$1"
+    local s="$1"
+    s="${s//\//_}"
+    s="${s//:/_}"
+    s="${s#_}"
+    [[ -z "$s" ]] && s="root_dir"
+    echo "$s"
 }
+
+# Ensure every configured directory (SOURCE_DIRS) maps to a DISTINCT sanitize() key. sanitize() only
+# collapses "/" and ":" to "_", so two different, both-valid absolute paths can legitimately produce
+# the SAME key -- e.g. "/data/foo" and "/data_foo" both sanitize to "data_foo". That key is the sole
+# identity for this directory's snapshot-setup lock (SNAP_LOCK_DIR), its state file (last-known-common
+# -snapshot cache that drives Stage 3/4 direction and safety decisions), and its rollback markers (see
+# each of those call sites' own doc comments). A collision would make two unrelated directories
+# silently share replication state -- exactly the kind of silent DR gap the live-snapshot-direction
+# derivation and confirm_brand_new_against_live_snapshots elsewhere in this script exist to prevent.
+# Fail fast here, at Stage 0, rather than letting it corrupt state deep inside Stage 2/3/4.
+declare -A _SANITIZE_KEY_OWNER=()
+for d in "${SOURCE_DIRS[@]}"; do
+    _key="$(sanitize "$d")"
+    if [[ -n "${_SANITIZE_KEY_OWNER[$_key]:-}" ]]; then
+        echo "[ERROR] Directories '${_SANITIZE_KEY_OWNER[$_key]}' and '$d' both sanitize to the same internal key ('$_key')." >&2
+        echo "[ERROR] They would share the same lock/state/rollback-marker files, corrupting each other's replication state." >&2
+        echo "[ERROR] Configure these as separate replication jobs, or rename one so they no longer collide." >&2
+        exit 15
+    fi
+    _SANITIZE_KEY_OWNER[$_key]="$d"
+done
+unset _SANITIZE_KEY_OWNER _key d
 
 # Strip the standalone "-update" token from a space-separated DistCp options string (COPY_OPTS), since -update
 # must be repositioned immediately before -diff for an incremental sync rather than left wherever the operator
@@ -1964,9 +2070,16 @@ cleanup_old_snapshots() {
     local cleanup_ls_out="/tmp/pulse_replication_action_cleanup_ls_out_$$.log"
     TEMP_FILES+=("$cleanup_ls_err" "$cleanup_ls_out")
     local cleanup_ls_rc
+    # Anchored "prefix_<digits-only>" match (NOT a loose "^prefix_" prefix match): a loose prefix match
+    # also matches rollback_once_for_failure()'s "${SNAP_PREFIX}_rollback_<epoch>" snapshots, which are
+    # meant to be transient (best-effort deleted right after use) but can linger if that delete ever
+    # fails. A lingering rollback snapshot would then count against the SNAP_RETAIN budget and get
+    # ranked into the chronological retain/delete decision below, risking deletion of the actual
+    # last-common snapshot the next incremental diff needs -- see the anchored fix in
+    # derive_direction_state for the matching (and more severe) index-derivation half of this bug.
     if run_as_hdfs hdfs dfs -fs "hdfs://$cluster" -ls "$d/.snapshot" 2>"$cleanup_ls_err" |
         awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' |
-        grep "^${snap_prefix}_" >"$cleanup_ls_out"; then
+        grep -E "^${snap_prefix}_[0-9]+$" >"$cleanup_ls_out"; then
         :
     fi
     cleanup_ls_rc="${PIPESTATUS[0]}"
@@ -2072,11 +2185,20 @@ derive_direction_state() {
     # `set -euo pipefail`, a bare `|| true` suffix ALSO destroys PIPESTATUS the same way `$()` does,
     # while an `if` condition is exempt from `set -e` and leaves PIPESTATUS completely undisturbed (both
     # empirically verified). The array of matched snapshot names is then read from the file separately.
+    # Anchored "prefix_<digits-only>" match (NOT a loose "^prefix_" prefix match): a loose prefix match
+    # also matches rollback_once_for_failure()'s "${SNAP_PREFIX}_rollback_<epoch>" snapshots. Those are
+    # DEST_CLUSTER-only and their epoch-timestamp suffix is purely numeric, so a loose match here would
+    # let a lingering rollback snapshot (its own cleanup delete is best-effort and can fail -- see
+    # rollback_once_for_failure) get parsed below as a legitimate snapshot INDEX far beyond any real
+    # sequential index. Since it only ever exists on DEST_CLUSTER, that fake index would always be
+    # "beyond the last common index that SOURCE_CLUSTER lacks" -- exactly the condition this function
+    # treats as a genuine direction-reversal signal -- silently false-triggering reverse-diff-bootstrap
+    # or a refused incremental sync for a directory that never actually reversed.
     local src_snaps=() dst_snaps=()
     local src_ls_rc dst_ls_rc
     if run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -ls "$d/.snapshot" 2>"$src_ls_err" |
         awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' |
-        grep "^${SNAP_PREFIX}_" >"$src_ls_out"; then
+        grep -E "^${SNAP_PREFIX}_[0-9]+$" >"$src_ls_out"; then
         :
     fi
     src_ls_rc="${PIPESTATUS[0]}"
@@ -2084,7 +2206,7 @@ derive_direction_state() {
 
     if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -ls "$d/.snapshot" 2>"$dst_ls_err" |
         awk '$1 ~ /^d/ {print $6, $7, $8}' | sort | awk -F/ '{print $NF}' |
-        grep "^${SNAP_PREFIX}_" >"$dst_ls_out"; then
+        grep -E "^${SNAP_PREFIX}_[0-9]+$" >"$dst_ls_out"; then
         :
     fi
     dst_ls_rc="${PIPESTATUS[0]}"
