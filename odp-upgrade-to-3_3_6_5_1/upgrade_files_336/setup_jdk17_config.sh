@@ -165,6 +165,54 @@ delete_config() {
     || echo -e "${RED}Failed updating ${key} in ${config_file}.${NC}" | tee -a /tmp/jdk17_update.log
 }
 
+# Resolve cluster stack java.home (same source Ambari uses for hostLevelParams/java_home).
+resolve_stack_java_home() {
+    local java_home=""
+    local candidate=""
+
+    for candidate in /usr/lib/jvm/java-17-openjdk /usr/lib/jvm/java-17; do
+        if [[ -d "$candidate" && -x "$candidate/bin/java" ]]; then
+            java_home="$candidate"
+            break
+        fi
+    done
+
+    if [[ -z "$java_home" && -L /usr/lib/jvm/java ]]; then
+        candidate=$(readlink -f /usr/lib/jvm/java 2>/dev/null || true)
+        if [[ -n "$candidate" && -x "$candidate/bin/java" ]]; then
+            java_home="$candidate"
+        fi
+    fi
+
+    if [[ -z "$java_home" ]]; then
+        candidate=$(ls -d /usr/lib/jvm/java-*openjdk* 2>/dev/null | sort -V | tail -1)
+        if [[ -n "$candidate" && -x "$candidate/bin/java" ]]; then
+            java_home="$candidate"
+        fi
+    fi
+
+    echo "$java_home"
+}
+
+get_config_property() {
+    local config_type=$1
+    local property_key=$2
+    local value=""
+
+    value=$(python /var/lib/ambari-server/resources/scripts/configs.py \
+        -u "$USER" \
+        -p "$PASSWORD" \
+        -s "$PROTOCOL" \
+        -a get \
+        -t "$PORT" \
+        -l "$AMBARISERVER" \
+        -n "$CLUSTER" \
+        -c "$config_type" 2>/dev/null \
+        | python3 -c "import sys,json,re; raw=sys.stdin.read(); m=re.search(r'\{.*\}', raw, re.S); d=json.loads(m.group(0)) if m else {}; print(d.get('properties',{}).get('${property_key}',''))" 2>/dev/null)
+
+    echo "$value"
+}
+
 #---------------------------------------------------------
 # Service-Specific JVM options
 #---------------------------------------------------------
@@ -193,7 +241,6 @@ update_hdfs_configuration_for_jdk17() {
 
     # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
-      set_config "yarn-hbase-env" "content" "$(cat $MIGRATION_PATH/yarn-hbase-env-template)"
       set_config "yarn-site" "yarn.nodemanager.aux-services" "$(cat $MIGRATION_PATH/yarn-nodemanager-aux-services)"
       # Remove configs
       delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.class"
@@ -281,21 +328,35 @@ update_kms_configuration_for_jdk17() {
     echo -e "${GREEN}Successfully updated configurations for Ranger KMS.${NC}"
 }
 
-# Needed only in JDK 8
 update_druid_configuration_for_jdk17() {
-    echo -e "${YELLOW}Starting to update configurations for Ranger Druid...${NC}"
+    echo -e "${YELLOW}Starting to update configurations for Druid...${NC}"
 
-    # Java 8 specific configuration changes
+    local druid_template_dir druid_opts
     if [ "$JAVA_VERSION" -eq "8" ]; then
-      set_config "druid-env" "content" "$(cat $MIGRATION_PATH/druid-env-template)"
-      set_config "druid-env" "druid.broker.jvm.opts" "$(cat $MIGRATION_PATH/druid-env-opts)"
-      set_config "druid-env" "druid.coordinator.jvm.opt" "$(cat $MIGRATION_PATH/druid-env-opts)"
-      set_config "druid-env" "druid.historical.jvm.opt" "$(cat $MIGRATION_PATH/druid-env-opts)"
-      set_config "druid-env" "druid.middlemanager.jvm.opts" "$(cat $MIGRATION_PATH/druid-env-opts)"
-      set_config "druid-env" "druid.overlord.jvm.opts" "$(cat $MIGRATION_PATH/druid-env-opts)"
-      set_config "druid-env" "druid.router.jvm.opts" "$(cat $MIGRATION_PATH/druid-env-opts)"
+        druid_template_dir="$MIGRATION_PATH"
+    else
+        druid_template_dir="$TEMPLATE_DIR"
     fi
-    echo -e "${GREEN}Successfully updated configurations for Ranger Druid.${NC}"
+
+    if [[ ! -f "${druid_template_dir}/druid-env-template" ]]; then
+        echo -e "${RED}[ERROR] Druid template not found: ${druid_template_dir}/druid-env-template${NC}" | tee -a /tmp/jdk17_update.log
+        return 1
+    fi
+    if [[ ! -f "${druid_template_dir}/druid-env-opts" ]]; then
+        echo -e "${RED}[ERROR] Druid jvm.opts template not found: ${druid_template_dir}/druid-env-opts${NC}" | tee -a /tmp/jdk17_update.log
+        return 1
+    fi
+
+    druid_opts="$(cat "${druid_template_dir}/druid-env-opts")"
+    set_config "druid-env" "content" "$(cat "${druid_template_dir}/druid-env-template")"
+    set_config "druid-env" "druid.broker.jvm.opts" "${druid_opts}"
+    set_config "druid-env" "druid.coordinator.jvm.opts" "${druid_opts}"
+    set_config "druid-env" "druid.historical.jvm.opts" "${druid_opts}"
+    set_config "druid-env" "druid.middlemanager.jvm.opts" "${druid_opts}"
+    set_config "druid-env" "druid.overlord.jvm.opts" "${druid_opts}"
+    set_config "druid-env" "druid.router.jvm.opts" "${druid_opts}"
+
+    echo -e "${GREEN}Successfully updated configurations for Druid.${NC}"
 }
 
 update_zookeeper_configuration_for_jdk17() {
@@ -305,6 +366,22 @@ update_zookeeper_configuration_for_jdk17() {
     set_config_from_file "zookeeper-logback" "$TEMPLATE_DIR/zookeeper-logback.xml"
 
     echo -e "${GREEN}Successfully updated configurations for ZooKeeper.${NC}"
+}
+
+update_pinot_configuration_for_jdk17() {
+    echo -e "${YELLOW}Starting to update configurations for Pinot...${NC}"
+
+    local stack_java_home
+    stack_java_home=$(resolve_stack_java_home)
+    if [[ -z "$stack_java_home" || ! -d "$stack_java_home" ]]; then
+        echo -e "${RED}[ERROR] Could not resolve stack java.home for Pinot.${NC}" | tee -a /tmp/jdk17_update.log
+        return 1
+    fi
+
+    echo -e "${GREEN}Resetting pinot-env JAVA_HOME to stack java.home: ${stack_java_home}${NC}"
+    set_config "pinot-env" "JAVA_HOME" "${stack_java_home}"
+
+    echo -e "${GREEN}Successfully updated configurations for Pinot.${NC}"
 }
 
 #---------------------------------------------------------
@@ -325,6 +402,7 @@ display_service_options() {
                 echo -e "${GREEN}  6)${NC} 🔑   Ranger KMS"
                 echo -e "${GREEN}  7)${NC} 📊   Druid"
                 echo -e "${GREEN}  8)${NC} 🦎   ZooKeeper (logback)"
+                echo -e "${GREEN}  9)${NC} Pinot (JAVA_HOME)"
                 ;;
             11)
                 echo -e "${GREEN}  1)${NC} 🗃️   HDFS, YARN & MapReduce"
@@ -333,7 +411,9 @@ display_service_options() {
                 echo -e "${GREEN}  4)${NC} 🐘   HBase (log4j2)"
                 echo -e "${GREEN}  5)${NC} 🌀   Oozie"
                 echo -e "${GREEN}  6)${NC} 🔑   Ranger KMS"
-                echo -e "${GREEN}  7)${NC} 🦎   ZooKeeper (logback)"
+                echo -e "${GREEN}  7)${NC} 📊   Druid"
+                echo -e "${GREEN}  8)${NC} 🦎   ZooKeeper (logback)"
+                echo -e "${GREEN}  9)${NC} Pinot (JAVA_HOME)"
                 ;;
         esac
 
@@ -356,6 +436,7 @@ handle_selection() {
                 6) update_kms_configuration_for_jdk17 ;;
                 7) update_druid_configuration_for_jdk17 ;;
                 8) update_zookeeper_configuration_for_jdk17 ;;
+                9) update_pinot_configuration_for_jdk17 ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17
@@ -365,6 +446,7 @@ handle_selection() {
                     update_kms_configuration_for_jdk17
                     update_druid_configuration_for_jdk17
                     update_zookeeper_configuration_for_jdk17
+                    update_pinot_configuration_for_jdk17
                     ;;
                 [Qq]) return 1 ;;
                 *) echo -e "${RED}Invalid selection.${NC}" ;;
@@ -378,7 +460,9 @@ handle_selection() {
                 4) update_hbase_configuration_for_jdk17 ;;
                 5) update_oozie_configuration_for_jdk17 ;;
                 6) update_kms_configuration_for_jdk17 ;;
-                7) update_zookeeper_configuration_for_jdk17 ;;
+                7) update_druid_configuration_for_jdk17 ;;
+                8) update_zookeeper_configuration_for_jdk17 ;;
+                9) update_pinot_configuration_for_jdk17 ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17
@@ -386,7 +470,9 @@ handle_selection() {
                     update_hbase_configuration_for_jdk17
                     update_oozie_configuration_for_jdk17
                     update_kms_configuration_for_jdk17
+                    update_druid_configuration_for_jdk17
                     update_zookeeper_configuration_for_jdk17
+                    update_pinot_configuration_for_jdk17
                     ;;
                 [Qq]) return 1 ;;
                 *) echo -e "${RED}Invalid selection.${NC}" ;;
