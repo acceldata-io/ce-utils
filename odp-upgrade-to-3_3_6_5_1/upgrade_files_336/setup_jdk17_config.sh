@@ -213,6 +213,25 @@ get_config_property() {
     echo "$value"
 }
 
+# Returns 0 when the Ambari config type exists and has at least one property.
+config_type_present() {
+    local config_type=$1
+    local count=""
+
+    count=$(python /var/lib/ambari-server/resources/scripts/configs.py \
+        -u "$USER" \
+        -p "$PASSWORD" \
+        -s "$PROTOCOL" \
+        -a get \
+        -t "$PORT" \
+        -l "$AMBARISERVER" \
+        -n "$CLUSTER" \
+        -c "$config_type" 2>/dev/null \
+        | python3 -c "import sys,json,re; raw=sys.stdin.read(); m=re.search(r'\{.*\}', raw, re.S); d=json.loads(m.group(0)) if m else {}; print(len(d.get('properties',{})))" 2>/dev/null)
+
+    [[ -n "$count" && "$count" -gt 0 ]]
+}
+
 #---------------------------------------------------------
 # Service-Specific JVM options
 #---------------------------------------------------------
@@ -249,7 +268,70 @@ update_hdfs_configuration_for_jdk17() {
       delete_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle.class"
     fi
 
+    # JDK 11 -> 17: migrate spark3_shuffle to versioned shuffle handlers (EU task
+    # odp_3_3_yarn_spark_shuffle_isolation). Run before Express Upgrade.
+    if [ "$JAVA_VERSION" -eq "11" ]; then
+      update_yarn_spark_shuffle_isolation
+    fi
+
     echo -e "${GREEN}Successfully updated configurations for HDFS, YARN, and MapReduce.${NC}"
+}
+
+# Mirrors Ambari config-upgrade task odp_3_3_yarn_spark_shuffle_isolation.
+# Migrates yarn.nodemanager.aux-services from spark3_shuffle to versioned handlers
+# (spark_shuffle_355 / spark_shuffle_333 / spark_shuffle_351) for multi-Spark clusters.
+update_yarn_spark_shuffle_isolation() {
+    echo -e "${YELLOW}Migrating YARN NodeManager Spark shuffle aux-services (odp_3_3_yarn_spark_shuffle_isolation)...${NC}"
+
+    local aux_services
+    aux_services=$(get_config_property "yarn-site" "yarn.nodemanager.aux-services")
+
+    if [[ -z "$aux_services" ]]; then
+        echo -e "${RED}[ERROR] yarn.nodemanager.aux-services is empty or missing.${NC}" | tee -a /tmp/jdk17_update.log
+        return 1
+    fi
+
+    if [[ "$aux_services" == *"spark_shuffle_355"* ]]; then
+        echo -e "${GREEN}[INFO] spark_shuffle_355 already present; updating handler properties only.${NC}"
+    else
+        if [[ "$aux_services" == *"spark3_shuffle"* ]]; then
+            aux_services="${aux_services//spark3_shuffle/spark_shuffle_355}"
+        elif [[ "$aux_services" != *"spark_shuffle_355"* ]]; then
+            aux_services="${aux_services},spark_shuffle_355"
+        fi
+
+        if config_type_present "spark3-3.3.3-env" && [[ "$aux_services" != *"spark_shuffle_333"* ]]; then
+            aux_services="${aux_services},spark_shuffle_333"
+        fi
+
+        if config_type_present "spark3-3.5.1-env" && [[ "$aux_services" != *"spark_shuffle_351"* ]]; then
+            aux_services="${aux_services},spark_shuffle_351"
+        fi
+
+        set_config "yarn-site" "yarn.nodemanager.aux-services" "$aux_services"
+    fi
+
+    set_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle_355.class" "org.apache.spark.network.yarn.v355.YarnShuffleService"
+    set_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle_355.classpath" "{{stack_root}}/{{version}}/spark3/aux/*"
+    set_config "yarn-site" "spark.shuffle.service.v355.port" "7335"
+
+    set_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle_411.class" "org.apache.spark.network.yarn.v411.YarnShuffleService"
+    set_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle_411.classpath" "{{stack_root}}/{{version}}/spark4/aux/*"
+    set_config "yarn-site" "spark.shuffle.service.v411.port" "7341"
+
+    set_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle_333.class" "org.apache.spark.network.yarn.v333.YarnShuffleService"
+    set_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle_333.classpath" "{{stack_root}}/{{version}}/spark3_3_3_3/aux/*"
+    set_config "yarn-site" "spark.shuffle.service.v333.port" "7333"
+
+    set_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle_351.class" "org.apache.spark.network.yarn.v351.YarnShuffleService"
+    set_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle_351.classpath" "{{stack_root}}/{{version}}/spark3_3_5_1/aux/*"
+    set_config "yarn-site" "spark.shuffle.service.v351.port" "7351"
+
+    delete_config "yarn-site" "spark.shuffle.service.port"
+    delete_config "yarn-site" "yarn.nodemanager.aux-services.spark3_shuffle.class"
+    delete_config "yarn-site" "yarn.nodemanager.aux-services.spark3_shuffle.classpath"
+
+    echo -e "${GREEN}Successfully updated YARN Spark shuffle isolation configs.${NC}"
 }
 
 update_infra_configuration_for_jdk17() {
@@ -405,15 +487,16 @@ display_service_options() {
                 echo -e "${GREEN}  9)${NC} Pinot (JAVA_HOME)"
                 ;;
             11)
-                echo -e "${GREEN}  1)${NC} 🗃️   HDFS, YARN & MapReduce"
-                echo -e "${GREEN}  2)${NC} 🔍   Infra-Solr"
-                echo -e "${GREEN}  3)${NC} 🐝   Hive & Tez"
-                echo -e "${GREEN}  4)${NC} 🐘   HBase (log4j2)"
-                echo -e "${GREEN}  5)${NC} 🌀   Oozie"
-                echo -e "${GREEN}  6)${NC} 🔑   Ranger KMS"
-                echo -e "${GREEN}  7)${NC} 📊   Druid"
-                echo -e "${GREEN}  8)${NC} 🦎   ZooKeeper (logback)"
+                echo -e "${GREEN}  1)${NC} HDFS, YARN & MapReduce"
+                echo -e "${GREEN}  2)${NC} Infra-Solr"
+                echo -e "${GREEN}  3)${NC} Hive & Tez"
+                echo -e "${GREEN}  4)${NC} HBase (log4j2)"
+                echo -e "${GREEN}  5)${NC} Oozie"
+                echo -e "${GREEN}  6)${NC} Ranger KMS"
+                echo -e "${GREEN}  7)${NC} Druid"
+                echo -e "${GREEN}  8)${NC} ZooKeeper (logback)"
                 echo -e "${GREEN}  9)${NC} Pinot (JAVA_HOME)"
+                echo -e "${GREEN} 10)${NC} YARN Spark shuffle isolation (pre-EU)"
                 ;;
         esac
 
@@ -463,6 +546,7 @@ handle_selection() {
                 7) update_druid_configuration_for_jdk17 ;;
                 8) update_zookeeper_configuration_for_jdk17 ;;
                 9) update_pinot_configuration_for_jdk17 ;;
+                10) update_yarn_spark_shuffle_isolation ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17

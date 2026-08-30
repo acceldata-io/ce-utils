@@ -4,7 +4,8 @@
 #
 # ODP-7693: copy Ambari Express/Rolling upgrade-pack XMLs so MPACK services
 # (Spark3 / Spark3 3.3.3 / Spark3 3.5.1, Livy3, Impala, Pinot, Kafka3) are
-# included in the Ambari upgrade planner.
+# included in the Ambari upgrade planner. Also installs config-upgrade.xml so
+# EU configure tasks (e.g. odp_3_3_yarn_spark_shuffle_isolation) resolve.
 #
 # Source:
 #   https://github.com/acceldata-io/odp-ambari/commit/06daf47ad117c230b8bbf40ff6ff41f5a0f07871
@@ -57,24 +58,29 @@ copy_xml() {
 }
 
 echo "1.################# ODP 3.0 #################"
+copy_xml 3.0/upgrades/config-upgrade.xml "$AMBARI_STACKS/3.0/upgrades/config-upgrade.xml"
 copy_xml 3.0/upgrades/nonrolling-upgrade-3.0.xml "$AMBARI_STACKS/3.0/upgrades/nonrolling-upgrade-3.0.xml"
 copy_xml 3.0/upgrades/nonrolling-upgrade-3.1.xml "$AMBARI_STACKS/3.0/upgrades/nonrolling-upgrade-3.1.xml"
 
 echo "2.################# ODP 3.1 #################"
+copy_xml 3.1/upgrades/config-upgrade.xml "$AMBARI_STACKS/3.1/upgrades/config-upgrade.xml"
 copy_xml 3.1/upgrades/nonrolling-upgrade-3.1.xml "$AMBARI_STACKS/3.1/upgrades/nonrolling-upgrade-3.1.xml"
 
 echo "3.################# ODP 3.2 #################"
+copy_xml 3.2/upgrades/config-upgrade.xml "$AMBARI_STACKS/3.2/upgrades/config-upgrade.xml"
 copy_xml 3.2/upgrades/nonrolling-upgrade-3.2.xml "$AMBARI_STACKS/3.2/upgrades/nonrolling-upgrade-3.2.xml"
 copy_xml 3.2/upgrades/nonrolling-upgrade-3.3.xml "$AMBARI_STACKS/3.2/upgrades/nonrolling-upgrade-3.3.xml"
 copy_xml 3.2/upgrades/upgrade-3.3.xml           "$AMBARI_STACKS/3.2/upgrades/upgrade-3.3.xml"
 
 echo "4.################# ODP 3.3 #################"
+copy_xml 3.3/upgrades/config-upgrade.xml "$AMBARI_STACKS/3.3/upgrades/config-upgrade.xml"
 copy_xml 3.3/upgrades/nonrolling-upgrade-3.3.xml "$AMBARI_STACKS/3.3/upgrades/nonrolling-upgrade-3.3.xml"
 copy_xml 3.3/upgrades/nonrolling-upgrade-3.4.xml "$AMBARI_STACKS/3.3/upgrades/nonrolling-upgrade-3.4.xml"
 copy_xml 3.3/upgrades/upgrade-3.3.xml           "$AMBARI_STACKS/3.3/upgrades/upgrade-3.3.xml"
 copy_xml 3.3/upgrades/upgrade-3.4.xml           "$AMBARI_STACKS/3.3/upgrades/upgrade-3.4.xml"
 
 echo "5.################# ODP 3.4 #################"
+copy_xml 3.4/upgrades/config-upgrade.xml "$AMBARI_STACKS/3.4/upgrades/config-upgrade.xml"
 copy_xml 3.4/upgrades/nonrolling-upgrade-3.4.xml "$AMBARI_STACKS/3.4/upgrades/nonrolling-upgrade-3.4.xml"
 copy_xml 3.4/upgrades/upgrade-3.4.xml           "$AMBARI_STACKS/3.4/upgrades/upgrade-3.4.xml"
 
