@@ -49,3 +49,16 @@ ambari-server restart
 ```
 
 4. In Ambari, create a new Express or Rolling upgrade (do not reuse a plan generated before this copy).
+
+## ZooKeeper logback (before resume upgrade)
+
+Bundled upgrade XMLs no longer run `create_and_configure` for `zookeeper-logback` during EU/RU. That avoids the cross-stack failure on rolling upgrades (for example 3.2 to 3.3).
+
+Before resuming the upgrade (after Ambari and mpack steps), run:
+
+```
+cd ./odp-upgrade-to-3_3_6_5_1/upgrade_files_336/
+bash ./setup_jdk17_config.sh
+```
+
+Choose option **8** (ZooKeeper logback) or **A** (all services).
