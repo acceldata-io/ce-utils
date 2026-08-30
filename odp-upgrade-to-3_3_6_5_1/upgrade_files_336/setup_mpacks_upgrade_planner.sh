@@ -7,6 +7,10 @@
 # included in the Ambari upgrade planner. Also installs config-upgrade.xml so
 # EU configure tasks (e.g. odp_3_3_yarn_spark_shuffle_isolation) resolve.
 #
+# ZooKeeper logback: bundled upgrade XMLs do not run create_and_configure during
+# EU/RU (avoids cross-stack failure on 3.2->3.3). Apply zookeeper-logback with
+# setup_jdk17_config.sh (option 8 or A) before resuming the upgrade.
+#
 # Source:
 #   https://github.com/acceldata-io/odp-ambari/commit/06daf47ad117c230b8bbf40ff6ff41f5a0f07871
 #

@@ -856,9 +856,6 @@
   <processing>
     <service name="ZOOKEEPER">
       <component name="ZOOKEEPER_SERVER">
-        <pre-upgrade>
-          <task xsi:type="create_and_configure" id="odp_3_0_x_zookeeper_logback_configuration"/>
-        </pre-upgrade>
         <pre-downgrade />
         <upgrade>
           <task xsi:type="restart-task"/>
