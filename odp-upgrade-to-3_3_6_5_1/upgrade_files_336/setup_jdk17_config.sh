@@ -268,9 +268,10 @@ update_hdfs_configuration_for_jdk17() {
       delete_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle.class"
     fi
 
-    # JDK 11 -> 17: migrate spark3_shuffle to versioned shuffle handlers (EU task
-    # odp_3_3_yarn_spark_shuffle_isolation). Run before Express Upgrade.
-    if [ "$JAVA_VERSION" -eq "11" ]; then
+    # Migrate spark3_shuffle to versioned shuffle handlers (EU task
+    # odp_3_3_yarn_spark_shuffle_isolation). Required for JDK 8 -> 3.3.6.5 and
+    # JDK 11 -> 17 before Express/Rolling Upgrade.
+    if [ "$JAVA_VERSION" -eq "8" ] || [ "$JAVA_VERSION" -eq "11" ]; then
       update_yarn_spark_shuffle_isolation
     fi
 
@@ -485,6 +486,7 @@ display_service_options() {
                 echo -e "${GREEN}  7)${NC} 📊   Druid"
                 echo -e "${GREEN}  8)${NC} 🦎   ZooKeeper (logback)"
                 echo -e "${GREEN}  9)${NC} Pinot (JAVA_HOME)"
+                echo -e "${GREEN} 10)${NC} YARN Spark shuffle isolation (pre-EU)"
                 ;;
             11)
                 echo -e "${GREEN}  1)${NC} HDFS, YARN & MapReduce"
@@ -520,6 +522,7 @@ handle_selection() {
                 7) update_druid_configuration_for_jdk17 ;;
                 8) update_zookeeper_configuration_for_jdk17 ;;
                 9) update_pinot_configuration_for_jdk17 ;;
+                10) update_yarn_spark_shuffle_isolation ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17
