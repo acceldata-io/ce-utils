@@ -61,4 +61,11 @@ cd ./odp-upgrade-to-3_3_6_5_1/upgrade_files_336/
 bash ./setup_jdk17_config.sh
 ```
 
-Choose option **8** (ZooKeeper logback) or **A** (all services).
+At the JDK prompt:
+
+- **8** or **11**: full JDK migration configs (first-time move to JDK 17). Choose **8** or **11** based on the JDK the cluster ran on before JDK 17.
+- **17**: patch-upgrade mode for clusters already on JDK 17 (for example 3.3.6.4-1 -> 3.3.6.5-1012). Menu options are limited to ZooKeeper logback, Pinot JAVA_HOME, and YARN Spark shuffle isolation.
+
+For cross-stack EU (3.2 -> 3.3) on JDK 8/11, choose option **8** (ZooKeeper logback) or **A** (all services).
+
+For patch EU on JDK 17, choose **17** at the prompt, then option **1**, **3**, or **A** as needed.

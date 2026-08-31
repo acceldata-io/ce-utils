@@ -8,9 +8,11 @@
 # Acceldata Inc. | ODP
 #
 # This script updates configuration for various services to support JDK 17
+# migration (source JDK 8 or 11) or patch-upgrade fixes on clusters already
+# running JDK 17 (source JDK 17).
 #
 # Usage:
-#   ./setup_ssl_with_existing_jks.sh
+#   ./setup_jdk17_config.sh
 ##########################################################################
 GREEN='\e[32m'
 YELLOW='\e[33m'
@@ -78,17 +80,22 @@ echo -e "🏢 ${GREEN}CLUSTER:${NC} $CLUSTER"
 #---------------------------------------------------------
 detect_source_jdk() {
     echo -e "${YELLOW}Detecting source JDK version...${NC}"
-    read -rp "Select source JDK version (8/11): " source_jdk
+    read -rp "Select source JDK version (8/11/17): " source_jdk
 
     case "$source_jdk" in
         8)
             MIGRATION_PATH="$TEMPLATE_DIR/jdk8-specific"
-            echo -e "${GREEN}Migration path set: JDK 8 → JDK 17${NC}"
+            echo -e "${GREEN}Migration path set: JDK 8 -> JDK 17${NC}"
             JAVA_VERSION="$source_jdk"
             ;;
         11)
             MIGRATION_PATH="$TEMPLATE_DIR/jdk11-specific"
-            echo -e "${GREEN}Migration path set: JDK 11 → JDK 17${NC}"
+            echo -e "${GREEN}Migration path set: JDK 11 -> JDK 17${NC}"
+            JAVA_VERSION="$source_jdk"
+            ;;
+        17)
+            MIGRATION_PATH=""
+            echo -e "${GREEN}Patch-upgrade mode: cluster already on JDK 17${NC}"
             JAVA_VERSION="$source_jdk"
             ;;
         *)
@@ -467,6 +474,13 @@ update_pinot_configuration_for_jdk17() {
     echo -e "${GREEN}Successfully updated configurations for Pinot.${NC}"
 }
 
+# Patch-upgrade helpers for clusters already on JDK 17 (e.g. 3.3.6.4 -> 3.3.6.5).
+run_jdk17_patch_upgrade_all() {
+    update_zookeeper_configuration_for_jdk17
+    update_pinot_configuration_for_jdk17
+    update_yarn_spark_shuffle_isolation
+}
+
 #---------------------------------------------------------
 # Menu for Selecting Configuration Services
 #---------------------------------------------------------
@@ -500,10 +514,20 @@ display_service_options() {
                 echo -e "${GREEN}  9)${NC} Pinot (JAVA_HOME)"
                 echo -e "${GREEN} 10)${NC} YARN Spark shuffle isolation (pre-EU)"
                 ;;
+            17)
+                echo -e "${GREEN}  1)${NC} ZooKeeper (logback)"
+                echo -e "${GREEN}  2)${NC} Pinot (JAVA_HOME)"
+                echo -e "${GREEN}  3)${NC} YARN Spark shuffle isolation (pre-EU)"
+                ;;
         esac
 
+    if [ "$source_jdk" != "17" ]; then
     echo -e "${YELLOW}────────────────────────────────────────────────────────────${NC}"
-    echo -e "${GREEN}  A)${NC} 🌐   All Services (for the brave)"
+    echo -e "${GREEN}  A)${NC} All Services (for the brave)"
+    else
+    echo -e "${YELLOW}────────────────────────────────────────────────────────────${NC}"
+    echo -e "${GREEN}  A)${NC} All patch-upgrade fixes (ZooKeeper, Pinot, YARN shuffle)"
+    fi
     echo -e "${RED}  Q)${NC} ❌   Quit (no changes)"
     echo -e "${YELLOW}────────────────────────────────────────────────────────────${NC}"
 }
@@ -561,6 +585,16 @@ handle_selection() {
                     update_zookeeper_configuration_for_jdk17
                     update_pinot_configuration_for_jdk17
                     ;;
+                [Qq]) return 1 ;;
+                *) echo -e "${RED}Invalid selection.${NC}" ;;
+            esac
+            ;;
+        17)
+            case "$choice" in
+                1) update_zookeeper_configuration_for_jdk17 ;;
+                2) update_pinot_configuration_for_jdk17 ;;
+                3) update_yarn_spark_shuffle_isolation ;;
+                [Aa]) run_jdk17_patch_upgrade_all ;;
                 [Qq]) return 1 ;;
                 *) echo -e "${RED}Invalid selection.${NC}" ;;
             esac
