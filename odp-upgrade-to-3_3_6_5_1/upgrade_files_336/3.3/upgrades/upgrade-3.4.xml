@@ -358,6 +358,11 @@
 
     <group name="IMPALA_CLIENTS" title="Impala Clients">
       <skippable>true</skippable>
+      <!-- IMPALA has no service-level commandScript, so a service check here aborts the
+           whole upgrade at creation time instead of failing a single stage. A group runs
+           one by default, so it has to be turned off explicitly, the same way the IMPALA
+           group above does. -->
+      <service-check>false</service-check>
       <service name="IMPALA">
         <component>IMPALA_CLIENT</component>
       </service>
