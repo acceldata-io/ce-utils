@@ -69,3 +69,72 @@ At the JDK prompt:
 For cross-stack EU (3.2 -> 3.3) on JDK 8/11, choose option **8** (ZooKeeper logback) or **A** (all services).
 
 For patch EU on JDK 17, choose **17** at the prompt, then option **1**, **3**, or **A** as needed.
+
+## Manual configs (Ambari UI)
+
+Use this only if you cannot run `setup_jdk17_config.sh`. These are the extra 3.3.6.5-1 items vs 3.3.6.4-1. Templates live under `upgrade_files_336/ODP-env-templates/`. After saving, restart the affected services.
+
+### 1. Pinot JAVA_HOME (new in 3.3.6.5-1)
+
+Ambari UI -> Pinot -> Configs -> Advanced pinot-env -> `JAVA_HOME`.
+
+Set it to the stack JDK 17 home (same value as Ambari `stack.java.home`), for example:
+
+```
+/usr/lib/jvm/java-17-openjdk
+```
+
+If that directory does not exist, use `/usr/lib/jvm/java-17` or `readlink -f /usr/lib/jvm/java`. Skip this if Pinot is not installed.
+
+### 2. YARN Spark shuffle isolation (new in 3.3.6.5-1)
+
+Ambari UI -> YARN -> Configs -> Custom yarn-site.
+
+1. Edit `yarn.nodemanager.aux-services`:
+   - Replace `spark3_shuffle` with `spark_shuffle_355`.
+   - If Spark3 3.3.3 is installed (`spark3-3.3.3-env` exists) and `spark_shuffle_333` is missing, append `,spark_shuffle_333`.
+   - If Spark3 3.5.1 is installed (`spark3-3.5.1-env` exists) and `spark_shuffle_351` is missing, append `,spark_shuffle_351`.
+2. Set these properties (create them if missing):
+
+```
+yarn.nodemanager.aux-services.spark_shuffle_355.class = org.apache.spark.network.yarn.v355.YarnShuffleService
+yarn.nodemanager.aux-services.spark_shuffle_355.classpath = {{stack_root}}/{{version}}/spark3/aux/*
+spark.shuffle.service.v355.port = 7335
+
+yarn.nodemanager.aux-services.spark_shuffle_411.class = org.apache.spark.network.yarn.v411.YarnShuffleService
+yarn.nodemanager.aux-services.spark_shuffle_411.classpath = {{stack_root}}/{{version}}/spark4/aux/*
+spark.shuffle.service.v411.port = 7341
+
+yarn.nodemanager.aux-services.spark_shuffle_333.class = org.apache.spark.network.yarn.v333.YarnShuffleService
+yarn.nodemanager.aux-services.spark_shuffle_333.classpath = {{stack_root}}/{{version}}/spark3_3_3_3/aux/*
+spark.shuffle.service.v333.port = 7333
+
+yarn.nodemanager.aux-services.spark_shuffle_351.class = org.apache.spark.network.yarn.v351.YarnShuffleService
+yarn.nodemanager.aux-services.spark_shuffle_351.classpath = {{stack_root}}/{{version}}/spark3_3_5_1/aux/*
+spark.shuffle.service.v351.port = 7351
+```
+
+3. Delete if present: `spark.shuffle.service.port`, `yarn.nodemanager.aux-services.spark3_shuffle.class`, `yarn.nodemanager.aux-services.spark3_shuffle.classpath`.
+
+Restart NodeManagers after this change.
+
+### 3. Druid JDK 11/17 jvm.opts (changed in 3.3.6.5-1)
+
+3.3.6.4-1 only pushed Druid on source JDK 8, and used a typo key `druid.coordinator.jvm.opt`. 3.3.6.5-1 applies Druid for JDK 8, 11, and 17, and uses `jvm.opts` for every node type.
+
+Ambari UI -> Druid -> Configs -> Advanced druid-env.
+
+Set all of these to the value in `ODP-env-templates/druid-env-opts` (JDK 11/17) or `ODP-env-templates/jdk8-specific/druid-env-opts` (source JDK 8):
+
+- `druid.broker.jvm.opts`
+- `druid.coordinator.jvm.opts`
+- `druid.historical.jvm.opts`
+- `druid.middlemanager.jvm.opts`
+- `druid.overlord.jvm.opts`
+- `druid.router.jvm.opts`
+
+Also refresh `druid-env` `content` from `ODP-env-templates/druid-env-template` (JDK 11/17) or `ODP-env-templates/jdk8-specific/druid-env-template` (source JDK 8). Skip if Druid is not installed.
+
+### 4. ZooKeeper logback (same as 3.3.6.4-1, still required)
+
+If `zookeeper-logback` is missing in Ambari, create it from `ODP-env-templates/zookeeper-logback.xml` (Ambari UI -> ZooKeeper -> Configs, or `configs.py -a set -c zookeeper-logback -f ...`).
