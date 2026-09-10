@@ -55,7 +55,14 @@ grep -E 'name="HTTPFS"|name="OZONE"|name="HUE"' \
   /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/upgrade-3.2.xml
 ```
 
-You should see `HTTPFS`, `OZONE`, and `HUE` groups. Confirm Express service checks too:
+You should see `HTTPFS`, `OZONE`, and `HUE` groups. For a same-stack 3.2 Rolling upgrade, confirm the Rolling pack targets ODP-3.2 (not ODP-3.3):
+
+```
+grep -E '<target>|<target-stack>|<type>' \
+  /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/upgrade-3.2.xml
+```
+
+Expected: `target 3.2.*.*`, `target-stack ODP-3.2`, `type ROLLING`. If this file targets 3.3, Ambari greys out Rolling with "Not allowed by the current version". Confirm Express service checks too:
 
 ```
 grep -A20 'name="SERVICE_CHECK_1"' \

@@ -17,8 +17,8 @@
 -->
 
 <upgrade xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="upgrade-pack.xsd">
-  <target>3.3.*.*</target>
-  <target-stack>ODP-3.3</target-stack>
+  <target>3.2.*.*</target>
+  <target-stack>ODP-3.2</target-stack>
   <skip-failures>false</skip-failures>
   <skip-service-check-failures>false</skip-service-check-failures>
   <type>ROLLING</type>
@@ -228,7 +228,6 @@
         <message>The initial batch of {{components}} hosts have been {{direction.past}}. You are advised to check the hosts and perform cluster/workload-specific tests against your cluster to ensure proper operation before proceeding with {{direction.text}} of the remaining services.</message>
       </batch>
     </group>
-
     <group name="OZONE" title="Ozone">
       <skippable>true</skippable>
       <supports-auto-skip-failure>false</supports-auto-skip-failure>
@@ -242,6 +241,8 @@
         <component>OZONE_DATANODE</component>
       </service>
     </group>
+
+
 
     <group name="SERVICE_CHECK_2" title="All Service Checks" xsi:type="service-check">
       <direction>UPGRADE</direction>
@@ -309,7 +310,6 @@
       <service name="SPARK3">
         <component>SPARK3_JOBHISTORYSERVER</component>
         <component>SPARK3_THRIFTSERVER</component>
-        <component>SPARK3_CONNECT_SERVER</component>
       </service>
     </group>-->
 
@@ -342,7 +342,6 @@
       <service name="SPARK3">
         <component>SPARK3_JOBHISTORYSERVER</component>
         <component>SPARK3_THRIFTSERVER</component>
-        <component>SPARK3_CONNECT_SERVER</component>
         <component>LIVY3_SERVER</component>
       </service>
     </group>
@@ -355,7 +354,6 @@
         <component>ZEPPELIN_MASTER</component>
       </service>
     </group>
-
     <group name="HUE" title="Hue">
       <skippable>true</skippable>
       <supports-auto-skip-failure>false</supports-auto-skip-failure>
@@ -364,6 +362,8 @@
         <component>HUE_SERVER</component>
       </service>
     </group>
+
+
 
     <group name="SPARK2_CLIENTS" title="Spark2 Clients">
       <skippable>true</skippable>
@@ -525,8 +525,6 @@
         <component>PINOT_MINION</component>
       </service>
     </group>
-
-
     <group name="HTTPFS" title="HttpFS">
       <skippable>true</skippable>
       <supports-auto-skip-failure>false</supports-auto-skip-failure>
@@ -535,6 +533,8 @@
         <component>HTTPFS_GATEWAY</component>
       </service>
     </group>
+
+
 
     <group name="SERVICE_CHECK_3" title="All Service Checks" xsi:type="service-check">
       <direction>UPGRADE</direction>
@@ -605,7 +605,6 @@
   <processing>
     <service name="ZOOKEEPER">
       <component name="ZOOKEEPER_SERVER">
-        <pre-downgrade />
         <upgrade>
           <task xsi:type="restart-task" />
         </upgrade>
@@ -939,6 +938,7 @@
     <service name="SPARK2">
       <component name="SPARK2_JOBHISTORYSERVER">
         <pre-upgrade>
+          <task xsi:type="configure" id="odp_ocr_2482_spark2_log_umask"/>
           <task xsi:type="server_action" class="org.apache.ambari.server.serveraction.upgrades.FixSparkYarnIdentity">
             <summary>Adding spark.yarn.keytab/principal properties</summary>
           </task>
@@ -1013,6 +1013,30 @@
 
     <service name="SPARK3">
       <component name="SPARK3_JOBHISTORYSERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="SPARK3_THRIFTSERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="LIVY3_SERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="SPARK3_CLIENT">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+    </service>
+
+    <!--  no-op to upgrade
+    <service name="SPARK3">
+      <component name="SPARK3_JOBHISTORYSERVER">
         <pre-upgrade>
           <task xsi:type="server_action" class="org.apache.ambari.server.serveraction.upgrades.FixSparkYarnIdentity">
             <summary>Adding spark.yarn.keytab/principal properties</summary>
@@ -1028,23 +1052,12 @@
           <task xsi:type="restart-task" />
         </upgrade>
       </component>
-      <component name="LIVY3_SERVER">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-      <component name="SPARK3_CONNECT_SERVER">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
       <component name="SPARK3_CLIENT">
         <upgrade>
           <task xsi:type="restart-task" />
         </upgrade>
       </component>
-    </service>
-
+    </service>-->
     <service name="IMPALA">
       <component name="IMPALA_CATALOG_SERVICE">
         <upgrade>
@@ -1089,6 +1102,7 @@
         </upgrade>
       </component>
     </service>
+
 
     <service name="OOZIE">
       <component name="OOZIE_SERVER">
@@ -1154,6 +1168,13 @@
 
     <service name="KNOX">
       <component name="KNOX_GATEWAY">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_ocr_2486_knox_env"/>
+          <task xsi:type="server_action" class="org.apache.ambari.server.serveraction.upgrades.EnsureKnoxUpgradeConfigs">
+            <summary>Ensure Knox custom topologies, knox-env template, and knox_umask exist after upgrade</summary>
+          </task>
+        </pre-upgrade>
+        <pre-downgrade />
         <upgrade>
           <task xsi:type="restart-task" />
         </upgrade>
@@ -1236,7 +1257,6 @@
         </upgrade>
       </component>
     </service>
-
     <service name="HTTPFS">
       <component name="HTTPFS_GATEWAY">
         <upgrade>
@@ -1278,5 +1298,5 @@
       </component>
     </service>
 
-  </processing>
+</processing>
 </upgrade>
