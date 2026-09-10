@@ -55,7 +55,14 @@ grep -E 'name="HTTPFS"|name="OZONE"|name="HUE"' \
   /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/upgrade-3.2.xml
 ```
 
-You should see `HTTPFS`, `OZONE`, and `HUE` groups. Then restart Ambari Server so the planner reloads the packs.
+You should see `HTTPFS`, `OZONE`, and `HUE` groups. Confirm Express service checks too:
+
+```
+grep -A20 'name="SERVICE_CHECK_1"' \
+  /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/nonrolling-upgrade-3.2.xml
+```
+
+`SERVICE_CHECK_1` must list `HTTPFS` and `OZONE` after `HDFS`. Express Upgrade only runs service checks that appear in those priority lists. Then restart Ambari Server so the planner reloads the packs.
 
 ```
 ambari-server restart

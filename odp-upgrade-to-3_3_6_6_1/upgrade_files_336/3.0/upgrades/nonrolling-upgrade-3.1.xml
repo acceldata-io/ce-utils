@@ -586,6 +586,8 @@
         <service>RANGER</service>
         <service>RANGER_KMS</service>
         <service>HDFS</service>
+        <service>HTTPFS</service>
+        <service>OZONE</service>
         <service>KAFKA</service>
         <service>KAFKA3</service>
         <service>YARN</service>
