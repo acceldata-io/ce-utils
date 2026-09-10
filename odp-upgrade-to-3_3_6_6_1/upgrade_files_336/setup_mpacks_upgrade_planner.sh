@@ -89,12 +89,102 @@ copy_xml 3.4/upgrades/config-upgrade.xml "$AMBARI_STACKS/3.4/upgrades/config-upg
 copy_xml 3.4/upgrades/nonrolling-upgrade-3.4.xml "$AMBARI_STACKS/3.4/upgrades/nonrolling-upgrade-3.4.xml"
 copy_xml 3.4/upgrades/upgrade-3.4.xml           "$AMBARI_STACKS/3.4/upgrades/upgrade-3.4.xml"
 
+echo "6.################# Ozone Client no-op start/stop #################"
+OZONE_CLIENT_SRC="./scripts/ozone_client.py"
+if [ ! -f "$OZONE_CLIENT_SRC" ]; then
+  echo "[ERROR] Missing bundled file: $OZONE_CLIENT_SRC"
+  exit 1
+fi
+
+install_ozone_client() {
+  dest="$1"
+  if [ ! -f "$dest" ]; then
+    return 0
+  fi
+  mkdir -p "$BACKUP_DIR/ozone_client"
+  dest_key=$(echo "$dest" | tr '/' '_')
+  cp -a "$dest" "$BACKUP_DIR/ozone_client/${dest_key}"
+  if [ -w "$dest" ]; then
+    cp -a "$OZONE_CLIENT_SRC" "$dest"
+  else
+    sudo cp -a "$OZONE_CLIENT_SRC" "$dest"
+  fi
+  echo "[INFO] Installed $dest"
+}
+
+# Agent STOP/RESTART uses the cached copy. Replace every ozone_client.py on this host.
+found=0
+for dest in $(find /var/lib/ambari-server/resources /var/lib/ambari-agent/cache -name ozone_client.py 2>/dev/null); do
+  install_ozone_client "$dest"
+  found=1
+done
+if [ "$found" = "0" ]; then
+  echo "[WARN] No ozone_client.py found on this host. Ozone mpack may not be installed."
+fi
+
+# Other agents keep their own cache. Copy over SSH when Ambari API and host SSH work.
+AMB_USER="${AMB_USER:-admin}"
+AMB_PASS="${AMB_PASS:-admin}"
+AMB_URL="${AMB_URL:-http://localhost:8080}"
+THIS_HOST=$(hostname -s 2>/dev/null || hostname)
+python3 - "$OZONE_CLIENT_SRC" "$AMB_URL" "$AMB_USER" "$AMB_PASS" "$THIS_HOST" << 'PY' || echo "[WARN] Could not copy ozone_client.py to remote agents. Copy scripts/ozone_client.py onto each agent cache path and Retry."
+import json, os, subprocess, sys, urllib.request, base64
+
+src, amb_url, user, password, this_host = sys.argv[1:6]
+auth = base64.b64encode(("%s:%s" % (user, password)).encode()).decode()
+req = urllib.request.Request(
+    amb_url.rstrip("/") + "/api/v1/clusters?fields=Clusters/cluster_name",
+    headers={"Authorization": "Basic " + auth},
+)
+try:
+    with urllib.request.urlopen(req, timeout=20) as r:
+        clusters = json.load(r)
+except Exception as e:
+    print("[WARN] Ambari API cluster list failed: %s" % e)
+    sys.exit(0)
+
+if not clusters.get("items"):
+    print("[WARN] No Ambari cluster found; skip remote ozone_client.py copy")
+    sys.exit(0)
+
+cluster = clusters["items"][0]["Clusters"]["cluster_name"]
+req = urllib.request.Request(
+    "%s/api/v1/clusters/%s/hosts?fields=Hosts/host_name" % (amb_url.rstrip("/"), cluster),
+    headers={"Authorization": "Basic " + auth},
+)
+with urllib.request.urlopen(req, timeout=20) as r:
+    hosts = [i["Hosts"]["host_name"] for i in json.load(r).get("items", [])]
+
+remote_cmd = (
+    "set -e; SRC=/tmp/ozone_client.py; "
+    "for dest in $(find /var/lib/ambari-agent/cache /var/lib/ambari-server/resources -name ozone_client.py 2>/dev/null); do "
+    "cp -a \"$dest\" \"${dest}.bak.mpacks-planner\"; "
+    "if [ -w \"$dest\" ]; then cp -a \"$SRC\" \"$dest\"; else sudo cp -a \"$SRC\" \"$dest\"; fi; "
+    "echo INSTALLED $dest; done"
+)
+
+for host in hosts:
+    short = host.split(".")[0]
+    if short == this_host or host == this_host:
+        continue
+    print("[INFO] Copying ozone_client.py to %s" % host)
+    scp = subprocess.call(["scp", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", src, "%s:/tmp/ozone_client.py" % host])
+    if scp != 0:
+        print("[WARN] scp to %s failed. Copy scripts/ozone_client.py onto that agent and Retry." % host)
+        continue
+    rc = subprocess.call(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", host, remote_cmd])
+    if rc != 0:
+        print("[WARN] install on %s failed" % host)
+PY
+
 echo "[INFO] Backups (if any): $BACKUP_DIR"
 echo "[INFO] Verify HttpFS and Ozone are in the Express pack used by this cluster:"
 echo "  grep -E 'name=\"HTTPFS\"|name=\"OZONE\"|name=\"HUE\"' $AMBARI_STACKS/3.2/upgrades/nonrolling-upgrade-3.2.xml"
 echo "[INFO] Same-stack Rolling on ODP 3.2 requires upgrade-3.2.xml to target ODP-3.2, not ODP-3.3:"
 echo "  grep -E '<target>|<target-stack>|<type>' $AMBARI_STACKS/3.2/upgrades/upgrade-3.2.xml"
 echo "[INFO] Expected: target 3.2.*.* , target-stack ODP-3.2 , type ROLLING"
+echo "[INFO] Ozone Client STOP during EU needs empty start/stop in ozone_client.py:"
+echo "  grep -n 'def start\\|def stop' /var/lib/ambari-agent/cache/common-services/OZONE/1.4.1/package/scripts/ozone_client.py"
 echo "[INFO] Restart Ambari Server so the planner reloads these packs:"
 echo "  ambari-server restart"
 echo "################# changes completed #################"

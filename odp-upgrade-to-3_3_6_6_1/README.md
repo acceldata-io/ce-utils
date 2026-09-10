@@ -77,6 +77,14 @@ ambari-server restart
 
 4. In Ambari, create a new Express or Rolling upgrade (do not reuse a plan generated before this copy).
 
+The planner script also replaces `ozone_client.py` with empty `start()` / `stop()` (same as HDFS Client). Express Upgrade STOP of `OZONE_CLIENT` fails with `stop method isn't implemented` without that copy. It patches Ambari server resources, this host's agent cache, and other agent hosts when `admin`/`admin` and SSH from the Ambari server work. Override with `AMB_USER`, `AMB_PASS`, `AMB_URL` if needed. If a remote copy fails, copy `upgrade_files_336/scripts/ozone_client.py` onto each agent:
+
+```
+/var/lib/ambari-agent/cache/common-services/OZONE/1.4.1/package/scripts/ozone_client.py
+```
+
+Then click Retry. Ozone Client is not a daemon; IGNORE AND PROCEED on those STOP tasks is also safe.
+
 ## ZooKeeper logback (before resume upgrade)
 
 Bundled upgrade XMLs no longer run `create_and_configure` for `zookeeper-logback` during EU/RU. That avoids the cross-stack failure on rolling upgrades (for example 3.2 to 3.3).
