@@ -1,0 +1,76 @@
+
+      #!/bin/bash
+
+      # Set DRUID specific environment variables here.
+
+      # Define paths for the log files and heap dumps
+      log_dir="/var/log/druid"
+      jaas_file="{{druid_jaas_file}}"
+      krb5_conf="{{krb5_conf_path}}"
+
+      {% if security_enabled %}
+      export KRB5_CONFIG="${krb5_conf}"
+      {% endif %}
+
+      {% if java_version == 8 %}
+      # Java 8 JVM options
+      export druid.broker.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCApplicationConcurrentTime -Xloggc:${log_dir}/broker.gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=50 -XX:GCLogFileSize=10m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/broker.hprof -Djava.security.auth.login.config=${jaas_file} -Djava.security.krb5.conf=${krb5_conf}"
+
+      export druid.coordinator.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCApplicationConcurrentTime -Xloggc:${log_dir}/coordinator.gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=50 -XX:GCLogFileSize=10m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/coordinator.hprof -Djava.security.auth.login.config=${jaas_file} -Djava.security.krb5.conf=${krb5_conf}"
+
+      export druid.middlemanager.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCApplicationConcurrentTime -Xloggc:${log_dir}/middlemanager.gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=50 -XX:GCLogFileSize=10m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/middlemanager.hprof -Djava.security.auth.login.config=${jaas_file} -Djava.security.krb5.conf=${krb5_conf}"
+
+      export druid.historical.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCApplicationConcurrentTime -Xloggc:${log_dir}/historical.gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=50 -XX:GCLogFileSize=10m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/historical.hprof -Djava.security.auth.login.config=${jaas_file} -Djava.security.krb5.conf=${krb5_conf}"
+
+      export druid.overlord.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCApplicationConcurrentTime -Xloggc:${log_dir}/overlord.gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=50 -XX:GCLogFileSize=10m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/overlord.hprof -Djava.security.auth.login.config=${jaas_file} -Djava.security.krb5.conf=${krb5_conf}"
+
+      export druid.router.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCApplicationConcurrentTime -Xloggc:${log_dir}/router.gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=50 -XX:GCLogFileSize=10m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/router.hprof -Djava.security.auth.login.config=${jaas_file} -Djava.security.krb5.conf=${krb5_conf}"
+
+      {% else %}
+      # Java 11 JVM options
+      {% if jvm_tuning_profile == 'azul_prime' %}
+      export DRUID_BROKER_JVM_TUNING_OPTS="-Xlog:gc*:file=${log_dir}/broker.gc.log:time,uptime,tid,level:filecount=50,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn=${log_dir}/broker.profile -XX:ProfileLogOut=${log_dir}/broker.profile -XX:+UseZingMXBeans"
+      export DRUID_COORDINATOR_JVM_TUNING_OPTS="-Xlog:gc*:file=${log_dir}/coordinator.gc.log:time,uptime,tid,level:filecount=50,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn=${log_dir}/coordinator.profile -XX:ProfileLogOut=${log_dir}/coordinator.profile -XX:+UseZingMXBeans"
+      export DRUID_MIDDLEMANAGER_JVM_TUNING_OPTS="-Xlog:gc*:file=${log_dir}/middlemanager.gc.log:time,uptime,tid,level:filecount=50,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn=${log_dir}/middlemanager.profile -XX:ProfileLogOut=${log_dir}/middlemanager.profile -XX:+UseZingMXBeans"
+      export DRUID_HISTORICAL_JVM_TUNING_OPTS="-Xlog:gc*:file=${log_dir}/historical.gc.log:time,uptime,tid,level:filecount=50,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn=${log_dir}/historical.profile -XX:ProfileLogOut=${log_dir}/historical.profile -XX:+UseZingMXBeans"
+      export DRUID_OVERLORD_JVM_TUNING_OPTS="-Xlog:gc*:file=${log_dir}/overlord.gc.log:time,uptime,tid,level:filecount=50,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn=${log_dir}/overlord.profile -XX:ProfileLogOut=${log_dir}/overlord.profile -XX:+UseZingMXBeans"
+      export DRUID_ROUTER_JVM_TUNING_OPTS="-Xlog:gc*:file=${log_dir}/router.gc.log:time,uptime,tid,level:filecount=50,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn=${log_dir}/router.profile -XX:ProfileLogOut=${log_dir}/router.profile -XX:+UseZingMXBeans"
+      {% else %}
+      export DRUID_BROKER_JVM_TUNING_OPTS="-Xlog:gc*,gc+heap=debug,gc+phases=debug:file=${log_dir}/broker.gc.log:time,level,tags:filecount=50,filesize=10M"
+      export DRUID_COORDINATOR_JVM_TUNING_OPTS="-Xlog:gc*,gc+heap=debug,gc+phases=debug:file=${log_dir}/coordinator.gc.log:time,level,tags:filecount=50,filesize=10M"
+      export DRUID_MIDDLEMANAGER_JVM_TUNING_OPTS="-Xlog:gc*,gc+heap=debug,gc+phases=debug:file=${log_dir}/middlemanager.gc.log:time,level,tags:filecount=50,filesize=10M"
+      export DRUID_HISTORICAL_JVM_TUNING_OPTS="-Xlog:gc*,gc+heap=debug,gc+phases=debug:file=${log_dir}/historical.gc.log:time,level,tags:filecount=50,filesize=10M"
+      export DRUID_OVERLORD_JVM_TUNING_OPTS="-Xlog:gc*,gc+heap=debug,gc+phases=debug:file=${log_dir}/overlord.gc.log:time,level,tags:filecount=50,filesize=10M"
+      export DRUID_ROUTER_JVM_TUNING_OPTS="-Xlog:gc*,gc+heap=debug,gc+phases=debug:file=${log_dir}/router.gc.log:time,level,tags:filecount=50,filesize=10M"
+      {% endif %}
+
+      export druid.broker.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true ${DRUID_BROKER_JVM_TUNING_OPTS} -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/broker.hprof -Djava.security.auth.login.config=${jaas_file} -Djava.security.krb5.conf=${krb5_conf}"
+
+      export druid.coordinator.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true ${DRUID_COORDINATOR_JVM_TUNING_OPTS} -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/coordinator.hprof -Djava.security.auth.login.config=${jaas_file} -Djava.security.krb5.conf=${krb5_conf}"
+
+      export druid.middlemanager.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true ${DRUID_MIDDLEMANAGER_JVM_TUNING_OPTS} -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/middlemanager.hprof -Djava.security.auth.login.config=${jaas_file} -Djava.security.krb5.conf=${krb5_conf}"
+
+      export druid.historical.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true ${DRUID_HISTORICAL_JVM_TUNING_OPTS} -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/historical.hprof -Djava.security.auth.login.config=${jaas_file} -Djava.security.krb5.conf=${krb5_conf}"
+
+      export druid.overlord.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true ${DRUID_OVERLORD_JVM_TUNING_OPTS} -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/overlord.hprof -Djava.security.auth.login.config=${jaas_file} -Djava.security.krb5.conf=${krb5_conf}"
+
+      export druid.router.jvm.opts="-Duser.timezone=UTC -Dfile.encoding=UTF-8 -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager -Dorg.jboss.logging.provider=slf4j -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.SLF4JLogger -Dlog4j.shutdownCallbackRegistry=org.apache.druid.common.config.Log4jShutdown -Dlog4j.shutdownHookEnabled=true ${DRUID_ROUTER_JVM_TUNING_OPTS} -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${log_dir}/router.hprof -Djava.security.auth.login.config=${jaas_file} -Djava.security.krb5.conf=${krb5_conf}"
+      {% endif %}
+
+      # The java implementation to use.
+      export JAVA_HOME={{java8_home}}
+      export PATH=$JAVA_HOME/bin:$PATH
+      export DRUID_PID_DIR={{druid_pid_dir}}
+      export DRUID_LOG_DIR={{druid_log_dir}}
+      export DRUID_CONF_DIR={{druid_conf_dir}}
+      export DRUID_LIB_DIR={{druid_home}}/lib
+      export HADOOP_CONF_DIR={{hadoop_conf_dir}}
+
+      ##export ssl password variables:
+      export DRUID_CLIENT_HTTPS_TRUSTSTOREPASSWORD=`{{password_command}} "druid.client.https.truststorepassword" `
+      export DRUID_SERVER_HTTPS_KEYSTOREPASSWORD=`{{password_command}} "druid.server.https.keystorepassword"`
+
+      ##export metadata password variable:
+      export DRUID_METADATA_STORAGE_CONNECTOR_PASSWORD=`{{password_command}} "druid.metadata.storage.connector.password"`
+
+    

@@ -1,0 +1,1 @@
+-XX:+AlwaysPreTouch -XX:+UseG1GC -XX:+UseNUMA -XX:InitiatingHeapOccupancyPercent=70 -XX:+UnlockExperimentalVMOptions -XX:G1MaxNewSizePercent=40 -XX:G1ReservePercent=20 -XX:MaxGCPauseMillis=200{{heap_dump_opts}}{% if java_version|int > 11 %} {{jvm_flags}}{% endif %}
