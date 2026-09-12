@@ -97,7 +97,6 @@
       <service name="SPARK3">
         <component>SPARK3_JOBHISTORYSERVER</component>
         <component>SPARK3_THRIFTSERVER</component>
-        <component>SPARK3_CONNECT_SERVER</component>
         <component>LIVY3_SERVER</component>
       </service>
 
@@ -107,6 +106,17 @@
 
       <service name="HUE">
         <component>HUE_SERVER</component>
+      </service>
+
+
+      <service name="AIRFLOW">
+        <component>AIRFLOW_SCHEDULER</component>
+        <component>AIRFLOW_WEBSERVER</component>
+        <component>AIRFLOW_WORKER</component>
+      </service>
+
+      <service name="JUPYTER">
+        <component>JUPYTERHUB</component>
       </service>
 
       <service name="HIVE">
@@ -148,7 +158,6 @@
         <component>PINOT_BROKER</component>
         <component>PINOT_MINION</component>
       </service>
-
       <service name="HTTPFS">
         <component>HTTPFS_GATEWAY</component>
       </service>
@@ -160,8 +169,7 @@
         <component>OZONE_CLIENT</component>
         <component>OZONE_DATANODE</component>
       </service>
-
-    </group>
+</group>
 
     <group xsi:type="cluster" name="Backups" title="Perform Backups">
       <direction>UPGRADE</direction>
@@ -316,6 +324,20 @@
       <direction>UPGRADE</direction> <!--  prevent config changes on downgrade -->
       <skippable>true</skippable> <!-- May fix configuration problems manually -->
 
+      <execute-stage service="KNOX" component="KNOX_GATEWAY" title="Apply knox-env upgrade configs">
+        <task xsi:type="configure" id="odp_ocr_2486_knox_env"/>
+      </execute-stage>
+
+      <execute-stage service="KNOX" component="KNOX_GATEWAY" title="Ensure Knox custom topologies and knox-env upgrade configs">
+        <task xsi:type="server_action" class="org.apache.ambari.server.serveraction.upgrades.EnsureKnoxUpgradeConfigs">
+          <summary>Ensure Knox custom topologies, knox-env template, and knox_umask exist after upgrade</summary>
+        </task>
+      </execute-stage>
+
+      <execute-stage service="SPARK2" component="SPARK2_JOBHISTORYSERVER" title="Ensure spark2_log_umask is present for world-readable logs">
+        <task xsi:type="configure" id="odp_ocr_2482_spark2_log_umask"/>
+      </execute-stage>
+
       <execute-stage service="SPARK2" component="SPARK2_JOBHISTORYSERVER" title="Create spark.yarn.keytab/principal based on spark history keytab/principal">
         <task xsi:type="server_action" class="org.apache.ambari.server.serveraction.upgrades.FixSparkYarnIdentity">
           <summary>Adding spark.yarn.keytab/principal properties</summary>
@@ -433,7 +455,6 @@
         </task>
       </execute-stage>
     </group>
-
     <group xsi:type="restart" name="HTTPFS" title="HttpFS">
       <skippable>true</skippable>
       <service name="HTTPFS">
@@ -454,6 +475,7 @@
         <component>OZONE_DATANODE</component>
       </service>
     </group>
+
 
     <group xsi:type="restart" name="RANGER_KMS" title="Ranger KMS">
       <service-check>false</service-check>
@@ -700,7 +722,6 @@
       <service name="SPARK3">
         <component>SPARK3_JOBHISTORYSERVER</component>
         <component>SPARK3_THRIFTSERVER</component>
-        <component>SPARK3_CONNECT_SERVER</component>
         <component>LIVY3_SERVER</component>
       </service>
     </group>
@@ -714,8 +735,6 @@
         <component>ZEPPELIN_MASTER</component>
       </service>
     </group>
-
-
     <group xsi:type="restart" name="HUE" title="Hue">
       <service-check>false</service-check>
       <skippable>true</skippable>
@@ -725,6 +744,33 @@
         <component>HUE_SERVER</component>
       </service>
     </group>
+
+
+
+    <group xsi:type="restart" name="AIRFLOW" title="Airflow">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+      <service name="AIRFLOW">
+        <component>AIRFLOW_SCHEDULER</component>
+        <component>AIRFLOW_WEBSERVER</component>
+        <component>AIRFLOW_WORKER</component>
+      </service>
+    </group>
+
+
+    <group xsi:type="restart" name="JUPYTER" title="JupyterHub">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+      <service name="JUPYTER">
+        <component>JUPYTERHUB</component>
+      </service>
+    </group>
+
+
 
     <group xsi:type="restart" name="SPARK3_3_3_3_CLIENTS" title="Spark3 3.3.3 Clients">
       <service-check>false</service-check>
@@ -802,6 +848,8 @@
         <service>ATLAS</service>
         <service>ZEPPELIN</service>
         <service>HUE</service>
+        <service>AIRFLOW</service>
+        <service>JUPYTER</service>
         <service>OOZIE</service>
       </priority>
     </group>
@@ -840,6 +888,7 @@
         <component>PINOT_MINION</component>
       </service>
     </group>
+
 
 
     <group name="SERVICE_CHECK_3" title="All Service Checks" xsi:type="service-check">
@@ -1236,34 +1285,6 @@
       </component>
     </service>
 
-    <service name="SPARK3">
-      <component name="SPARK3_JOBHISTORYSERVER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="SPARK3_THRIFTSERVER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="LIVY3_SERVER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="SPARK3_CONNECT_SERVER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="SPARK3_CLIENT">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-    </service>
-
     <service name="IMPALA">
       <component name="IMPALA_CATALOG_SERVICE">
         <upgrade>
@@ -1302,6 +1323,33 @@
         </upgrade>
       </component>
     </service>
+
+    <service name="JUPYTER">
+      <component name="JUPYTERHUB">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+
+    <service name="AIRFLOW">
+      <component name="AIRFLOW_SCHEDULER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="AIRFLOW_WEBSERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="AIRFLOW_WORKER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+    </service>
+
 
     <service name="OOZIE">
       <component name="OOZIE_SERVER">
@@ -1421,7 +1469,6 @@
         </upgrade>
       </component>
     </service>
-
     <service name="HTTPFS">
       <component name="HTTPFS_GATEWAY">
         <upgrade>
@@ -1463,5 +1510,5 @@
       </component>
     </service>
 
-  </processing>
+</processing>
 </upgrade>

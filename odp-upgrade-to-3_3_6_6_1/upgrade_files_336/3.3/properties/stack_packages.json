@@ -1253,7 +1253,59 @@
           ]
         }
       },
-"ZOOKEEPER": {
+      "AIRFLOW": {
+        "AIRFLOW_WEBSERVER": {
+          "STACK-SELECT-PACKAGE": "airflow",
+          "INSTALL": [
+            "airflow"
+          ],
+          "PATCH": [
+            "airflow"
+          ],
+          "STANDARD": [
+            "airflow"
+          ]
+        },
+        "AIRFLOW_SCHEDULER": {
+          "STACK-SELECT-PACKAGE": "airflow",
+          "INSTALL": [
+            "airflow"
+          ],
+          "PATCH": [
+            "airflow"
+          ],
+          "STANDARD": [
+            "airflow"
+          ]
+        },
+        "AIRFLOW_WORKER": {
+          "STACK-SELECT-PACKAGE": "airflow",
+          "INSTALL": [
+            "airflow"
+          ],
+          "PATCH": [
+            "airflow"
+          ],
+          "STANDARD": [
+            "airflow"
+          ]
+        }
+      },
+      "JUPYTER": {
+        "JUPYTERHUB": {
+          "STACK-SELECT-PACKAGE": "jupyterhub",
+          "INSTALL": [
+            "jupyterhub"
+          ],
+          "PATCH": [
+            "jupyterhub"
+          ],
+          "STANDARD": [
+            "jupyterhub"
+          ]
+        }
+      },
+      "ZOOKEEPER": {
         "ZOOKEEPER_CLIENT": {
           "STACK-SELECT-PACKAGE": "zookeeper-client",
           "INSTALL": [
@@ -1548,6 +1600,12 @@
       "ATLAS": {
         "packages": ["atlas"]
       },
+      "AIRFLOW": {
+        "packages": ["airflow"]
+      },
+      "JUPYTER": {
+        "packages": ["jupyterhub"]
+      },
       "DRUID": {
         "packages": ["druid"]
       },
@@ -1650,6 +1708,7 @@
     },
     "upgrade-dependencies" : {
       "ATLAS": ["STORM"],
+      "JUPYTER": ["HDFS"],
       "IMPALA": ["HIVE"],
       "HIVE": ["TEZ", "MAPREDUCE2", "SQOOP"],
       "HUE": ["HDFS"],

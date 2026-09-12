@@ -4,7 +4,8 @@
 #
 # Copy Ambari Express/Rolling upgrade-pack XMLs so MPACK services
 # (Spark3 / Spark3 3.3.3 / Spark3 3.5.1, Livy3, Impala, Pinot, Kafka3,
-# HttpFS, Ozone, Hue) are included in the Ambari upgrade planner.
+# HttpFS, Ozone, Hue, Airflow, JupyterHub) are included in the Ambari
+# upgrade planner.
 # Also installs config-upgrade.xml and stack_packages.json so EU
 # configure tasks and odp-select mappings resolve.
 #
@@ -178,8 +179,8 @@ for host in hosts:
 PY
 
 echo "[INFO] Backups (if any): $BACKUP_DIR"
-echo "[INFO] Verify HttpFS and Ozone are in the Express pack used by this cluster:"
-echo "  grep -E 'name=\"HTTPFS\"|name=\"OZONE\"|name=\"HUE\"' $AMBARI_STACKS/3.2/upgrades/nonrolling-upgrade-3.2.xml"
+echo "[INFO] Verify HttpFS, Ozone, Hue, Airflow, and JupyterHub are in the Express pack used by this cluster:"
+echo "  grep -E 'name=\"HTTPFS\"|name=\"OZONE\"|name=\"HUE\"|name=\"AIRFLOW\"|name=\"JUPYTER\"' $AMBARI_STACKS/3.2/upgrades/nonrolling-upgrade-3.2.xml"
 echo "[INFO] Same-stack Rolling on ODP 3.2 requires upgrade-3.2.xml to target ODP-3.2, not ODP-3.3:"
 echo "  grep -E '<target>|<target-stack>|<type>' $AMBARI_STACKS/3.2/upgrades/upgrade-3.2.xml"
 echo "[INFO] Expected: target 3.2.*.* , target-stack ODP-3.2 , type ROLLING"

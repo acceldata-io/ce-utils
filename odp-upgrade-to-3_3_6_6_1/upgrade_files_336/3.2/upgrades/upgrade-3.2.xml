@@ -365,6 +365,28 @@
 
 
 
+    <group name="AIRFLOW" title="Airflow">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="AIRFLOW">
+        <component>AIRFLOW_SCHEDULER</component>
+        <component>AIRFLOW_WEBSERVER</component>
+        <component>AIRFLOW_WORKER</component>
+      </service>
+    </group>
+
+
+    <group name="JUPYTER" title="JupyterHub">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="JUPYTER">
+        <component>JUPYTERHUB</component>
+      </service>
+    </group>
+
+
     <group name="SPARK2_CLIENTS" title="Spark2 Clients">
       <skippable>true</skippable>
       <service name="SPARK2">
@@ -1099,6 +1121,32 @@
       <component name="HUE_SERVER">
         <upgrade>
           <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+
+    <service name="JUPYTER">
+      <component name="JUPYTERHUB">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+
+    <service name="AIRFLOW">
+      <component name="AIRFLOW_SCHEDULER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="AIRFLOW_WEBSERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="AIRFLOW_WORKER">
+        <upgrade>
+          <task xsi:type="restart-task" />
         </upgrade>
       </component>
     </service>

@@ -1,6 +1,6 @@
 These steps will help to prepare the cluster for ODP cluster upgrade to 3.3.6.6-1.
 
-This kit is 3.3.6.5-1 plus HttpFS, Ozone, and Hue in the Ambari Express/Rolling upgrade packs (and `stack_packages.json` mappings for those services).
+This kit is 3.3.6.5-1 plus HttpFS, Ozone, Hue, Airflow, and JupyterHub in the Ambari Express/Rolling upgrade packs (and `stack_packages.json` mappings for those services).
 
 ## Usage Instructions
 1. Clone this repository or download it (as a zip/tar) on the Ambari Server node.
@@ -24,9 +24,9 @@ For a same-stack ODP 3.2 patch Express/Rolling upgrade (for example 3.2.3.5 to 3
 
 ## MPACK upgrade planner
 
-This copies bundled Express/Rolling upgrade-pack XMLs onto the Ambari Server so MPACK services (Spark3 / Spark3 3.3.3 / Spark3 3.5.1, Livy3, Impala, Pinot, Kafka3, HttpFS, Ozone, Hue) appear in the upgrade plan. Files are copied from this repo; do not download an Ambari RPM for this step.
+This copies bundled Express/Rolling upgrade-pack XMLs onto the Ambari Server so MPACK services (Spark3 / Spark3 3.3.3 / Spark3 3.5.1, Livy3, Impala, Pinot, Kafka3, HttpFS, Ozone, Hue, Airflow, JupyterHub) appear in the upgrade plan. Files are copied from this repo; do not download an Ambari RPM for this step.
 
-On an ODP 3.2 cluster, Express uses `nonrolling-upgrade-3.2.xml` and Rolling uses `upgrade-3.2.xml`. HttpFS and Ozone restart after `HDFS_LEAVE_SAFEMODE`. Hue restarts after Zeppelin. Ambari skips a group when that service is not installed.
+On an ODP 3.2 cluster, Express uses `nonrolling-upgrade-3.2.xml` and Rolling uses `upgrade-3.2.xml`. HttpFS and Ozone restart after `HDFS_LEAVE_SAFEMODE`. Hue, Airflow, and JupyterHub restart after Zeppelin. Ambari skips a group when that service is not installed.
 
 Same flow as the Java 17 flags script: clone, change directory, run the script, restart Ambari.
 
@@ -49,13 +49,13 @@ Stacks that are not installed on the server are skipped. Existing XMLs are backe
 3. Confirm the packs on the Ambari Server before starting the upgrade:
 
 ```
-grep -E 'name="HTTPFS"|name="OZONE"|name="HUE"' \
+grep -E 'name="HTTPFS"|name="OZONE"|name="HUE"|name="AIRFLOW"|name="JUPYTER"' \
   /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/nonrolling-upgrade-3.2.xml
-grep -E 'name="HTTPFS"|name="OZONE"|name="HUE"' \
+grep -E 'name="HTTPFS"|name="OZONE"|name="HUE"|name="AIRFLOW"|name="JUPYTER"' \
   /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/upgrade-3.2.xml
 ```
 
-You should see `HTTPFS`, `OZONE`, and `HUE` groups. For a same-stack 3.2 Rolling upgrade, confirm the Rolling pack targets ODP-3.2 (not ODP-3.3):
+You should see `HTTPFS`, `OZONE`, `HUE`, `AIRFLOW`, and `JUPYTER` groups. For a same-stack 3.2 Rolling upgrade, confirm the Rolling pack targets ODP-3.2 (not ODP-3.3):
 
 ```
 grep -E '<target>|<target-stack>|<type>' \
@@ -69,7 +69,7 @@ grep -A20 'name="SERVICE_CHECK_1"' \
   /var/lib/ambari-server/resources/stacks/ODP/3.2/upgrades/nonrolling-upgrade-3.2.xml
 ```
 
-`SERVICE_CHECK_1` must list `HTTPFS` and `OZONE` after `HDFS`. Express Upgrade only runs service checks that appear in those priority lists. Then restart Ambari Server so the planner reloads the packs.
+`SERVICE_CHECK_1` must list `HTTPFS` and `OZONE` after `HDFS`. `SERVICE_CHECK_2` must list `HUE`, `AIRFLOW`, and `JUPYTER` after Zeppelin. Express Upgrade only runs service checks that appear in those priority lists. Then restart Ambari Server so the planner reloads the packs.
 
 ```
 ambari-server restart
