@@ -218,6 +218,24 @@
           <message>Before continuing, please backup Zeppelin notebooks directory on the following host(s): {{hosts.all}}.</message>
         </task>
       </execute-stage>
+
+      <execute-stage service="HUE" component="HUE_SERVER" title="Backup Hue Database">
+        <task xsi:type="manual">
+          <message>Before continuing, please backup the Hue database referenced by the Hue server located on {{hosts.all}}.</message>
+        </task>
+      </execute-stage>
+
+      <execute-stage service="AIRFLOW" component="AIRFLOW_SCHEDULER" title="Backup Airflow Database">
+        <task xsi:type="manual">
+          <message>Before continuing, please backup the Airflow metadata database referenced by the Airflow Scheduler located on {{hosts.all}}.</message>
+        </task>
+      </execute-stage>
+
+      <execute-stage service="JUPYTER" component="JUPYTERHUB" title="Backup JupyterHub Database">
+        <task xsi:type="manual">
+          <message>Before continuing, please backup the JupyterHub database referenced by the JupyterHub service located on {{hosts.all}}.</message>
+        </task>
+      </execute-stage>
     </group>
 
     <group xsi:type="stop" name="STOP_LOW_LEVEL_SERVICE_COMPONENTS" title="Stop Components for Core Services">
@@ -306,6 +324,24 @@
       <execute-stage service="ZEPPELIN" component="ZEPPELIN_MASTER" title="Restore Zeppelin notebooks directory">
         <task xsi:type="manual">
           <message>Before continuing, please restore Zeppelin notebooks directory</message>
+        </task>
+      </execute-stage>
+
+      <execute-stage service="HUE" component="HUE_SERVER" title="Restore Hue Database">
+        <task xsi:type="manual">
+          <message>Before continuing, please restore the Hue database referenced by the Hue server located on {{hosts.all}}.</message>
+        </task>
+      </execute-stage>
+
+      <execute-stage service="AIRFLOW" component="AIRFLOW_SCHEDULER" title="Restore Airflow Database">
+        <task xsi:type="manual">
+          <message>Before continuing, please restore the Airflow metadata database referenced by the Airflow Scheduler located on {{hosts.all}}.</message>
+        </task>
+      </execute-stage>
+
+      <execute-stage service="JUPYTER" component="JUPYTERHUB" title="Restore JupyterHub Database">
+        <task xsi:type="manual">
+          <message>Before continuing, please restore the JupyterHub database referenced by the JupyterHub service located on {{hosts.all}}.</message>
         </task>
       </execute-stage>
     </group>

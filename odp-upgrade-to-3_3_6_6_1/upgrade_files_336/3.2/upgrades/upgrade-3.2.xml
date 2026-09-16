@@ -104,6 +104,24 @@
           <message>Before continuing, please backup Zeppelin notebooks directory on the following host(s): {{hosts.all}}.</message>
         </task>
       </execute-stage>
+
+      <execute-stage service="HUE" component="HUE_SERVER" title="Pre Upgrade Hue Backup">
+        <task xsi:type="manual">
+          <message>Before continuing, please backup the Hue database referenced by the Hue server located on {{hosts.all}}.</message>
+        </task>
+      </execute-stage>
+
+      <execute-stage service="AIRFLOW" component="AIRFLOW_SCHEDULER" title="Pre Upgrade Airflow Backup">
+        <task xsi:type="manual">
+          <message>Before continuing, please backup the Airflow metadata database referenced by the Airflow Scheduler located on {{hosts.all}}.</message>
+        </task>
+      </execute-stage>
+
+      <execute-stage service="JUPYTER" component="JUPYTERHUB" title="Pre Upgrade JupyterHub Backup">
+        <task xsi:type="manual">
+          <message>Before continuing, please backup the JupyterHub database referenced by the JupyterHub service located on {{hosts.all}}.</message>
+        </task>
+      </execute-stage>
     </group>
 
     <group name="ZOOKEEPER" title="ZooKeeper">
