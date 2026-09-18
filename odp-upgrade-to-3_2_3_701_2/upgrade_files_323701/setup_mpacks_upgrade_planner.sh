@@ -10,13 +10,12 @@
 # configure tasks and odp-select mappings resolve.
 #
 # ZooKeeper logback: bundled upgrade XMLs do not run create_and_configure during
-# EU/RU (avoids cross-stack failure on 3.2->3.3). Apply zookeeper-logback with
-# setup_jdk17_config.sh (option 8 or A) before resuming the upgrade.
+# EU/RU (avoids cross-stack failure on 3.2->3.3).
 #
-# Run this file from upgrade_files_336 on the Ambari Server, then restart
+# Run this file from upgrade_files_323701 on the Ambari Server, then restart
 # ambari-server. Bundled XMLs are copied in place; no RPM download.
 #
-#   cd ./odp-upgrade-to-3_3_6_6_1/upgrade_files_336/
+#   cd ./odp-upgrade-to-3_2_3_701_2/upgrade_files_323701/
 #   bash ./setup_mpacks_upgrade_planner.sh
 #   ambari-server restart
 
@@ -25,7 +24,7 @@ set -e
 AMBARI_STACKS="${AMBARI_STACKS:-/var/lib/ambari-server/resources/stacks/ODP}"
 BACKUP_DIR="./mpacks-upgrade-planner-backup"
 
-echo "################# MPACK upgrade planner (3.3.6.6-1) #################"
+echo "################# MPACK upgrade planner (3.2.3.701-2) #################"
 echo "[INFO] Copying bundled upgrade pack XMLs onto the Ambari Server"
 echo "[INFO] AMBARI_STACKS=$AMBARI_STACKS"
 
@@ -96,9 +95,8 @@ copy_xml 3.4/upgrades/upgrade-3.4.xml           "$AMBARI_STACKS/3.4/upgrades/upg
 echo "6.################# Ozone Client no-op start/stop #################"
 OZONE_CLIENT_SRC="./scripts/ozone_client.py"
 if [ ! -f "$OZONE_CLIENT_SRC" ]; then
-  echo "[ERROR] Missing bundled file: $OZONE_CLIENT_SRC"
-  exit 1
-fi
+  echo "[WARN] Skip Ozone Client patch; $OZONE_CLIENT_SRC is not in this kit."
+else
 
 install_ozone_client() {
   dest="$1"
@@ -180,6 +178,7 @@ for host in hosts:
     if rc != 0:
         print("[WARN] install on %s failed" % host)
 PY
+fi
 
 echo "[INFO] Backups (if any): $BACKUP_DIR"
 echo "[INFO] Verify HttpFS, Ozone, Hue, Airflow, and JupyterHub are in the Express pack used by this cluster:"
