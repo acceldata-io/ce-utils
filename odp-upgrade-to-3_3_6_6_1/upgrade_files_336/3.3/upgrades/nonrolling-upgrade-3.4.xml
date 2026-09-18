@@ -107,21 +107,18 @@
         <component>ZEPPELIN_MASTER</component>
       </service>
 
-      <service name="HUE">
-        <component>HUE_SERVER</component>
-      </service>
-
-
       <service name="AIRFLOW">
         <component>AIRFLOW_SCHEDULER</component>
         <component>AIRFLOW_WEBSERVER</component>
         <component>AIRFLOW_WORKER</component>
       </service>
+      <service name="HUE">
+        <component>HUE_SERVER</component>
+      </service>
 
       <service name="JUPYTER">
         <component>JUPYTERHUB</component>
       </service>
-
       <service name="HIVE">
         <component>WEBHCAT_SERVER</component>
         <component>HIVE_SERVER</component>
@@ -161,9 +158,6 @@
         <component>PINOT_BROKER</component>
         <component>PINOT_MINION</component>
       </service>
-      <service name="HTTPFS">
-        <component>HTTPFS_GATEWAY</component>
-      </service>
       <service name="OZONE">
         <component>OZONE_STORAGE_CONTAINER_MANAGER</component>
         <component>OZONE_MANAGER</component>
@@ -172,7 +166,13 @@
         <component>OZONE_CLIENT</component>
         <component>OZONE_DATANODE</component>
       </service>
-</group>
+      <service name="HTTPFS">
+        <component>HTTPFS_GATEWAY</component>
+      </service>
+
+
+
+    </group>
 
     <group xsi:type="cluster" name="Backups" title="Perform Backups">
       <direction>UPGRADE</direction>
@@ -224,15 +224,15 @@
         </task>
       </execute-stage>
 
-      <execute-stage service="HUE" component="HUE_SERVER" title="Backup Hue Database">
-        <task xsi:type="manual">
-          <message>Before continuing, please backup the Hue database referenced by the Hue server located on {{hosts.all}}.</message>
-        </task>
-      </execute-stage>
-
       <execute-stage service="AIRFLOW" component="AIRFLOW_SCHEDULER" title="Backup Airflow Database">
         <task xsi:type="manual">
           <message>Before continuing, please backup the Airflow metadata database referenced by the Airflow Scheduler located on {{hosts.all}}.</message>
+        </task>
+      </execute-stage>
+
+      <execute-stage service="HUE" component="HUE_SERVER" title="Backup Hue Database">
+        <task xsi:type="manual">
+          <message>Before continuing, please backup the Hue database referenced by the Hue server located on {{hosts.all}}.</message>
         </task>
       </execute-stage>
 
@@ -332,15 +332,15 @@
         </task>
       </execute-stage>
 
-      <execute-stage service="HUE" component="HUE_SERVER" title="Restore Hue Database">
-        <task xsi:type="manual">
-          <message>Before continuing, please restore the Hue database referenced by the Hue server located on {{hosts.all}}.</message>
-        </task>
-      </execute-stage>
-
       <execute-stage service="AIRFLOW" component="AIRFLOW_SCHEDULER" title="Restore Airflow Database">
         <task xsi:type="manual">
           <message>Before continuing, please restore the Airflow metadata database referenced by the Airflow Scheduler located on {{hosts.all}}.</message>
+        </task>
+      </execute-stage>
+
+      <execute-stage service="HUE" component="HUE_SERVER" title="Restore Hue Database">
+        <task xsi:type="manual">
+          <message>Before continuing, please restore the Hue database referenced by the Hue server located on {{hosts.all}}.</message>
         </task>
       </execute-stage>
 
@@ -477,17 +477,11 @@
         </task>
       </execute-stage>
     </group>
-    <group xsi:type="restart" name="HTTPFS" title="HttpFS">
-      <skippable>true</skippable>
-      <service name="HTTPFS">
-        <component>HTTPFS_GATEWAY</component>
-      </service>
-    </group>
-
     <group xsi:type="restart" name="OZONE" title="Ozone">
       <service-check>false</service-check>
       <skippable>true</skippable>
       <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
       <service name="OZONE">
         <component>OZONE_STORAGE_CONTAINER_MANAGER</component>
         <component>OZONE_MANAGER</component>
@@ -498,7 +492,15 @@
       </service>
     </group>
 
-
+    <group xsi:type="restart" name="HTTPFS" title="HttpFS">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+      <service name="HTTPFS">
+        <component>HTTPFS_GATEWAY</component>
+      </service>
+    </group>
     <group xsi:type="restart" name="RANGER_KMS" title="Ranger KMS">
       <service-check>false</service-check>
       <skippable>true</skippable>
@@ -630,8 +632,8 @@
         <service>RANGER</service>
         <service>RANGER_KMS</service>
         <service>HDFS</service>
-        <service>HTTPFS</service>
         <service>OZONE</service>
+        <service>HTTPFS</service>
         <service>KAFKA</service>
         <service>KAFKA3</service>
         <service>YARN</service>
@@ -791,6 +793,17 @@
 
 
 
+    <group xsi:type="restart" name="JUPYTER" title="JupyterHub">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+      <service name="JUPYTER">
+        <component>JUPYTERHUB</component>
+      </service>
+    </group>
+
+
     <group xsi:type="restart" name="AIRFLOW" title="Airflow">
       <service-check>false</service-check>
       <skippable>true</skippable>
@@ -800,17 +813,6 @@
         <component>AIRFLOW_SCHEDULER</component>
         <component>AIRFLOW_WEBSERVER</component>
         <component>AIRFLOW_WORKER</component>
-      </service>
-    </group>
-
-
-    <group xsi:type="restart" name="JUPYTER" title="JupyterHub">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-      <service name="JUPYTER">
-        <component>JUPYTERHUB</component>
       </service>
     </group>
 
@@ -892,8 +894,8 @@
         <!--  no-op to upgrade  <service>SPARK3</service> -->
         <service>ATLAS</service>
         <service>ZEPPELIN</service>
-        <service>HUE</service>
         <service>AIRFLOW</service>
+        <service>HUE</service>
         <service>JUPYTER</service>
         <service>OOZIE</service>
       </priority>
@@ -1371,22 +1373,6 @@
       </component>
     </service>
 
-    <service name="HUE">
-      <component name="HUE_SERVER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-    </service>
-
-    <service name="JUPYTER">
-      <component name="JUPYTERHUB">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-    </service>
-
     <service name="AIRFLOW">
       <component name="AIRFLOW_SCHEDULER">
         <upgrade>
@@ -1402,6 +1388,21 @@
         <upgrade>
           <task xsi:type="restart-task" />
         </upgrade>
+      </component>
+    </service>
+
+    <service name="HUE">
+      <component name="HUE_SERVER">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+
+    <service name="JUPYTER">
+      <component name="JUPYTERHUB">
+        <upgrade>
+          <task xsi:type="restart-task"/>        </upgrade>
       </component>
     </service>
 
@@ -1524,14 +1525,6 @@
         </upgrade>
       </component>
     </service>
-    <service name="HTTPFS">
-      <component name="HTTPFS_GATEWAY">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-    </service>
-
     <service name="OZONE">
       <component name="OZONE_STORAGE_CONTAINER_MANAGER">
         <upgrade>
@@ -1565,5 +1558,14 @@
       </component>
     </service>
 
-</processing>
+    <service name="HTTPFS">
+      <component name="HTTPFS_GATEWAY">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+
+
+  </processing>
 </upgrade>

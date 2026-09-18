@@ -17,8 +17,8 @@
 -->
 
 <upgrade xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="upgrade-pack.xsd">
-  <target>3.4.*.*</target>
-  <target-stack>ODP-3.4</target-stack>
+  <target>3.1.*.*</target>
+  <target-stack>ODP-3.1</target-stack>
   <skip-failures>false</skip-failures>
   <skip-service-check-failures>false</skip-service-check-failures>
   <type>ROLLING</type>
@@ -331,17 +331,6 @@
       </service>
     </group>
 
-    <!--  no-op to upgrade
-    <group name="SPARK3" title="Spark3">
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <service-check>false</service-check>
-      <service name="SPARK3">
-        <component>SPARK3_JOBHISTORYSERVER</component>
-        <component>SPARK3_THRIFTSERVER</component>
-      </service>
-    </group>-->
-
     <group name="SPARK3_3_3_3" title="Spark3 3.3.3">
       <skippable>true</skippable>
       <supports-auto-skip-failure>false</supports-auto-skip-failure>
@@ -423,13 +412,6 @@
       </service>
     </group>
 
-    <!--  no-op to upgrade
-    <group name="SPARK3_CLIENTS" title="Spark3 Clients">
-      <skippable>true</skippable>
-      <service name="SPARK3">
-        <component>SPARK3_CLIENT</component>
-      </service>
-    </group>-->
 
     <group name="SPARK3_3_3_3_CLIENTS" title="Spark3 3.3.3 Clients">
       <skippable>true</skippable>
@@ -535,7 +517,6 @@
       </service>
 
 
-
       <service name="SQOOP">
         <component>SQOOP</component>
       </service>
@@ -590,12 +571,8 @@
       </exclude>
     </group>
 
-    <group name="KNOX" title="Knox">
-      <skippable>true</skippable>
-      <service name="KNOX">
-        <component>KNOX_GATEWAY</component>
-      </service>
-    </group>
+
+
 
     <group xsi:type="cluster" name="FINALIZE_PRE_CHECK" title="Finalize {{direction.text.proper}} Pre-Check">
       <direction>UPGRADE</direction>
@@ -716,7 +693,7 @@
             <script>scripts/kms_server.py</script>
             <function>setup_ranger_kms_database</function>
           </task>
-          <!-- <task xsi:type="configure" id="odp_3_1_ranger_kms_keysecure_configuration">-->
+          <!--<task xsi:type="configure" id="odp_3_1_ranger_kms_keysecure_configuration"/>-->
         </pre-upgrade>
 
         <pre-downgrade>
@@ -760,6 +737,76 @@
         </upgrade>
       </component>
     </service>
+
+    <service name="SPARK3_3_3_3">
+      <component name="SPARK3_3_3_3_JOBHISTORYSERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="SPARK3_3_3_3_THRIFTSERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="LIVY3_3_3_3_SERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="SPARK3_3_3_3_CLIENT">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+    </service>
+
+    <service name="SPARK3_3_5_1">
+      <component name="SPARK3_3_5_1_JOBHISTORYSERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="SPARK3_3_5_1_THRIFTSERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="LIVY3_3_5_1_SERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="SPARK3_3_5_1_CLIENT">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+    </service>
+
+    <service name="SPARK3">
+      <component name="SPARK3_JOBHISTORYSERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="SPARK3_THRIFTSERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="LIVY3_SERVER">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+      <component name="SPARK3_CLIENT">
+        <upgrade>
+          <task xsi:type="restart-task" />
+        </upgrade>
+      </component>
+    </service>
+
     <service name="KAFKA3">
       <component name="KAFKA3_BROKER">
         <upgrade>
@@ -925,7 +972,6 @@
     </service>
 
 
-
     <service name="SQOOP">
       <component name="SQOOP">
         <upgrade>
@@ -1002,100 +1048,6 @@
         </upgrade>
       </component>
     </service>
-
-    <service name="SPARK3_3_3_3">
-      <component name="SPARK3_3_3_3_JOBHISTORYSERVER">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-      <component name="SPARK3_3_3_3_THRIFTSERVER">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-      <component name="LIVY3_3_3_3_SERVER">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-      <component name="SPARK3_3_3_3_CLIENT">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-    </service>
-
-    <service name="SPARK3_3_5_1">
-      <component name="SPARK3_3_5_1_JOBHISTORYSERVER">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-      <component name="SPARK3_3_5_1_THRIFTSERVER">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-      <component name="LIVY3_3_5_1_SERVER">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-      <component name="SPARK3_3_5_1_CLIENT">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-    </service>
-
-    <service name="SPARK3">
-      <component name="SPARK3_JOBHISTORYSERVER">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-      <component name="SPARK3_THRIFTSERVER">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-      <component name="LIVY3_SERVER">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-      <component name="SPARK3_CLIENT">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-    </service>
-
-    <!--  no-op to upgrade
-    <service name="SPARK3">
-      <component name="SPARK3_JOBHISTORYSERVER">
-        <pre-upgrade>
-          <task xsi:type="server_action" class="org.apache.ambari.server.serveraction.upgrades.FixSparkYarnIdentity">
-            <summary>Adding spark.yarn.keytab/principal properties</summary>
-          </task>
-        </pre-upgrade>
-        <pre-downgrade />
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-      <component name="SPARK3_THRIFTSERVER">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-      <component name="SPARK3_CLIENT">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-    </service>-->
     <service name="IMPALA">
       <component name="IMPALA_CATALOG_SERVICE">
         <upgrade>
@@ -1118,6 +1070,7 @@
         </upgrade>
       </component>
     </service>
+
 
     <service name="ZEPPELIN">
       <component name="ZEPPELIN_MASTER">

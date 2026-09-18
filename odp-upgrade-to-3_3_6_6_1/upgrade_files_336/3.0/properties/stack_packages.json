@@ -1153,17 +1153,41 @@
           ]
         }
       },
-      "HUE": {
-        "HUE_SERVER": {
-          "STACK-SELECT-PACKAGE": "hue-server",
+      "AIRFLOW": {
+        "AIRFLOW_WEBSERVER": {
+          "STACK-SELECT-PACKAGE": "airflow",
           "INSTALL": [
-            "hue-server"
+            "airflow"
           ],
           "PATCH": [
-            "hue-server"
+            "airflow"
           ],
           "STANDARD": [
-            "hue-server"
+            "airflow"
+          ]
+        },
+        "AIRFLOW_SCHEDULER": {
+          "STACK-SELECT-PACKAGE": "airflow",
+          "INSTALL": [
+            "airflow"
+          ],
+          "PATCH": [
+            "airflow"
+          ],
+          "STANDARD": [
+            "airflow"
+          ]
+        },
+        "AIRFLOW_WORKER": {
+          "STACK-SELECT-PACKAGE": "airflow",
+          "INSTALL": [
+            "airflow"
+          ],
+          "PATCH": [
+            "airflow"
+          ],
+          "STANDARD": [
+            "airflow"
           ]
         }
       },
@@ -1241,41 +1265,17 @@
           ]
         }
       },
-      "AIRFLOW": {
-        "AIRFLOW_WEBSERVER": {
-          "STACK-SELECT-PACKAGE": "airflow",
+      "HUE": {
+        "HUE_SERVER": {
+          "STACK-SELECT-PACKAGE": "hue-server",
           "INSTALL": [
-            "airflow"
+            "hue-server"
           ],
           "PATCH": [
-            "airflow"
+            "hue-server"
           ],
           "STANDARD": [
-            "airflow"
-          ]
-        },
-        "AIRFLOW_SCHEDULER": {
-          "STACK-SELECT-PACKAGE": "airflow",
-          "INSTALL": [
-            "airflow"
-          ],
-          "PATCH": [
-            "airflow"
-          ],
-          "STANDARD": [
-            "airflow"
-          ]
-        },
-        "AIRFLOW_WORKER": {
-          "STACK-SELECT-PACKAGE": "airflow",
-          "INSTALL": [
-            "airflow"
-          ],
-          "PATCH": [
-            "airflow"
-          ],
-          "STANDARD": [
-            "airflow"
+            "hue-server"
           ]
         }
       },
@@ -1703,7 +1703,8 @@
       "TEZ": ["HIVE"],
       "MAPREDUCE2": ["HIVE"],
       "OOZIE": ["MAPREDUCE2"],
-      "OZONE": ["ZOOKEEPER"]
+      "OZONE": ["ZOOKEEPER"],
+      "HTTPFS": ["HDFS"]
     }
   }
 }

@@ -105,15 +105,15 @@
         </task>
       </execute-stage>
 
-      <execute-stage service="HUE" component="HUE_SERVER" title="Pre Upgrade Hue Backup">
-        <task xsi:type="manual">
-          <message>Before continuing, please backup the Hue database referenced by the Hue server located on {{hosts.all}}.</message>
-        </task>
-      </execute-stage>
-
       <execute-stage service="AIRFLOW" component="AIRFLOW_SCHEDULER" title="Pre Upgrade Airflow Backup">
         <task xsi:type="manual">
           <message>Before continuing, please backup the Airflow metadata database referenced by the Airflow Scheduler located on {{hosts.all}}.</message>
+        </task>
+      </execute-stage>
+
+      <execute-stage service="HUE" component="HUE_SERVER" title="Pre Upgrade Hue Backup">
+        <task xsi:type="manual">
+          <message>Before continuing, please backup the Hue database referenced by the Hue server located on {{hosts.all}}.</message>
         </task>
       </execute-stage>
 
@@ -211,8 +211,6 @@
       <priority>
         <service>ZOOKEEPER</service>
         <service>HDFS</service>
-        <service>HTTPFS</service>
-        <service>OZONE</service>
         <service>YARN</service>
         <service>MAPREDUCE2</service>
         <service>HBASE</service>
@@ -220,6 +218,7 @@
       <exclude>
         <service>AMBARI_METRICS</service>
         <service>LOGSEARCH</service>
+        <service>AIRFLOW</service>
       </exclude>
     </group>
 
@@ -262,18 +261,30 @@
 
 
 
+    <group name="HTTPFS" title="HttpFS">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="HTTPFS">
+        <component>HTTPFS_GATEWAY</component>
+      </service>
+    </group>
+
     <group name="SERVICE_CHECK_2" title="All Service Checks" xsi:type="service-check">
       <direction>UPGRADE</direction>
       <skippable>true</skippable>
       <priority>
         <service>ZOOKEEPER</service>
         <service>HDFS</service>
+        <service>OZONE</service>
+        <service>HTTPFS</service>
         <service>YARN</service>
         <service>HBASE</service>
       </priority>
       <exclude>
         <service>AMBARI_METRICS</service>
         <service>LOGSEARCH</service>
+        <service>AIRFLOW</service>
       </exclude>
     </group>
 
@@ -383,6 +394,16 @@
 
 
 
+    <group name="JUPYTER" title="JupyterHub">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="JUPYTER">
+        <component>JUPYTERHUB</component>
+      </service>
+    </group>
+
+
     <group name="AIRFLOW" title="Airflow">
       <skippable>true</skippable>
       <supports-auto-skip-failure>false</supports-auto-skip-failure>
@@ -391,16 +412,6 @@
         <component>AIRFLOW_SCHEDULER</component>
         <component>AIRFLOW_WEBSERVER</component>
         <component>AIRFLOW_WORKER</component>
-      </service>
-    </group>
-
-
-    <group name="JUPYTER" title="JupyterHub">
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <service-check>false</service-check>
-      <service name="JUPYTER">
-        <component>JUPYTERHUB</component>
       </service>
     </group>
 
@@ -560,16 +571,6 @@
         <component>PINOT_MINION</component>
       </service>
     </group>
-    <group name="HTTPFS" title="HttpFS">
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <service-check>false</service-check>
-      <service name="HTTPFS">
-        <component>HTTPFS_GATEWAY</component>
-      </service>
-    </group>
-
-
 
     <group name="SERVICE_CHECK_3" title="All Service Checks" xsi:type="service-check">
       <direction>UPGRADE</direction>
@@ -580,6 +581,8 @@
         <service>YARN</service>
         <service>HBASE</service>
         <service>DRUID</service>
+        <service>AIRFLOW</service>
+        <service>HUE</service>
       </priority>
       <exclude>
         <service>AMBARI_METRICS</service>
@@ -1130,22 +1133,6 @@
       </component>
     </service>
 
-    <service name="HUE">
-      <component name="HUE_SERVER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-    </service>
-
-    <service name="JUPYTER">
-      <component name="JUPYTERHUB">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-    </service>
-
     <service name="AIRFLOW">
       <component name="AIRFLOW_SCHEDULER">
         <upgrade>
@@ -1161,6 +1148,21 @@
         <upgrade>
           <task xsi:type="restart-task" />
         </upgrade>
+      </component>
+    </service>
+
+    <service name="HUE">
+      <component name="HUE_SERVER">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+
+    <service name="JUPYTER">
+      <component name="JUPYTERHUB">
+        <upgrade>
+          <task xsi:type="restart-task"/>        </upgrade>
       </component>
     </service>
 
@@ -1318,14 +1320,6 @@
         </upgrade>
       </component>
     </service>
-    <service name="HTTPFS">
-      <component name="HTTPFS_GATEWAY">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-    </service>
-
     <service name="OZONE">
       <component name="OZONE_STORAGE_CONTAINER_MANAGER">
         <upgrade>
@@ -1359,5 +1353,14 @@
       </component>
     </service>
 
-</processing>
+    <service name="HTTPFS">
+      <component name="HTTPFS_GATEWAY">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+
+
+  </processing>
 </upgrade>
