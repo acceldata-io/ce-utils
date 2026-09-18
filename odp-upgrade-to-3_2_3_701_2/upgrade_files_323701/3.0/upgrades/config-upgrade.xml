@@ -1,0 +1,135 @@
+<?xml version="1.0"?>
+<!--
+   Licensed to the Apache Software Foundation (ASF) under one or more
+   contributor license agreements.  See the NOTICE file distributed with
+   this work for additional information regarding copyright ownership.
+   The ASF licenses this file to You under the Apache License, Version 2.0
+   (the "License"); you may not use this file except in compliance with
+   the License.  You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+
+<upgrade-config-changes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="upgrade-config.xsd">
+  <services>
+
+    <service name="KAFKA">
+      <component name="KAFKA_BROKER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_0_x_kafka_plaintext_sasl_removal">
+            <type>kafka-broker</type>
+            <set key="security.inter.broker.protocol" value="SASL_PLAINTEXT"
+                 if-type="kafka-broker" if-key="security.inter.broker.protocol" if-value="PLAINTEXTSASL"/>
+            <replace key="listeners" find="PLAINTEXTSASL" replace-with="SASL_PLAINTEXT"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="ATLAS">
+      <component name="ATLAS_SERVER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_0_x_atlas_plaintext_sasl_removal" summary="Updating Atlas security protocol for Kafka">
+            <type>application-properties</type>
+            <set key="atlas.kafka.security.protocol" value="SASL_PLAINTEXT"
+                 if-type="application-properties" if-key="atlas.kafka.security.protocol" if-key-state="present" if-value="PLAINTEXTSASL"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="RANGER">
+      <component name="RANGER_TAGSYNC">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_0_x_tagsync_plaintext_sasl_removal" summary="Updating Tagsync security protocol for Kafka">
+            <type>tagsync-application-properties</type>
+            <set key="atlas.kafka.security.protocol" value="SASL_PLAINTEXT"
+                 if-type="tagsync-application-properties" if-key="atlas.kafka.security.protocol" if-key-state="present" if-value="PLAINTEXTSASL"/>
+          </definition>
+        </changes>
+      </component>
+
+      <component name="RANGER_ADMIN">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_1_0_0_ranger_services_heap_size_configuration" summary="Upgrading ranger-env configurations for Ranger service components">
+            <type>ranger-env</type>
+
+            <replace key="content" find="export RANGER_USER={{unix_user}}" replace-with="export RANGER_USER={{unix_user}}&#xA;ranger_admin_max_heap_size={{ranger_admin_max_heap_size}}&#xA;" if-key="content" if-type="ranger-env" if-key-state="present" if-value="ranger_admin_max_heap_size={{ranger_admin_max_heap_size}}" if-value-match-type="partial" if-value-not-matched="true" />
+
+            <set key="ranger_admin_max_heap_size" value="1g" if-type="ranger-env" if-key="ranger_admin_max_heap_size" if-key-state="absent"/>
+
+            <replace key="content" find="export UNIX_USERSYNC_USER={{unix_user}}" replace-with="export UNIX_USERSYNC_USER={{unix_user}}&#xA;ranger_usersync_max_heap_size={{ranger_usersync_max_heap_size}}&#xA;" if-key="content" if-type="ranger-env" if-key-state="present" if-value="ranger_usersync_max_heap_size={{ranger_usersync_max_heap_size}}" if-value-match-type="partial" if-value-not-matched="true" />
+
+            <set key="ranger_usersync_max_heap_size" value="1g" if-type="ranger-env" if-key="ranger_usersync_max_heap_size" if-key-state="absent"/>
+
+            <replace key="content" find="export UNIX_TAGSYNC_USER={{unix_user}}" replace-with="export UNIX_TAGSYNC_USER={{unix_user}}&#xA;ranger_tagsync_max_heap_size={{ranger_tagsync_max_heap_size}}&#xA;" if-key="content" if-type="ranger-env" if-key-state="present" if-value="ranger_tagsync_max_heap_size={{ranger_tagsync_max_heap_size}}" if-value-match-type="partial" if-value-not-matched="true" />
+
+            <set key="ranger_tagsync_max_heap_size" value="1g" if-type="ranger-env" if-key="ranger_tagsync_max_heap_size" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3_1_0_0_ranger_patch_retry_configuration" summary="Upgrading admin-properties configurations for Ranger service components">
+            <type>admin-properties</type>
+            <set key="PATCH_RETRY_INTERVAL" value="120" if-type="admin-properties" if-key="PATCH_RETRY_INTERVAL" if-key-state="absent"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="RANGER_KMS">
+      <component name="RANGER_KMS_SERVER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_1_0_0_ranger_kms_services_heap_size_configuration">
+            <type>kms-env</type>
+            <replace key="content" find="export KMS_USER={{kms_user}}" replace-with="export KMS_USER={{kms_user}}&#xA;ranger_kms_max_heap_size={{ranger_kms_max_heap_size}}&#xA;"/>
+
+            <set key="ranger_kms_max_heap_size" value="1g" if-type="ranger-env" if-key="ranger_kms_max_heap_size" if-key-state="absent"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <!-- OCR-2482: keep spark2_log_umask available across Ambari/stack upgrades.
+         - set property when missing (Ambari UI + Jinja)
+         - inject umask into spark2-env content when older clusters lack it -->
+    <service name="SPARK2">
+      <component name="SPARK2_JOBHISTORYSERVER">
+        <changes>
+          <definition xsi:type="configure" id="odp_ocr_2482_spark2_log_umask" summary="Ensure spark2_log_umask exists so service logs stay world-readable under host umask 027">
+            <type>spark2-env</type>
+            <set key="spark2_log_umask" value="022"
+                 if-type="spark2-env" if-key="spark2_log_umask" if-key-state="absent"/>
+            <replace key="content"
+                     find="#!/usr/bin/env bash"
+                     replace-with="#!/usr/bin/env bash&#xA;&#xA;# Override host umask so service logs are world-readable (644).&#xA;umask {{ spark2_log_umask | default(&quot;022&quot;) }}&#xA;"
+                     if-key="content" if-type="spark2-env" if-key-state="present"
+                     if-value="umask" if-value-match-type="partial" if-value-not-matched="true"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <!-- OCR-2486 / OCR-2482: ensure Knox knox-env properties survive upgrades.
+         New config types custom-topologies / custom-topology-resources are created by
+         EnsureKnoxUpgradeConfigs server action (create_and_configure cannot run cross-stack). -->
+    <service name="KNOX">
+      <component name="KNOX_GATEWAY">
+        <changes>
+          <definition xsi:type="configure" id="odp_ocr_2486_knox_env" summary="Ensure knox_umask and knox-env template exist after upgrade">
+            <type>knox-env</type>
+            <set key="knox_umask" value="022"
+                 if-type="knox-env" if-key="knox_umask" if-key-state="absent"/>
+            <set key="content"
+                 value="#!/usr/bin/env bash&#xA;#&#xA;# Set Knox process umask so log files are world-readable (644).&#xA;umask {{ knox_umask | default(&quot;022&quot;) }}&#xA;"
+                 if-type="knox-env" if-key="content" if-key-state="absent"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+  </services>
+</upgrade-config-changes>
