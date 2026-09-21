@@ -6,7 +6,7 @@ Sets hadoop.proxyuser.knox.groups and hadoop.proxyuser.knox.hosts to "*"
 from knox_setup.steps.base import get_ambari_configs
 
 
-def run(protocol: str = "http"):
+def run():
     """
     Configure Knox proxy user settings in core-site.
     Sets hadoop.proxyuser.knox.groups and hadoop.proxyuser.knox.hosts to "*"

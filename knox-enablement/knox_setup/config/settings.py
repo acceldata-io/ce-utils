@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 class SSHConfig:
     HOST = os.getenv("SSH_HOST", "localhost")
     PORT = int(os.getenv("SSH_PORT", 22))
