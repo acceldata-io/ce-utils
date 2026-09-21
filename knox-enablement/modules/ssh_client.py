@@ -1,6 +1,6 @@
 import paramiko
 from typing import Tuple, Optional
-from knox_setup.config.settings import SSHConfig
+from config.settings import SSHConfig
 
 
 class SSHClient:
@@ -8,11 +8,11 @@ class SSHClient:
 
     def __init__(
         self,
-        host: str|None = None,
-        port: int|None = None,
-        username: str|None = None,
-        password: str|None = None,
-        key_path: str|None = None,
+        host: str = None,
+        port: int = None,
+        username: str = None,
+        password: str = None,
+        key_path: str = None,
     ):
         self.host = host or SSHConfig.HOST
         self.port = port or SSHConfig.PORT
@@ -70,8 +70,6 @@ class SSHClient:
         if not self.client:
             self.connect()
 
-        assert(self.client is not None)
-
         print(f"[SSH] Executing: {command}")
         stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
 
@@ -101,7 +99,7 @@ class SSHClient:
                     f"Command failed with exit code {exit_code}: {stderr_str}"
                 )
         else:
-            print("[SSH] Command completed successfully")
+            print(f"[SSH] Command completed successfully")
 
         return exit_code, stdout_str, stderr_str
 
@@ -121,13 +119,12 @@ class SSHClient:
         """Upload a file to the remote host."""
         if not self.client:
             self.connect()
-        assert(self.client is not None)
 
         sftp = self.client.open_sftp()
         try:
             print(f"[SSH] Uploading {local_path} -> {remote_path}")
             sftp.put(local_path, remote_path)
-            print("[SSH] Upload complete")
+            print(f"[SSH] Upload complete")
         finally:
             sftp.close()
 
@@ -135,13 +132,12 @@ class SSHClient:
         """Download a file from the remote host."""
         if not self.client:
             self.connect()
-        assert(self.client is not None)
 
         sftp = self.client.open_sftp()
         try:
             print(f"[SSH] Downloading {remote_path} -> {local_path}")
             sftp.get(remote_path, local_path)
-            print("[SSH] Download complete")
+            print(f"[SSH] Download complete")
         finally:
             sftp.close()
 
@@ -149,7 +145,7 @@ class SSHClient:
         """Check if a file exists on the remote host."""
         if not self.client:
             self.connect()
-        assert(self.client is not None)
+
         sftp = self.client.open_sftp()
         try:
             sftp.stat(remote_path)
