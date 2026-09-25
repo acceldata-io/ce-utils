@@ -167,7 +167,9 @@
 #     /var/tmp/dr-run-<POLICY_KEY>.lock before doing anything else. If a previous run of
 #     the same policy is still in progress (e.g. a DistCp that outlasts the schedule
 #     interval), the new run prints "Previous run still in progress, skipping" and
-#     exits 0 without touching either cluster. Requires flock (util-linux). See
+#     exits 0 without touching either cluster. Once the same holder has held the lock
+#     for RUN_LOCK_MAX_AGE_SECS (env var, default 86400), skipped runs exit 30 instead,
+#     so a stuck run shows up in monitoring. Requires flock (util-linux). See
 #     acquire_run_lock.
 #   - DIR_BOOTSTRAP_MODE is HARDCODED to "yes" (auto-bootstrap missing destination
 #     directories). It is NOT a CLI argument and NOT an environment variable --
@@ -322,6 +324,10 @@
 #     one directory plus this flag re-baselines exactly that directory.
 #     WARNING: a re-baseline performs a FULL copy that overwrites the destination.
 #     Example: export FORCE_REBASELINE=yes
+#   - RUN_LOCK_MAX_AGE_SECS - Alert threshold for the per-policy run lock (default: 86400 = 24 hours).
+#     A run skipped because the lock is held exits 0, or 30 once the current holder has held the lock
+#     this long. Set it above the longest expected run (a run's full DistCp time).
+#     Example: export RUN_LOCK_MAX_AGE_SECS=43200
 #   - LOG_RETAIN            - Log cleanup (default: -1 = never delete logs).
 #     A positive N keeps only the newest N run logs per policy under LOG_PATH (in single-file
 #     LOG_PATH mode: the newest N rotated backups), plus the newest N rollback-diff and N
@@ -3002,57 +3008,141 @@ compute_policy_key() {
 #
 # The lock is an flock(1) on ${RUN_LOCK_DIR}/dr-run-<POLICY_KEY>.lock, taken non-blocking before log setup
 # (so a skipped run does not rotate or prune the running run's log). If another run holds it, this run
-# prints "previous run still in progress, skipping" and exits 0 without touching either cluster.
+# prints "previous run still in progress, skipping" and exits 0 without touching either cluster -- or exits
+# 30 once the holder has held it for RUN_LOCK_MAX_AGE_SECS, so a holder that never finishes is not hidden
+# behind an endless series of successful skips.
 #
 # The kernel releases the lock when the last process holding the file descriptor exits, so there is no stale
-# lock after a crash or kill -9. Child processes inherit the descriptor: if the script is killed while a
-# "hadoop distcp" client it started is still running, the lock stays held until that client exits, which
-# keeps the next run from starting a second copy into the same destination.
+# lock after a crash or kill -9. Processes the script starts inherit the descriptor. If the script is killed
+# while a "hadoop distcp" client it started is still running, the lock stays held until that client exits:
+# in Kerberos mode the client itself holds the descriptor; in sudo mode sudo closes it for the client, but
+# the log tee process holds it and exits only once the client (which writes to it) has exited. This keeps
+# the next run from starting a second copy into the same destination.
 #
-# The lock file itself is never deleted: deleting it while a run holds it would let the next run lock a new
-# file at the same path and run concurrently. It holds the current holder's PID, host, start time and log
-# path, for the skip message and for operators.
+# The lock file itself is never deleted or replaced: doing so while a run holds it would let the next run
+# lock a new file at the same path and run concurrently. It holds the current holder's pid, host, start time
+# and log path, for the skip message, the RUN_LOCK_MAX_AGE_SECS check and operators. If the file was created
+# by another user and cannot be opened for writing, it is opened read-only: the lock still works, but the
+# holder's details are not recorded (a WARN names the chown that fixes it).
 #
-# If the lock cannot be taken (flock not installed, or the lock file cannot be opened), the run continues
-# without it and ROLLBACK_ON_FAILURE is forced to "no" for that run: an overlapping run then only fails with
-# "target has been modified", instead of rolling back a copy in progress.
+# If the lock cannot be taken (flock not installed, the lock file cannot be opened, or flock fails with an
+# error), the run continues without it and ROLLBACK_ON_FAILURE=yes is forced to "no" for that run: an
+# overlapping run then only fails with "target has been modified", instead of rolling back a copy in
+# progress.
 # -----------------------------------------------------------------------------
 RUN_LOCK_DIR="/var/tmp"
 RUN_LOCK_FILE=""
 RUN_LOCK_FD=""
 RUN_LOCK_HELD="no"
+RUN_LOCK_INFO_WRITABLE="no"
 RUN_LOCK_UNAVAILABLE_REASON=""
+# A run that finds the lock held for at least this long exits 30 instead of 0, so a holder that never
+# finishes (e.g. a hung DistCp client) surfaces in monitoring instead of every later run silently
+# reporting success. Default 86400 (24 hours); set it above the longest expected run.
+RUN_LOCK_MAX_AGE_SECS="${RUN_LOCK_MAX_AGE_SECS:-86400}"
+
+# Elapsed seconds of a running process, from "ps -o etime=" ("[[dd-]hh:]mm:ss"; "etimes" is not available
+# on every ps). Prints nothing if the process is not running or the value cannot be parsed.
+_process_elapsed_secs() {
+    local et d=0 h=0 m=0 s=0
+    et="$(ps -o etime= -p "$1" 2>/dev/null | tr -d ' ')" || return 0
+    [[ "$et" =~ ^(([0-9]+)-)?(([0-9]+):)?([0-9]+):([0-9]+)$ ]] || return 0
+    d=$((10#${BASH_REMATCH[2]:-0}))
+    h=$((10#${BASH_REMATCH[4]:-0}))
+    m=$((10#${BASH_REMATCH[5]}))
+    s=$((10#${BASH_REMATCH[6]}))
+    echo $((((d * 24 + h) * 60 + m) * 60 + s))
+}
+
+# How long the current lock holder has held the lock, from the "pid" and "started_epoch" it recorded in the
+# lock file. Prints nothing unless that pid is still running AND started when the file says it did (within
+# 300 seconds), so leftover details from an earlier holder, or a reused pid, are never reported as the
+# current holder's age.
+_run_lock_holder_age_secs() {
+    local pid epoch elapsed now
+    pid="$(sed -n 's/^pid: \([0-9][0-9]*\)$/\1/p' "$RUN_LOCK_FILE" 2>/dev/null | head -n 1)"
+    epoch="$(sed -n 's/^started_epoch: \([0-9][0-9]*\)$/\1/p' "$RUN_LOCK_FILE" 2>/dev/null | head -n 1)"
+    [[ -n "$pid" && -n "$epoch" ]] || return 0
+    elapsed="$(_process_elapsed_secs "$pid")"
+    [[ -n "$elapsed" ]] || return 0
+    now=$(date +%s)
+    (( now - elapsed - epoch <= 300 && epoch - (now - elapsed) <= 300 )) || return 0
+    echo $((now - epoch))
+}
 
 acquire_run_lock() {
     compute_policy_key
     RUN_LOCK_FILE="${RUN_LOCK_DIR}/dr-run-${POLICY_KEY}.lock"
 
+    if ! [[ "$RUN_LOCK_MAX_AGE_SECS" =~ ^[1-9][0-9]*$ ]]; then
+        echo "[ERROR] RUN_LOCK_MAX_AGE_SECS must be a positive number of seconds: '$RUN_LOCK_MAX_AGE_SECS'" >&2
+        exit 29
+    fi
+
     if ! command -v flock >/dev/null 2>&1; then
         RUN_LOCK_UNAVAILABLE_REASON="flock command not found (install util-linux)"
         return 0
     fi
-    # Opened for append so a run that does not get the lock leaves the holder's details in place.
-    if ! { exec {RUN_LOCK_FD}>>"$RUN_LOCK_FILE"; } 2>/dev/null; then
+    # The lock file lives in world-writable /var/tmp under a predictable name. The holder writes its details
+    # into it, so a symlink planted at that path would have this run (often as root) truncate the file it
+    # points to. The script never creates a symlink there, so one is refused outright.
+    if [[ -L "$RUN_LOCK_FILE" ]]; then
+        RUN_LOCK_UNAVAILABLE_REASON="lock file $RUN_LOCK_FILE is a symlink (-> $(readlink "$RUN_LOCK_FILE" 2>/dev/null || echo '?')); refusing to use it. Remove it while no run of this policy is active."
+        return 0
+    fi
+    # Opened for append so a run that does not get the lock leaves the holder's details in place. A lock file
+    # created by a run as another user (e.g. root, then hdfs) may not be writable, and fs.protected_regular
+    # refuses a create-capable open of another user's file in /var/tmp; flock works on a read-only
+    # descriptor, so the file is then opened read-only and only the holder details go unrecorded.
+    if { exec {RUN_LOCK_FD}>>"$RUN_LOCK_FILE"; } 2>/dev/null; then
+        RUN_LOCK_INFO_WRITABLE="yes"
+    elif [[ -f "$RUN_LOCK_FILE" ]] && { exec {RUN_LOCK_FD}<"$RUN_LOCK_FILE"; } 2>/dev/null; then
+        RUN_LOCK_INFO_WRITABLE="no"
+    else
         RUN_LOCK_FD=""
         RUN_LOCK_UNAVAILABLE_REASON="cannot open lock file $RUN_LOCK_FILE ($(_describe_path_access "$RUN_LOCK_FILE"))"
         return 0
     fi
 
-    if ! flock -n "$RUN_LOCK_FD"; then
-        local holder
+    # flock -n exits 1 only when another process holds the lock; any other non-zero exit is an error (bad
+    # descriptor, unsupported filesystem, ...), which must not be mistaken for "previous run in progress" --
+    # that would skip every run with exit 0.
+    local flock_rc=0 flock_err
+    flock_err="$(flock -n "$RUN_LOCK_FD" 2>&1)" || flock_rc=$?
+    if ((flock_rc != 0 && flock_rc != 1)); then
+        exec {RUN_LOCK_FD}>&-
+        RUN_LOCK_FD=""
+        RUN_LOCK_UNAVAILABLE_REASON="flock failed on $RUN_LOCK_FILE (exit $flock_rc): ${flock_err:-no error output}"
+        return 0
+    fi
+    if ((flock_rc == 1)); then
+        local holder holder_age
         holder="$(tr '\n' ' ' <"$RUN_LOCK_FILE" 2>/dev/null || true)"
+        holder_age="$(_run_lock_holder_age_secs)"
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Previous run still in progress, skipping."
         echo "[INFO] Policy: $POLICY_KEY"
         echo "[INFO] Lock file: $RUN_LOCK_FILE"
         echo "[INFO] Holder: ${holder:-unknown}"
+        if [[ -z "$holder_age" ]]; then
+            echo "[INFO] Holder age: unknown (the recorded pid is not running, or the details belong to an earlier holder; the lock is held by a process it left running, e.g. a DistCp client)"
+        elif ((holder_age >= RUN_LOCK_MAX_AGE_SECS)); then
+            echo "[ERROR] The lock has been held for ${holder_age}s (>= RUN_LOCK_MAX_AGE_SECS=${RUN_LOCK_MAX_AGE_SECS}s). No replication has run for this policy since then."
+            echo "[ERROR] Check whether the holder is still making progress (see its log above, and: yarn application -list | grep pulse-dr-replication)."
+            echo "[ERROR] If it is stuck, kill its YARN job and the holder process; the lock is released when it exits. Do not delete the lock file."
+            exit 30
+        else
+            echo "[INFO] Holder age: ${holder_age}s (alert threshold RUN_LOCK_MAX_AGE_SECS=${RUN_LOCK_MAX_AGE_SECS}s)"
+        fi
         exit 0
     fi
 
     RUN_LOCK_HELD="yes"
+    [[ "$RUN_LOCK_INFO_WRITABLE" == "yes" && ! -L "$RUN_LOCK_FILE" ]] || return 0
     {
         echo "pid: $$"
         echo "host: $(hostname -f 2>/dev/null || hostname)"
         echo "started_at: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+        echo "started_epoch: $(date +%s)"
     } >"$RUN_LOCK_FILE" 2>/dev/null || true
 }
 
@@ -3060,17 +3150,23 @@ acquire_run_lock() {
 # applies the ROLLBACK_ON_FAILURE fallback when the lock could not be taken. Called once, after log setup.
 finish_run_lock_setup() {
     if [[ "$RUN_LOCK_HELD" == "yes" ]]; then
-        echo "log: $LOG" >>"$RUN_LOCK_FILE" 2>/dev/null || true
         log "[INFO] Run lock acquired: $RUN_LOCK_FILE"
+        if [[ "$RUN_LOCK_INFO_WRITABLE" == "yes" ]]; then
+            [[ -L "$RUN_LOCK_FILE" ]] || echo "log: $LOG" >>"$RUN_LOCK_FILE" 2>/dev/null || true
+        else
+            log "[WARN] Run lock file is not writable by $(id -un 2>/dev/null || id -u) ($(_describe_path_access "$RUN_LOCK_FILE")). The lock still works, but this run's details are not recorded in it, so a skipped run cannot show this run's details or apply the RUN_LOCK_MAX_AGE_SECS alert."
+            log "[WARN] To fix, while no run of this policy is active, as root: chown $(id -un 2>/dev/null || id -u) $RUN_LOCK_FILE"
+        fi
         return 0
     fi
 
     log "[WARN] Run lock NOT acquired: $RUN_LOCK_UNAVAILABLE_REASON"
     log "[WARN] Overlapping runs of this policy are not prevented for this run."
+    # Only "yes" is overridden: any other value is left for main()'s yes/no validation to accept or reject.
     if [[ "${ROLLBACK_ON_FAILURE,,}" == "yes" ]]; then
         log "[WARN] Forcing ROLLBACK_ON_FAILURE=no for this run (was '$ROLLBACK_ON_FAILURE'): without the run lock, a rollback could revert a copy another run is still writing."
+        ROLLBACK_ON_FAILURE="no"
     fi
-    ROLLBACK_ON_FAILURE="no"
 }
 
 # "<path>: owner <user:group>, mode <perms>" for the nearest existing ancestor of $1 (or $1 itself), plus the
@@ -6366,9 +6462,10 @@ main "$@"
 #
 #   [8] /var/tmp/dr-run-<POLICY_KEY>.lock
 #         Per-policy run lock (flock). Holds the current holder's pid, host,
-#         start time and log path. Never deleted: the kernel releases the lock
-#         when the holding run exits, so a leftover file does not block runs.
-#         Do not delete it while a run is in progress.
+#         start time (started_at, started_epoch) and log path. Never deleted:
+#         the kernel releases the lock when the holding run exits, so a
+#         leftover file does not block runs. Do not delete or replace it while
+#         a run is in progress.
 #
 # ── ARTIFACTS: HDFS (SOURCE_CLUSTER and/or DEST_CLUSTER) ────────────────────
 #
