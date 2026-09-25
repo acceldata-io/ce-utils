@@ -1,7 +1,7 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
 # Hadoop Disaster Recovery Continuous Replication Script
-# Version: v6
+# Version: 4.2.0
 # Copyright (c) 2025 Acceldata Inc. All rights reserved.
 #
 #
@@ -508,10 +508,22 @@
 #   • Source cluster NameService must be configured in target's hdfs-site.xml.
 #   • Kerberos credentials must be valid for both clusters (if Kerberos enabled).
 #   • YARN queue for DistCp jobs must exist on the target cluster.
+#   • Supported OS: CentOS 7.9, RHEL 8, RHEL 9 (bash 4.2 or later). Content-parity checks and exclude-regex
+#     validation need python3 (or RHEL 8's /usr/libexec/platform-python) or perl; without either they are
+#     skipped with a [WARN].
 #
 # -----------------------------------------------------------------------------
 # ./hadoop_dr_replication_4.2.0.sh "prod-namenode-1.example.com:8020" "dr-namenode-1.example.com:8020" "/data/warehouse,/data/analytics" "dr_snap" 3 "hdfs" "hdfs" "-update -pugpx" "default" "no" "no" "no" "" "pull" "/var/log/hadoop-replication"
 #
+
+# Requires bash >= 4.2 (associative arrays, mapfile, ${var,,}); CentOS 7 ships 4.2, RHEL 8 4.4, RHEL 9 5.1.
+# Empty arrays are expanded as ${arr[@]+"${arr[@]}"} throughout: bash < 4.4 treats "${arr[@]}" on an
+# empty array as an unbound variable under set -u.
+if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ] ||
+    { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 2 ]; }; then
+    echo "[ERROR] This script requires bash 4.2 or later (found: ${BASH_VERSION:-not bash}). Run it with bash, not sh." >&2
+    exit 1
+fi
 
 set -euo pipefail
 SCRIPT_START_TS=$(date +%s)
@@ -1339,7 +1351,7 @@ _derive_one_cluster_ha_props() {
     local -a nn_ids=() pairs=()
     local pair nn_id nn_addr
     IFS=',' read -r -a pairs <<<"$nn_hosts"
-    for pair in "${pairs[@]}"; do
+    for pair in ${pairs[@]+"${pairs[@]}"}; do
         [[ -z "$pair" ]] && continue
         if [[ "$pair" != *=* ]]; then
             echo "[ERROR] Malformed entry in $role_label NN_HOSTS ('$nn_hosts'): '$pair' -- expected '<nn-id>=<host>:<port>'" >&2
@@ -1494,7 +1506,7 @@ resolve_active_namenode_hostport() {
     IFS=',' read -r -a pairs <<<"$nn_hosts"
 
     local pair nn_id nn_addr nn_host jmx_url jmx_response ha_state
-    for pair in "${pairs[@]}"; do
+    for pair in ${pairs[@]+"${pairs[@]}"}; do
         [[ -z "$pair" ]] && continue
         nn_id="${pair%%=*}"
         nn_addr="${pair#*=}"
@@ -2585,18 +2597,18 @@ derive_direction_state() {
     # Build index sets (numeric suffix after last underscore).
     local -A src_idx_set=() dst_idx_set=()
     local s idx
-    for s in "${src_snaps[@]}"; do
+    for s in ${src_snaps[@]+"${src_snaps[@]}"}; do
         idx="${s##*_}"
         [[ "$idx" =~ ^[0-9]+$ ]] && src_idx_set["$idx"]=1
     done
-    for s in "${dst_snaps[@]}"; do
+    for s in ${dst_snaps[@]+"${dst_snaps[@]}"}; do
         idx="${s##*_}"
         [[ "$idx" =~ ^[0-9]+$ ]] && dst_idx_set["$idx"]=1
     done
 
     # Last common index = highest index present in both sets.
     local common_max=-1
-    for idx in "${!src_idx_set[@]}"; do
+    for idx in ${src_idx_set[@]+"${!src_idx_set[@]}"}; do
         if [[ -n "${dst_idx_set[$idx]:-}" ]] && ((idx > common_max)); then
             common_max=$idx
         fi
@@ -2604,10 +2616,10 @@ derive_direction_state() {
 
     # Indices strictly beyond common_max, per side.
     local src_beyond=false dst_beyond=false
-    for idx in "${!src_idx_set[@]}"; do
+    for idx in ${src_idx_set[@]+"${!src_idx_set[@]}"}; do
         ((idx > common_max)) && src_beyond=true
     done
-    for idx in "${!dst_idx_set[@]}"; do
+    for idx in ${dst_idx_set[@]+"${!dst_idx_set[@]}"}; do
         ((idx > common_max)) && dst_beyond=true
     done
 
@@ -2668,6 +2680,21 @@ snapshot_content_signature() {
 }
 
 # -----------------------------------------------------------------------------
+# find_python3: prints the Python 3 interpreter to use, or returns 1 if none is available. RHEL 8 does not
+# install python3 by default but always ships /usr/libexec/platform-python (Python 3.6); CentOS 7 and RHEL 9
+# provide python3 when installed. The embedded Python is kept compatible with 3.6.
+# -----------------------------------------------------------------------------
+find_python3() {
+    if command -v python3 >/dev/null 2>&1; then
+        command -v python3
+    elif [[ -x /usr/libexec/platform-python ]]; then
+        printf '%s\n' /usr/libexec/platform-python
+    else
+        return 1
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # snapshot_filtered_signature: the same "DIR_COUNT FILE_COUNT CONTENT_SIZE" fingerprint as
 # snapshot_content_signature, but counting only paths that DistCp actually replicates when
 # DISTCP_EXCLUDE_PATTERNS is enabled. Excluded paths exist in the source snapshot but are never copied, so a
@@ -2692,8 +2719,8 @@ snapshot_filtered_signature() {
     listing="/tmp/pulse_replication_action_parity_ls_$$_${RANDOM}.txt"
     TEMP_FILES+=("$listing")
 
-    local checker=""
-    if command -v python3 >/dev/null 2>&1; then
+    local checker="" py3=""
+    if py3=$(find_python3); then
         checker="python3"
     elif command -v perl >/dev/null 2>&1; then
         checker="perl"
@@ -2708,7 +2735,7 @@ snapshot_filtered_signature() {
 
     local sig rc=0
     if [[ "$checker" == "python3" ]]; then
-        sig=$(python3 - "$DISTCP_EXCLUDE_FILE" "$listing" "$snapshot_path" "$cluster_uri" <<'PYEOF'
+        sig=$("$py3" - "$DISTCP_EXCLUDE_FILE" "$listing" "$snapshot_path" "$cluster_uri" <<'PYEOF'
 import re, sys
 patterns_file, listing, prefix, uri = sys.argv[1:5]
 pats = []
@@ -3138,9 +3165,9 @@ enable_debug_if_needed() {
 # -----------------------------------------------------------------------------
 validate_exclude_regex_patterns() {
     local filter_file="$1"
-    local checker=""
+    local checker="" py3=""
 
-    if command -v python3 >/dev/null 2>&1; then
+    if py3=$(find_python3); then
         checker="python3"
     elif command -v perl >/dev/null 2>&1; then
         checker="perl"
@@ -3155,7 +3182,7 @@ validate_exclude_regex_patterns() {
         [[ -z "$pattern" || "$pattern" == \#* ]] && continue
 
         if [[ "$checker" == "python3" ]]; then
-            if ! python3 -c 'import re,sys; re.compile(sys.argv[1])' "$pattern" 2>/dev/null; then
+            if ! "$py3" -c 'import re,sys; re.compile(sys.argv[1])' "$pattern" 2>/dev/null; then
                 echo "[ERROR] Invalid regex on line $line_num of $filter_file: '$pattern'" >&2
                 bad_count=$((bad_count + 1))
             fi
@@ -3207,7 +3234,7 @@ resolve_distcp_exclude_file() {
     read -r -a patterns <<< "$DISTCP_EXCLUDE_PATTERNS"
     : > "$DISTCP_EXCLUDE_FILE"
     local p
-    for p in "${patterns[@]}"; do
+    for p in ${patterns[@]+"${patterns[@]}"}; do
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             echo "$line" >> "$DISTCP_EXCLUDE_FILE"
