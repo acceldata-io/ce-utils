@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 #  Hive Cluster Replication Script (Hive BDR)
-#  Version : 4.2.0
+#  Version : v6
 #  Purpose : Replicate one or more Hive databases from a source cluster to a destination cluster using Hive's native REPL DUMP / REPL LOAD commands, and manage direction reversal (failover / failback) between the two clusters.
 # ==============================================================================
 #
