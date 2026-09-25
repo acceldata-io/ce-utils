@@ -37,6 +37,8 @@
 #     HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS   false
 #     HIVE_REPL_SKIP_CRC_CHECK     true
 #     HIVE_REPL_FORCE_DISTCP       false
+#     HIVE_DISTCP_DOAS_USER        (HDFS_USER)
+#     HIVE_REPL_RAW_RESERVED_COPY  false
 #     AUTO_DERIVE_HA_CLIENT_CONFIG     no
 #     SRC_NN_HOSTS / DST_NN_HOSTS  (required if AUTO_DERIVE_HA_CLIENT_CONFIG=yes)
 #     AUTOMATIC_FAILOVER_ENABLED   true
@@ -135,7 +137,7 @@
 #        Local directory where this script writes its log files.
 #
 #   9. HDFS_USER           (default: "hdfs")
-#        The OS user the script uses to run `hdfs dfs` / `hdfs dfsadmin` commands when Kerberos is not in use. See "AUTHENTICATION" below.
+#        The OS user the script uses to run `hdfs dfs` / `hdfs dfsadmin` commands when Kerberos is not in use, and (with or without Kerberos) the default user REPL LOAD's data-copy job runs as - see HIVE_DISTCP_DOAS_USER. See "AUTHENTICATION" below.
 #
 #  10. HIVE_USER           (default: "hdfs")
 #        The username passed to beeline when Kerberos is not in use. See "AUTHENTICATION" below.
@@ -346,7 +348,7 @@
 #   The script automatically detects whether Kerberos is available (via `klist`). This changes how it runs `hdfs`/`beeline` commands:
 #
 #     Kerberos available:
-#       Commands run as the current OS user, using the active Kerberos ticket. HDFS_USER / HIVE_USER are not used.
+#       Commands run as the current OS user, using the active Kerberos ticket. HIVE_USER is not used, and HDFS_USER is used only as the default HIVE_DISTCP_DOAS_USER (the user REPL LOAD's data-copy job runs as).
 #
 #     Kerberos not available:
 #       - `hdfs dfs` / `hdfs dfsadmin` commands run via `sudo -u $HDFS_USER`. HDFS_USER must be an HDFS superuser (or a member of the HDFS supergroup), because operations like `allowSnapshot` and `chmod`/`mkdir` on directories owned by another user (e.g. `hive`) require superuser privileges.
@@ -430,6 +432,14 @@
 #
 #   HIVE_REPL_FORCE_DISTCP
 #     "true" or "false". When "true", every REPL LOAD sets 'hive.exec.copyfile.maxsize'='0', so every copy Hive performs runs as a DistCp job in YARN_QUEUE. By default Hive copies a small set of files (each below hive.exec.copyfile.maxsize, 32 MB by default) directly inside HiveServer2 instead. External table data is always copied with DistCp, so this only changes managed-table and small incremental event copies - each of which then pays a YARN job's startup and queueing cost. Enable only when all copy work must run on YARN rather than in HiveServer2.
+#     Default: false
+#
+#   HIVE_DISTCP_DOAS_USER
+#     The user REPL LOAD's DistCp data-copy job runs as, passed as 'hive.distcp.privileged.doAs'='<user>' on every REPL LOAD. HiveServer2 submits the job as this user, impersonating it from the hive service principal, so it must be able to read the dump-source table data and write the load-target table locations (and, for encryption-zone data, be allowed to decrypt/encrypt with the zone keys in both KMS instances). Any user other than "hive" also requires hive to be allowed to impersonate it: hadoop.proxyuser.hive.users / .groups / .hosts in core-site.xml on both clusters. Defaults to HDFS_USER, the HDFS superuser this script already uses for HDFS operations - which is also what HIVE_REPL_RAW_RESERVED_COPY=true needs, since only superusers can access /.reserved/raw. Note that the "hdfs" user itself is commonly listed in hadoop.kms.blacklist.DECRYPT_EEK, which makes copies of encryption-zone data fail; use a non-blacklisted superuser (e.g. odp_admin) for that. Set it to "hive" for Hive's own default, or to an empty string to leave the property out and use the load cluster's own hive-site.xml value.
+#     Default: HDFS_USER (positional argument 9)
+#
+#   HIVE_REPL_RAW_RESERVED_COPY
+#     "true" or "false". When "true", every REPL DUMP and REPL LOAD sets 'hive.repl.add.raw.reserved.namespace'='true', so Hive's DistCp copies encryption-zone data through /.reserved/raw: the stored encrypted bytes and their per-file encryption keys (raw.* xattrs) are copied as-is, with no decrypt/re-encrypt and no KMS calls, and the data lands at the normal table path. ONLY SAFE WHEN BOTH CLUSTERS DECRYPT WITH IDENTICAL KEY MATERIAL (a shared KMS, or keys imported with the same bytes and versions) - with different keys the copy still succeeds but every copied file is unreadable on the load target, and nothing reports it. Also requires the target encryption zone to already exist with the same key name, and the DistCp user (HIVE_DISTCP_DOAS_USER) to be an HDFS superuser, since only superusers can access /.reserved/raw. When "false" the property is left out entirely and Hive's default (false) applies: data is decrypted on the source and re-encrypted with the target's own key, which works with any keys.
 #     Default: false
 #
 #   RECONCILE_EXTERNAL_DATA
@@ -975,6 +985,30 @@ HIVE_REPL_SKIP_CRC_CHECK="${HIVE_REPL_SKIP_CRC_CHECK:-true}"
 #  force_distcp_props() below).
 # ------------------------------------------------------------------------------
 HIVE_REPL_FORCE_DISTCP="${HIVE_REPL_FORCE_DISTCP:-false}"
+
+# ------------------------------------------------------------------------------
+#  HIVE_DISTCP_DOAS_USER - the user REPL LOAD's DistCp data-copy job runs as
+#  (see distcp_doas_props() below). Defaults to HDFS_USER. "${VAR-default}"
+#  rather than ":-" so an explicitly empty value is kept and disables the
+#  property.
+# ------------------------------------------------------------------------------
+HIVE_DISTCP_DOAS_USER="${HIVE_DISTCP_DOAS_USER-$HDFS_USER}"
+if [[ -n "$HIVE_DISTCP_DOAS_USER" && ! "$HIVE_DISTCP_DOAS_USER" =~ ^[A-Za-z0-9._@/-]+$ ]]; then
+  echo "[ERROR] HIVE_DISTCP_DOAS_USER='${HIVE_DISTCP_DOAS_USER}' is not a valid user name (allowed: letters, digits, . _ @ / -)" >&2
+  exit 1
+fi
+if [[ "$HIVE_DISTCP_DOAS_USER" == "hdfs" ]]; then
+  echo "[WARN] REPL LOAD data-copy jobs will run as 'hdfs' (HIVE_DISTCP_DOAS_USER, default HDFS_USER). KMS commonly" >&2
+  echo "[WARN] blacklists 'hdfs' for decryption (hadoop.kms.blacklist.DECRYPT_EEK), so copies of encryption-zone" >&2
+  echo "[WARN] data may fail. Set HDFS_USER or HIVE_DISTCP_DOAS_USER to a non-blacklisted user if that applies." >&2
+fi
+
+# ------------------------------------------------------------------------------
+#  HIVE_REPL_RAW_RESERVED_COPY - copy encryption-zone data through
+#  /.reserved/raw (see raw_reserved_props() below). Only safe when both
+#  clusters share identical key material.
+# ------------------------------------------------------------------------------
+HIVE_REPL_RAW_RESERVED_COPY="${HIVE_REPL_RAW_RESERVED_COPY:-false}"
 
 # Ensure REPL_BASE_DIR always ends with exactly one trailing slash.
 REPL_BASE_DIR="${REPL_BASE_DIR%/}/"
@@ -2843,6 +2877,27 @@ force_distcp_props() {
   fi
 }
 
+# distcp_doas_props: print the extra REPL LOAD WITH-clause property (ending
+# in a comma) that sets 'hive.distcp.privileged.doAs' to
+# HIVE_DISTCP_DOAS_USER, the user Hive's DistCp data-copy job runs as.
+# Prints nothing when HIVE_DISTCP_DOAS_USER is empty.
+distcp_doas_props() {
+  if [[ -n "$HIVE_DISTCP_DOAS_USER" ]]; then
+    printf "%s\n" "'hive.distcp.privileged.doAs'='${HIVE_DISTCP_DOAS_USER}',"
+  fi
+}
+
+# raw_reserved_props: print the extra REPL DUMP/LOAD WITH-clause property
+# (ending in a comma) that makes Hive copy data through /.reserved/raw,
+# when HIVE_REPL_RAW_RESERVED_COPY=true. Set on both DUMP and LOAD, since
+# each side builds copy paths from its own session configuration. Prints
+# nothing when false.
+raw_reserved_props() {
+  if [[ "${HIVE_REPL_RAW_RESERVED_COPY,,}" == "true" ]]; then
+    printf "%s\n" "'hive.repl.add.raw.reserved.namespace'='true',"
+  fi
+}
+
 # metadata_only_dump_prop: print the
 # 'hive.repl.dump.metadata.only.for.external.table' WITH-clause property
 # (ending in a comma) for a REPL DUMP - 'true' when METADATA_ONLY=true,
@@ -3038,6 +3093,7 @@ $(ha_config_props)
 $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
+$(raw_reserved_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
@@ -3100,8 +3156,10 @@ $(ha_config_props)
 $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
+$(raw_reserved_props)
 $(distcp_crc_props)
 $(force_distcp_props)
+$(distcp_doas_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
@@ -3249,6 +3307,7 @@ $(ha_config_props)
 $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
+$(raw_reserved_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
@@ -3275,8 +3334,10 @@ $(ha_config_props)
 $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
+$(raw_reserved_props)
 $(distcp_crc_props)
 $(force_distcp_props)
+$(distcp_doas_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
@@ -3952,6 +4013,7 @@ $(ha_config_props)
 $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
+$(raw_reserved_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
@@ -4016,8 +4078,10 @@ $(ha_config_props)
 $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
+$(raw_reserved_props)
 $(distcp_crc_props)
 $(force_distcp_props)
+$(distcp_doas_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
@@ -4274,6 +4338,8 @@ fi
 echo "Snapshot Copy: ${HIVE_REPL_SNAPSHOT_COPY} $([ "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ] && echo "(snapshot-diff external table copy enabled)" || echo "(normal listing-based external table copy)")"
 echo "YARN Queue   : ${YARN_QUEUE} (REPL LOAD data-copy jobs only)"
 echo "Force DistCp : ${HIVE_REPL_FORCE_DISTCP} $([ "${HIVE_REPL_FORCE_DISTCP,,}" == "true" ] && echo "(all REPL LOAD copies run as DistCp jobs)" || echo "(small copies run inside HiveServer2)")"
+echo "DistCp user  : ${HIVE_DISTCP_DOAS_USER:-<cluster default>} (hive.distcp.privileged.doAs for REPL LOAD data-copy jobs)"
+echo "Raw copy     : ${HIVE_REPL_RAW_RESERVED_COPY} $([ "${HIVE_REPL_RAW_RESERVED_COPY,,}" == "true" ] && echo "(DUMP/LOAD copy via /.reserved/raw - requires identical EZ key material on both clusters)" || echo "(data decrypted on source, re-encrypted with the target's own key)")"
 echo "Skip CRC     : ${HIVE_REPL_SKIP_CRC_CHECK} $([ "${HIVE_REPL_SKIP_CRC_CHECK,,}" == "true" ] && echo "(REPL LOAD DistCp runs with -skipcrccheck)" || echo "(REPL LOAD DistCp compares checksums)")"
 echo "Kerberos     : ${KERBEROS_ENABLED^^}"
 if [[ "$KERBEROS_ENABLED" == "yes" ]]; then
