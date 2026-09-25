@@ -162,6 +162,13 @@
 #     WARNING: For large datasets, DistCp can take significant time to complete.
 #   - ROLLBACK_ON_FAILURE controls automatic rollback on snapshot-modified errors.
 #     Can be set via: 11th argument, environment variable, or defaults to "no".
+#     Forced to "no" for any run that could not take the per-policy run lock (below).
+#   - ONE RUN PER POLICY AT A TIME: each run takes a non-blocking flock on
+#     /var/tmp/dr-run-<POLICY_KEY>.lock before doing anything else. If a previous run of
+#     the same policy is still in progress (e.g. a DistCp that outlasts the schedule
+#     interval), the new run prints "Previous run still in progress, skipping" and
+#     exits 0 without touching either cluster. Requires flock (util-linux). See
+#     acquire_run_lock.
 #   - DIR_BOOTSTRAP_MODE is HARDCODED to "yes" (auto-bootstrap missing destination
 #     directories). It is NOT a CLI argument and NOT an environment variable --
 #     there is no override. Missing destination directories are always created
@@ -2983,6 +2990,89 @@ compute_policy_key() {
     JOB_LOG_NAME="${LOG_JOB_NAME:-$POLICY_KEY}"
 }
 
+# -----------------------------------------------------------------------------
+# Per-policy run lock: at most one run of a replication policy at a time.
+#
+# A run only advances the state file after its DistCp finishes. A second run started while the first is
+# still copying therefore reads the same last snapshot, reuses the same next snapshot on the source, and
+# runs the same "distcp -diff" into a destination the first run is writing to. That run fails with "The
+# target has been modified since snapshot"; with ROLLBACK_ON_FAILURE=yes it rolls the destination back
+# underneath the running copy, and on the baseline transition it re-runs the full reconcile copy and
+# re-creates the destination ${SNAP_PREFIX}_0 while the first run is still writing.
+#
+# The lock is an flock(1) on ${RUN_LOCK_DIR}/dr-run-<POLICY_KEY>.lock, taken non-blocking before log setup
+# (so a skipped run does not rotate or prune the running run's log). If another run holds it, this run
+# prints "previous run still in progress, skipping" and exits 0 without touching either cluster.
+#
+# The kernel releases the lock when the last process holding the file descriptor exits, so there is no stale
+# lock after a crash or kill -9. Child processes inherit the descriptor: if the script is killed while a
+# "hadoop distcp" client it started is still running, the lock stays held until that client exits, which
+# keeps the next run from starting a second copy into the same destination.
+#
+# The lock file itself is never deleted: deleting it while a run holds it would let the next run lock a new
+# file at the same path and run concurrently. It holds the current holder's PID, host, start time and log
+# path, for the skip message and for operators.
+#
+# If the lock cannot be taken (flock not installed, or the lock file cannot be opened), the run continues
+# without it and ROLLBACK_ON_FAILURE is forced to "no" for that run: an overlapping run then only fails with
+# "target has been modified", instead of rolling back a copy in progress.
+# -----------------------------------------------------------------------------
+RUN_LOCK_DIR="/var/tmp"
+RUN_LOCK_FILE=""
+RUN_LOCK_FD=""
+RUN_LOCK_HELD="no"
+RUN_LOCK_UNAVAILABLE_REASON=""
+
+acquire_run_lock() {
+    compute_policy_key
+    RUN_LOCK_FILE="${RUN_LOCK_DIR}/dr-run-${POLICY_KEY}.lock"
+
+    if ! command -v flock >/dev/null 2>&1; then
+        RUN_LOCK_UNAVAILABLE_REASON="flock command not found (install util-linux)"
+        return 0
+    fi
+    # Opened for append so a run that does not get the lock leaves the holder's details in place.
+    if ! { exec {RUN_LOCK_FD}>>"$RUN_LOCK_FILE"; } 2>/dev/null; then
+        RUN_LOCK_FD=""
+        RUN_LOCK_UNAVAILABLE_REASON="cannot open lock file $RUN_LOCK_FILE ($(_describe_path_access "$RUN_LOCK_FILE"))"
+        return 0
+    fi
+
+    if ! flock -n "$RUN_LOCK_FD"; then
+        local holder
+        holder="$(tr '\n' ' ' <"$RUN_LOCK_FILE" 2>/dev/null || true)"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Previous run still in progress, skipping."
+        echo "[INFO] Policy: $POLICY_KEY"
+        echo "[INFO] Lock file: $RUN_LOCK_FILE"
+        echo "[INFO] Holder: ${holder:-unknown}"
+        exit 0
+    fi
+
+    RUN_LOCK_HELD="yes"
+    {
+        echo "pid: $$"
+        echo "host: $(hostname -f 2>/dev/null || hostname)"
+        echo "started_at: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+    } >"$RUN_LOCK_FILE" 2>/dev/null || true
+}
+
+# Records this run's log path in the lock file (the log path is only known after setup_log_file), and
+# applies the ROLLBACK_ON_FAILURE fallback when the lock could not be taken. Called once, after log setup.
+finish_run_lock_setup() {
+    if [[ "$RUN_LOCK_HELD" == "yes" ]]; then
+        echo "log: $LOG" >>"$RUN_LOCK_FILE" 2>/dev/null || true
+        log "[INFO] Run lock acquired: $RUN_LOCK_FILE"
+        return 0
+    fi
+
+    log "[WARN] Run lock NOT acquired: $RUN_LOCK_UNAVAILABLE_REASON"
+    log "[WARN] Overlapping runs of this policy are not prevented for this run."
+    if [[ "${ROLLBACK_ON_FAILURE,,}" == "yes" ]]; then
+        log "[WARN] Forcing ROLLBACK_ON_FAILURE=no for this run (was '$ROLLBACK_ON_FAILURE'): without the run lock, a rollback could revert a copy another run is still writing."
+    fi
+    ROLLBACK_ON_FAILURE="no"
+}
+
 # "<path>: owner <user:group>, mode <perms>" for the nearest existing ancestor of $1 (or $1 itself), plus the
 # user this script runs as -- appended to log-setup errors so a permission mismatch (e.g. a directory created
 # by an earlier run as root) is visible without further digging.
@@ -4245,7 +4335,11 @@ reconcile_reverse_diff_bootstrap() {
 # main()
 # -----------------------------------------------------------------------------
 main() {
-    # Log setup comes first, so everything this run prints -- including argument/validation errors below, the
+    # The run lock is taken before anything else, including log setup: a run that finds another run of this
+    # policy in progress exits here without rotating or pruning that run's log. See acquire_run_lock.
+    acquire_run_lock
+
+    # Log setup comes next, so everything this run prints -- including argument/validation errors below, the
     # prerequisite check and Kerberos detection -- is captured in the log file, not only on the console.
     # All subsequent output (stdout and stderr, including DistCp's) goes through one tee process for real-time
     # visibility without buffering issues.
@@ -4259,6 +4353,7 @@ main() {
         log "$setup_msg"
     done
     log "[INFO] Logging to $LOG"
+    finish_run_lock_setup
 
     # -------------------------------------------------------------------------
     # Same-nameservice DR support: SOURCE_CLUSTER and DEST_CLUSTER are ROLE LABELS (and, for state-file keys,
@@ -6268,6 +6363,12 @@ main "$@"
 #         mkdir/put/probe stderr captures, mirror temp files, direction-derive
 #         listing stderr, etc. Auto-cleaned on exit via cleanup_temp_files().
 #         Only survive a hard `kill -9` before the EXIT trap can run.
+#
+#   [8] /var/tmp/dr-run-<POLICY_KEY>.lock
+#         Per-policy run lock (flock). Holds the current holder's pid, host,
+#         start time and log path. Never deleted: the kernel releases the lock
+#         when the holding run exits, so a leftover file does not block runs.
+#         Do not delete it while a run is in progress.
 #
 # ── ARTIFACTS: HDFS (SOURCE_CLUSTER and/or DEST_CLUSTER) ────────────────────
 #
