@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 #  Hive Cluster Replication Script (Hive BDR)
-#  Version : v6
+#  Version : 4.2.0
 #  Purpose : Replicate one or more Hive databases from a source cluster to a destination cluster using Hive's native REPL DUMP / REPL LOAD commands, and manage direction reversal (failover / failback) between the two clusters.
 # ==============================================================================
 #
@@ -32,11 +32,9 @@
 #     PREFLIGHT_PRIMARY_CHECK     false
 #     RECONCILE_ON_DIRECTION_CHANGE   true
 #     METADATA_ONLY               false
-#     DISTCP_OPTS                 -strategy dynamic -direct -update -pugptx -skipcrccheck
+#     DISTCP_OPTS                 --strategy dynamic -direct -update -pugptx -skipcrccheck
 #     HIVE_REPL_SNAPSHOT_COPY      false
 #     HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS   false
-#     HIVE_REPL_SKIP_CRC_CHECK     true
-#     HIVE_REPL_FORCE_DISTCP       false
 #     AUTO_DERIVE_HA_CLIENT_CONFIG     no
 #     SRC_NN_HOSTS / DST_NN_HOSTS  (required if AUTO_DERIVE_HA_CLIENT_CONFIG=yes)
 #     AUTOMATIC_FAILOVER_ENABLED   true
@@ -215,15 +213,11 @@
 #   proof of success - so an unconverged flip is reported as a FAILURE rather
 #   than as "Completed".
 #
-#   External table data on a direction-change run is controlled by
-#   RECONCILE_ON_DIRECTION_CHANGE (default "true"):
-#     - "true", normal case: the direction-change REPL LOADs run with Hive's own
-#       data copy ON ('hive.repl.run.data.copy.tasks.on.target'='true'), so any
-#       table Hive re-creates during the handshake gets its data from the LOAD.
-#     - "true" with RECONCILE_EXTERNAL_DATA=true or a shared nameservice: the
-#       LOADs copy nothing, and once the handshake CONVERGES the same manual
-#       per-table `hadoop distcp` used by normal cycles runs once.
-#     - "false": no data is copied by either mechanism.
+#   The REPL LOAD statements in a direction-change run never copy data themselves
+#   ('hive.repl.run.data.copy.tasks.on.target'='false'). What happens to external
+#   table data afterwards is controlled by RECONCILE_ON_DIRECTION_CHANGE
+#   (default "true"): once the handshake CONVERGES, the same manual per-table
+#   `hadoop distcp` used by normal cycles runs once.
 #
 #   Why this is not simply skipped, as it once was: the round-2 REPL LOAD ends
 #   with an inner BOOTSTRAP of the TABLE DIFF - the tables that had diverged
@@ -424,14 +418,6 @@
 #     "true" or "false". When "true", materialized views are replicated along with regular tables. Left disabled by default because a replicated materialized view is copied as-is (its last-computed result), without triggering a rebuild on the destination - so it can silently fall out of sync with its base tables over time. Only enable this after confirming that behavior is acceptable for your use case.
 #     Default: false
 #
-#   HIVE_REPL_SKIP_CRC_CHECK
-#     "true" or "false". When "true", every REPL LOAD sets 'distcp.options.skipcrccheck'='', so the DistCp job REPL LOAD runs for external table data skips the source/target checksum comparison (file length is still compared). Required when table data lives in an HDFS encryption zone: HDFS checksums are computed over the encrypted bytes, and each cluster encrypts with its own zone key and a per-file key, so the checksums of an encrypted file and its copy never match and every copy fails with "Checksum mismatch". Hive adds -update itself, which -skipcrccheck requires. Matches the -skipcrccheck already in the DISTCP_OPTS default for the manual distcp path.
-#     Default: true
-#
-#   HIVE_REPL_FORCE_DISTCP
-#     "true" or "false". When "true", every REPL LOAD sets 'hive.exec.copyfile.maxsize'='0', so every copy Hive performs runs as a DistCp job in YARN_QUEUE. By default Hive copies a small set of files (each below hive.exec.copyfile.maxsize, 32 MB by default) directly inside HiveServer2 instead. External table data is always copied with DistCp, so this only changes managed-table and small incremental event copies - each of which then pays a YARN job's startup and queueing cost. Enable only when all copy work must run on YARN rather than in HiveServer2.
-#     Default: false
-#
 #   RECONCILE_EXTERNAL_DATA
 #     Also positional argument 12. See "RECONCILING PRE-EXISTING EXTERNAL TABLE DATA" above for the full explanation.
 #     Default: false
@@ -548,13 +534,6 @@
 
 set -euo pipefail
 
-# Supported shells: bash 4.2 (RHEL/CentOS 7.9), 4.4 (Rocky/RHEL 8) and 5.1
-# (Rocky/RHEL 9). Under `set -u`, bash before 4.4 treats "${arr[@]}" and
-# ${arr[*]} of an EMPTY array as an unbound variable and aborts. Any array
-# that can be empty is therefore expanded as ${arr[@]+"${arr[@]}"} (argument
-# lists) or ${arr[*]:-} (inside strings), which behave identically on all
-# three versions.
-
 # Dedicated file descriptor for heartbeat/debug messages printed by
 # run_with_heartbeat() and beeline_exec_load() below. These messages must
 # NEVER be written to stdout (fd 1) directly: several callers capture a
@@ -606,19 +585,6 @@ on_terminate() {
       echo "[WARN] pid ${CURRENT_CHILD_PID} did not exit after SIGTERM - sending SIGKILL" >&2
       kill -KILL "$CURRENT_CHILD_PID" 2>/dev/null || true
     fi
-  fi
-  # Release the per-database lock explicitly: short-lived helper processes
-  # (the heartbeat watchdog's sleep, the per-database log tee) inherited its
-  # descriptor and would otherwise keep holding it for a few seconds after
-  # this script is gone, making an immediate re-run report the database as
-  # SKIPPED.
-  if [[ -n "${DB_LOCK_FD:-}" ]]; then
-    flock -u "$DB_LOCK_FD" 2>/dev/null || true
-  fi
-  # Conventional 128 + signal number, so a caller can tell an interrupt
-  # (130) from a termination request (143).
-  if [[ "$sig" == "SIGTERM" ]]; then
-    exit 143
   fi
   exit 130
 }
@@ -960,21 +926,6 @@ HIVE_EXTERNAL_WAREHOUSE_DIR="${HIVE_EXTERNAL_WAREHOUSE_DIR:-/warehouse/tablespac
 #  behavior is acceptable.
 # ------------------------------------------------------------------------------
 HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS="${HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS:-false}"
-
-# ------------------------------------------------------------------------------
-#  HIVE_REPL_SKIP_CRC_CHECK - pass -skipcrccheck to the DistCp job REPL LOAD
-#  runs for external table data (see distcp_crc_props() below). Needed for
-#  data in HDFS encryption zones, where source and target checksums never
-#  match because each cluster stores different ciphertext for the same file.
-# ------------------------------------------------------------------------------
-HIVE_REPL_SKIP_CRC_CHECK="${HIVE_REPL_SKIP_CRC_CHECK:-true}"
-
-# ------------------------------------------------------------------------------
-#  HIVE_REPL_FORCE_DISTCP - make every REPL LOAD copy run as a DistCp job
-#  instead of letting Hive copy small file sets inside HiveServer2 (see
-#  force_distcp_props() below).
-# ------------------------------------------------------------------------------
-HIVE_REPL_FORCE_DISTCP="${HIVE_REPL_FORCE_DISTCP:-false}"
 
 # Ensure REPL_BASE_DIR always ends with exactly one trailing slash.
 REPL_BASE_DIR="${REPL_BASE_DIR%/}/"
@@ -1427,11 +1378,7 @@ fi
 #     first place, the bug above never triggers, so there is nothing to
 #     route through the manual path.
 #
-#  2. DIRECTION_CHANGE=true with RECONCILE_ON_DIRECTION_CHANGE=false (with
-#     the default RECONCILE_ON_DIRECTION_CHANGE=true this case does not
-#     apply, and a direction change falls through to the branches below
-#     like any other run - see RECONCILE_ON_DIRECTION_CHANGE's doc comment,
-#     which supersedes the reasoning that follows) - a direction-change
+#  2. DIRECTION_CHANGE=true (a failover or a failback) - a direction-change
 #     run is a CONTROL operation that flips which side is primary, not a bulk
 #     data movement. By the time one is run, every preceding cycle in the
 #     direction being reversed FROM has already copied the data to the side
@@ -1536,7 +1483,7 @@ validate_nn_hosts_spec() {
   local nn_hosts_spec="$2"
   local pair nn_id nn_addr
   IFS=',' read -ra pairs <<< "$nn_hosts_spec"
-  for pair in ${pairs[@]+"${pairs[@]}"}; do
+  for pair in "${pairs[@]}"; do
     nn_id="${pair%%=*}"
     nn_addr="${pair#*=}"
     if [[ -z "$nn_id" || -z "$nn_addr" || "$nn_id" == "$pair" ]]; then
@@ -1584,7 +1531,7 @@ nn_hosts_short_token() {
   local pair addr host
   local -a shorts=()
   IFS=',' read -ra pairs <<< "$nn_hosts_spec"
-  for pair in ${pairs[@]+"${pairs[@]}"}; do
+  for pair in "${pairs[@]}"; do
     addr="${pair#*=}"
     host="${addr%%:*}"
     host="${host%%.*}"
@@ -1592,7 +1539,7 @@ nn_hosts_short_token() {
     [[ -n "$host" ]] && shorts+=("$host")
   done
   [[ ${#shorts[@]} -eq 0 ]] && return 0
-  printf '%s\n' ${shorts[@]+"${shorts[@]}"} | LC_ALL=C sort | head -n 1
+  printf '%s\n' "${shorts[@]}" | LC_ALL=C sort | head -n 1
 }
 
 # REPL_ROOT_SUFFIX - explicit override for the REPL DUMP staging directory's
@@ -1752,7 +1699,7 @@ build_nameservice_ha_props() {
   local pair nn_id nn_addr
 
   IFS=',' read -ra pairs <<< "$nn_hosts_spec"
-  for pair in ${pairs[@]+"${pairs[@]}"}; do
+  for pair in "${pairs[@]}"; do
     nn_id="${pair%%=*}"
     nn_addr="${pair#*=}"
     if [[ -z "$nn_id" || -z "$nn_addr" || "$nn_id" == "$pair" ]]; then
@@ -1764,7 +1711,7 @@ build_nameservice_ha_props() {
   done
 
   local joined_ids
-  joined_ids="$(IFS=,; echo "${nn_ids[*]:-}")"
+  joined_ids="$(IFS=,; echo "${nn_ids[*]}")"
   printf "'dfs.ha.namenodes.%s'='%s',\n" "$nameservice" "$joined_ids"
   printf "'dfs.client.failover.proxy.provider.%s'='org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider',\n" "$nameservice"
 }
@@ -1925,19 +1872,6 @@ fi
 HIVE_LDAP_ENABLED="${HIVE_LDAP_ENABLED:-false}"
 HIVE_PASSWORD="${HIVE_PASSWORD:-}"
 
-# HIVE_PASSWORD_FILE - private temp file holding HIVE_PASSWORD for beeline's
-# -w option (LDAP mode only, see below). Removed on every exit path: normal
-# completion, "exit 1", and SIGINT/SIGTERM (on_terminate() exits, which
-# runs this EXIT trap).
-HIVE_PASSWORD_FILE=""
-cleanup_password_file() {
-    if [[ -n "$HIVE_PASSWORD_FILE" ]]; then
-        rm -f "$HIVE_PASSWORD_FILE"
-    fi
-    return 0
-}
-trap cleanup_password_file EXIT
-
 declare -a BEELINE_AUTH_ARGS=()
 if [[ "$KERBEROS_ENABLED" == "no" ]]; then
     if [[ "${HIVE_LDAP_ENABLED,,}" == "true" ]]; then
@@ -1946,21 +1880,7 @@ if [[ "$KERBEROS_ENABLED" == "no" ]]; then
             echo "[ERROR] Set HIVE_PASSWORD to the real LDAP credential for HIVE_USER='${HIVE_USER}'." >&2
             exit 1
         fi
-        # Passed via beeline's -w (--password-file) rather than -p, so the
-        # real credential never appears on a command line visible to every
-        # local user through `ps`. The file is private to this user
-        # (umask 077) and removed on exit by cleanup_password_file(). If it
-        # cannot be created, -p is used as before so authentication still
-        # works.
-        if HIVE_PASSWORD_FILE=$(umask 077; mktemp "${TMPDIR:-/tmp}/.hive_bdr_pw.XXXXXX" 2>/dev/null) \
-           && printf '%s' "$HIVE_PASSWORD" > "$HIVE_PASSWORD_FILE" 2>/dev/null; then
-            BEELINE_AUTH_ARGS=(-n "$HIVE_USER" -w "$HIVE_PASSWORD_FILE")
-        else
-            [[ -n "$HIVE_PASSWORD_FILE" ]] && rm -f "$HIVE_PASSWORD_FILE"
-            HIVE_PASSWORD_FILE=""
-            echo "[WARN] Could not create a private password file - passing the LDAP password to beeline with -p (visible in the process list)"
-            BEELINE_AUTH_ARGS=(-n "$HIVE_USER" -p "$HIVE_PASSWORD")
-        fi
+        BEELINE_AUTH_ARGS=(-n "$HIVE_USER" -p "$HIVE_PASSWORD")
         echo "[INFO] Beeline auth: LDAP mode, user=${HIVE_USER}"
     else
         BEELINE_AUTH_ARGS=(-n "$HIVE_USER" -p "$HIVE_USER")
@@ -2141,7 +2061,7 @@ beeline_exec() {
     local jdbc_url="$1"
     shift
     run_with_heartbeat "beeline_exec (${jdbc_url})" \
-        beeline -u "$jdbc_url" ${BEELINE_AUTH_ARGS[@]+"${BEELINE_AUTH_ARGS[@]}"} ${BEELINE_VERBOSE_ARGS[@]+"${BEELINE_VERBOSE_ARGS[@]}"} "$@"
+        beeline -u "$jdbc_url" "${BEELINE_AUTH_ARGS[@]}" "${BEELINE_VERBOSE_ARGS[@]}" "$@"
 }
 
 # beeline_exec_load: same as beeline_exec, but first issues the two YARN
@@ -2149,63 +2069,15 @@ beeline_exec() {
 # statement) so REPL LOAD's internal data-copy job submits to YARN_QUEUE.
 # Only use this for REPL LOAD calls - REPL DUMP does not launch a YARN job,
 # so setting the queue has no effect there.
-#
-# Also fails the call when any YARN job REPL LOAD launched ended FAILED or
-# KILLED. Hive does not propagate a failed external-table data-copy job:
-# REPL LOAD still completes, loads the table metadata and advances
-# REPL STATUS, and beeline exits 0 - leaving tables on the load target
-# without their data, which later incremental cycles never re-copy. The
-# beeline output is streamed to the log as usual and also captured to a
-# temp file, which is scanned for the job's "failed with state" line.
 # Usage: beeline_exec_load <jdbc_url> -e "<REPL LOAD ...>"
 beeline_exec_load() {
     local jdbc_url="$1"
     shift
-    local -a load_cmd=(beeline -u "$jdbc_url" ${BEELINE_AUTH_ARGS[@]+"${BEELINE_AUTH_ARGS[@]}"} ${BEELINE_VERBOSE_ARGS[@]+"${BEELINE_VERBOSE_ARGS[@]}"}
-        -e "SET mapreduce.job.queuename=${YARN_QUEUE};"
-        -e "SET tez.queue.name=${YARN_QUEUE};"
-        "$@")
-
-    local capture_file
-    if ! capture_file=$(umask 077; mktemp "${TMPDIR:-/tmp}/.hive_bdr_load.XXXXXX" 2>/dev/null); then
-        echo "[WARN] Could not create a temp file to capture REPL LOAD output - a failed data-copy job inside this LOAD will not be detected"
-        run_with_heartbeat "beeline_exec_load (${jdbc_url})" "${load_cmd[@]}"
-        return $?
-    fi
-
-    local tee_fd tee_pid rc
-    exec {tee_fd}> >(tee "$capture_file")
-    tee_pid=$!
-    run_with_heartbeat "beeline_exec_load (${jdbc_url})" "${load_cmd[@]}" >&"$tee_fd" 2>&1
-    rc=$?
-    exec {tee_fd}>&-
-    # tee exits once it reads EOF on the fd just closed; wait for it so the
-    # capture file is complete before it is scanned.
-    while kill -0 "$tee_pid" 2>/dev/null; do
-        sleep 0.2
-    done
-
-    if (( rc == 0 )); then
-        local failed_jobs
-        failed_jobs=$(grep -oE 'Job job_[0-9]+_[0-9]+ failed with state (FAILED|KILLED)' "$capture_file" \
-            | awk '{print $2}' | sort -u)
-        if [[ -n "$failed_jobs" ]]; then
-            rc=1
-            echo ""
-            echo "ERROR: REPL LOAD returned success, but its data-copy YARN job(s) failed:"
-            local job
-            for job in $failed_jobs; do
-                echo "ERROR:   ${job}  ->  yarn logs -applicationId ${job/job_/application_}"
-            done
-            echo "ERROR: Hive has still loaded the table metadata and advanced REPL STATUS on the load target,"
-            echo "ERROR: so the files that job was copying are missing there and a re-run will NOT copy them again."
-            echo "ERROR: Find the cause in those YARN logs (e.g. \"Checksum mismatch\" for encryption-zone data"
-            echo "ERROR: means HIVE_REPL_SKIP_CRC_CHECK must be true), then either drop the database on the load"
-            echo "ERROR: target and re-bootstrap, or copy the missing table data manually."
-        fi
-    fi
-    rm -f "$capture_file" 2>/dev/null
-    return $rc
+    run_with_heartbeat "beeline_exec_load (${jdbc_url})" \
+        beeline -u "$jdbc_url" "${BEELINE_AUTH_ARGS[@]}" "${BEELINE_VERBOSE_ARGS[@]}" \
+            -e "SET mapreduce.job.queuename=${YARN_QUEUE};" \
+            -e "SET tez.queue.name=${YARN_QUEUE};" \
+            "$@"
 }
 
 # split_db_spec: split a single DB_SPECS entry into its database portion
@@ -2335,11 +2207,9 @@ expand_db_specs() {
     # check, a syntax error's own "grep: ..." message leaks into the run's
     # output and the pattern is then reported as merely non-matching,
     # which reads like a naming mistake rather than the actual regex typo.
-    # "|| grep_rc=$?" keeps a non-zero grep status from tripping set -e
-    # here (this runs at top level, where errexit is active) before the
-    # checks below can report it.
-    local grep_rc=0
-    matches=$(printf '%s\n' "$all_dbs" | grep -E "^${pattern}$" 2>/dev/null) || grep_rc=$?
+    local grep_rc
+    matches=$(printf '%s\n' "$all_dbs" | grep -E "^${pattern}$" 2>/dev/null)
+    grep_rc=$?
     if (( grep_rc > 1 )); then
       echo "ERROR: Database regex '${pattern}' (from DB spec '${spec}') is not a valid extended regular expression - grep -E rejected it"
       exit 1
@@ -2367,7 +2237,7 @@ expand_db_specs() {
   local -A seen=()
   local -a deduped=()
   local e
-  for e in ${expanded[@]+"${expanded[@]}"}; do
+  for e in "${expanded[@]}"; do
     if [[ -n "${seen[$e]:-}" ]]; then
       echo "  Skipping duplicate DB spec after regex expansion: ${e}"
       continue
@@ -2376,7 +2246,7 @@ expand_db_specs() {
     deduped+=("$e")
   done
 
-  DB_SPECS=(${deduped[@]+"${deduped[@]}"})
+  DB_SPECS=("${deduped[@]}")
   echo "Resolved ${#DB_SPECS[@]} database spec(s) after regex expansion."
   echo ""
 }
@@ -2650,7 +2520,7 @@ nameservice_cli_dgen_args() {
   local nn_ids=()
   local pair nn_id nn_addr
   IFS=',' read -ra pairs <<< "$nn_hosts_spec"
-  for pair in ${pairs[@]+"${pairs[@]}"}; do
+  for pair in "${pairs[@]}"; do
     nn_id="${pair%%=*}"
     nn_addr="${pair#*=}"
     if [[ -z "$nn_id" || -z "$nn_addr" || "$nn_id" == "$pair" ]]; then
@@ -2661,7 +2531,7 @@ nameservice_cli_dgen_args() {
     printf -- "-Ddfs.namenode.rpc-address.%s.%s=%s\n" "$nameservice" "$nn_id" "$nn_addr"
   done
   local joined_ids
-  joined_ids="$(IFS=,; echo "${nn_ids[*]:-}")"
+  joined_ids="$(IFS=,; echo "${nn_ids[*]}")"
   printf -- "-Ddfs.nameservices=%s\n" "$nameservice"
   printf -- "-Ddfs.ha.namenodes.%s=%s\n" "$nameservice" "$joined_ids"
   printf -- "-Ddfs.client.failover.proxy.provider.%s=org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider\n" "$nameservice"
@@ -2689,7 +2559,7 @@ allow_snapshot_idempotent() {
     mapfile -t dgen_args < <(nameservice_cli_dgen_args "$nameservice" "$nn_hosts_spec")
   fi
   local out rc
-  out=$(run_as_hdfs hdfs dfsadmin ${dgen_args[@]+"${dgen_args[@]}"} -fs "hdfs://${nameservice}" -allowSnapshot "$dir" 2>&1 | grep -v "^SLF4J:")
+  out=$(run_as_hdfs hdfs dfsadmin "${dgen_args[@]}" -fs "hdfs://${nameservice}" -allowSnapshot "$dir" 2>&1 | grep -v "^SLF4J:")
   rc="${PIPESTATUS[0]}"
   if [[ $rc -eq 0 ]] || echo "$out" | grep -qi "already.*snapshottable"; then
     [[ -n "$out" ]] && echo "$out"
@@ -2776,7 +2646,7 @@ enable_external_table_snapshots() {
   base_dir_ns="${base_dir_ns%%/*}"
   local dst_path="${REPL_EXTERNAL_BASE_DIR#hdfs://${base_dir_ns}}"
 
-  if run_as_hdfs hdfs dfs ${dump_source_dgen_args[@]+"${dump_source_dgen_args[@]}"} -fs "hdfs://${dump_source_ns}" -test -d "$src_path"; then
+  if run_as_hdfs hdfs dfs "${dump_source_dgen_args[@]}" -fs "hdfs://${dump_source_ns}" -test -d "$src_path"; then
     allow_snapshot_idempotent "$dump_source_ns" "$src_path" "DUMP SOURCE (${dump_source_ns})" "$dump_source_nn_hosts" && src_ok=true
   else
     echo "[WARN] Dump-source external warehouse dir does not exist yet, skipping allowSnapshot: ${dump_source_path}"
@@ -2820,29 +2690,6 @@ materialized_view_props() {
   fi
 }
 
-# distcp_crc_props: print the extra REPL LOAD WITH-clause property (ending
-# in a comma) that makes Hive's internal DistCp run with -skipcrccheck, when
-# HIVE_REPL_SKIP_CRC_CHECK=true. Hive turns every 'distcp.options.<opt>'
-# property into a "-<opt>" DistCp argument (an empty value adds the flag
-# alone), and still adds its default -update and -pbx/-pb itself because no
-# 'distcp.options.p*' property is set. Prints nothing when false.
-distcp_crc_props() {
-  if [[ "${HIVE_REPL_SKIP_CRC_CHECK,,}" == "true" ]]; then
-    printf "%s\n" "'distcp.options.skipcrccheck'='',"
-  fi
-}
-
-# force_distcp_props: print the extra REPL LOAD WITH-clause property (ending
-# in a comma) that sets 'hive.exec.copyfile.maxsize'='0', when
-# HIVE_REPL_FORCE_DISTCP=true. With a maximum size of 0 no file set
-# qualifies for Hive's in-HiveServer2 copy, so every copy goes through DistCp.
-# Prints nothing when false.
-force_distcp_props() {
-  if [[ "${HIVE_REPL_FORCE_DISTCP,,}" == "true" ]]; then
-    printf "%s\n" "'hive.exec.copyfile.maxsize'='0',"
-  fi
-}
-
 # metadata_only_dump_prop: print the
 # 'hive.repl.dump.metadata.only.for.external.table' WITH-clause property
 # (ending in a comma) for a REPL DUMP - 'true' when METADATA_ONLY=true,
@@ -2865,10 +2712,7 @@ metadata_only_dump_prop() {
 # replicate_one_db) for its own EXCEPTION 1/EXCEPTION 2 messaging, but uses
 # the same EFFECTIVE_RECONCILE_EXTERNAL_DATA/METADATA_ONLY logic.
 #
-# ALSO 'false' on a direction-change run when RECONCILE_ON_DIRECTION_CHANGE
-# is not "true" (with the default "true", a direction change gets 'true'
-# here like any other run, unless the manual distcp path is active). The
-# reasoning below applies to that opt-out case: (DIRECTION_CHANGE=true - a failover
+# ALSO 'false' on a direction-change run (DIRECTION_CHANGE=true - a failover
 # or a failback), which is exactly what reaches failover_one_db(). A direction
 # change is a control operation that flips which side is primary; the side
 # about to become the new replica already holds the data from every preceding
@@ -2922,6 +2766,8 @@ failover_one_db() {
   local db_total="$3"
 
   derive_db_vars "$db_spec"
+
+  LOG_FILE="$LOG_DIR/hive_bdr_direction_change_${HIVE_DB_NAME}_$(date +%Y%m%d_%H%M%S).log"
 
   SEP="======================================================================"
   SUBSEP="----------------------------------------------------------------------"
@@ -3053,17 +2899,14 @@ $(materialized_view_props)
   ########################################
   # Step 3: REPL LOAD on the new replica.
   #
-  # How external table data is handled here is decided by
-  # RECONCILE_ON_DIRECTION_CHANGE (see its doc comment) together with
-  # EFFECTIVE_RECONCILE_EXTERNAL_DATA and load_data_copy_prop():
-  #   - manual distcp path active (RECONCILE_EXTERNAL_DATA=true or a shared
-  #     nameservice): this LOAD copies nothing, and the manual distcp runs
-  #     once after the handshake converges;
-  #   - otherwise, with RECONCILE_ON_DIRECTION_CHANGE=true (the default):
-  #     Hive's own REPL LOAD data copy is ON for this LOAD;
-  #   - RECONCILE_ON_DIRECTION_CHANGE=false: no data is copied by either
-  #     mechanism.
-  # The NOTE printed below states which of these applies to this run.
+  # NO external table data is copied by this LOAD, by either mechanism:
+  # 'hive.repl.run.data.copy.tasks.on.target' is forced to 'false' by
+  # load_data_copy_prop() for this direction, and the manual distcp path is
+  # disabled by EFFECTIVE_RECONCILE_EXTERNAL_DATA for the same direction.
+  # A direction change flips which side is primary; every preceding
+  # normal-direction cycle already copied the data to the side that is about
+  # to become the new replica, so there is nothing left to move. See both
+  # doc comments near the top of the script for the full rationale.
   ########################################
   echo "$SUBSEP"
   echo "[3/${FAILOVER_TOTAL_STEPS}] (round ${_round}) Running ${DIRECTION_CHANGE_KIND} REPL LOAD on new replica (${LOAD_URI_NS})..."
@@ -3074,12 +2917,6 @@ $(materialized_view_props)
     echo "      \"numTables\" below: 0 means nothing diverged and the reconcile will find nothing"
     echo "      to move; greater than 0 means Hive re-created those tables from ${DUMP_URI_NS} and"
     echo "      their data genuinely needs copying."
-  elif [[ "$(load_data_copy_prop)" == "true" ]]; then
-    echo "NOTE: Hive's own REPL LOAD data copy is ON for this LOAD"
-    echo "      ('hive.repl.run.data.copy.tasks.on.target'='true', RECONCILE_ON_DIRECTION_CHANGE=true)."
-    echo "      Any table Hive re-creates from ${DUMP_URI_NS} (the inner BOOTSTRAP's \"numTables\""
-    echo "      below) gets its external data copied by this LOAD itself. No manual distcp runs:"
-    echo "      that path is used only with RECONCILE_EXTERNAL_DATA=true or a shared nameservice."
   else
     echo "NOTE: external table DATA copy is intentionally skipped for this direction-change run"
     echo "      (no manual distcp, and 'hive.repl.run.data.copy.tasks.on.target'='false')."
@@ -3100,8 +2937,6 @@ $(ha_config_props)
 $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
-$(distcp_crc_props)
-$(force_distcp_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
@@ -3215,8 +3050,21 @@ run_incremental_cycle() {
   echo "[3-4/${TOTAL_STEPS}] Running incremental replication cycle..."
   echo ""
 
-  # Concurrency for this database is guarded by the per-database lock the
-  # main loop holds around every run type (see acquire_db_lock()).
+  # Prevent two incremental cycles for the same database from running at
+  # the same time (for example, if this script is re-invoked before a
+  # previous run has finished).
+  mkdir -p "$INCREMENTAL_LOCK_DIR" 2>/dev/null || true
+  local lock_file="${INCREMENTAL_LOCK_DIR}/${HIVE_DB_NAME}.lock"
+  exec {lock_fd}>"$lock_file"
+  if ! flock -n "$lock_fd"; then
+    echo "WARN: Another incremental cycle for '${HIVE_DB_NAME}' appears to be in progress (lock: ${lock_file})."
+    echo "Skipping this cycle to avoid concurrent REPL DUMP/LOAD against the same DB."
+    exec {lock_fd}>&-
+    return 0
+  fi
+  # Release the lock on any exit from this function - normal completion,
+  # an explicit return, or set -e propagating a beeline failure.
+  trap 'flock -u "$lock_fd" 2>/dev/null; exec {lock_fd}>&- 2>/dev/null; trap - RETURN' RETURN
 
   if [[ "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ]]; then
     local _stage_t0=$(date +%s)
@@ -3275,8 +3123,6 @@ $(ha_config_props)
 $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
-$(distcp_crc_props)
-$(force_distcp_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
@@ -3335,10 +3181,23 @@ check_all_tables_external() {
   echo "SHOW TABLES completed in $(format_duration $(( $(date +%s) - _stage_t0 )))"
 
   local tables
-  tables=$(echo "$tables_output" | grep -E "^[A-Za-z0-9_]+$" || true)
+  tables=$(echo "$tables_output" | grep -E "^[A-Za-z0-9_]+$")
 
-  if ! tables=$(filter_tables_by_pattern "$tables"); then
-    return 1
+  if [[ -n "$HIVE_TABLE_PATTERN" ]]; then
+    # HIVE_TABLE_PATTERN may still be wrapped in the single quotes the
+    # caller supplied (see derive_db_vars()) - those quotes are only
+    # meaningful to parse_db_specs()/REPL DUMP's grammar, not to grep, so
+    # strip one matched pair before using this as a raw -E regex. Without
+    # this, a documented pattern like "sales.'(orders|customers)'" would
+    # produce grep -E "^'(orders|customers)'$", which cannot match any
+    # real table name and silently short-circuits the EXTERNAL_TABLE
+    # safety check to "no tables to check - pass".
+    local table_pattern_regex="$HIVE_TABLE_PATTERN"
+    if [[ "$table_pattern_regex" == \'*\' ]]; then
+      table_pattern_regex="${table_pattern_regex#\'}"
+      table_pattern_regex="${table_pattern_regex%\'}"
+    fi
+    tables=$(echo "$tables" | grep -E "^${table_pattern_regex}$" || true)
   fi
 
   if [[ -z "$tables" ]]; then
@@ -3358,11 +3217,7 @@ check_all_tables_external() {
       --outputformat=tsv2 \
       -e "USE ${HIVE_DB_NAME}; DESCRIBE FORMATTED ${tbl};" 2>&1 \
       | grep -i "^Table Type:" | awk -F'\t' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    # A VIRTUAL_VIEW has no data of its own - REPL LOAD replicates its
-    # definition, and reconcile_external_table_data() skips it - so it does
-    # not block the manual distcp path. A MATERIALIZED_VIEW does hold
-    # (managed) data and is still rejected.
-    if [[ "$tbl_type" != "EXTERNAL_TABLE" && "$tbl_type" != "VIRTUAL_VIEW" ]]; then
+    if [[ "$tbl_type" != "EXTERNAL_TABLE" ]]; then
       non_external+=("${tbl} (${tbl_type:-unknown})")
     fi
     _check_count=$(( _check_count + 1 ))
@@ -3376,7 +3231,7 @@ check_all_tables_external() {
   if [[ ${#non_external[@]} -gt 0 ]]; then
     echo "ERROR: Every table in '${HIVE_DB_NAME}' must be EXTERNAL_TABLE for this run's data-copy mode."
     echo "ERROR: Found non-external table(s):"
-    for t in ${non_external[@]+"${non_external[@]}"}; do
+    for t in "${non_external[@]}"; do
       echo "  - ${t}"
     done
     echo "ERROR: Managed/ACID table data cannot be safely reconciled with a manual distcp (base/delta"
@@ -3396,75 +3251,24 @@ check_all_tables_external() {
     return 1
   fi
 
-  echo "OK: all tables in '${HIVE_DB_NAME}' (matching pattern) are EXTERNAL_TABLE (or views) - safe for the manual distcp data-copy path"
+  echo "OK: all tables in '${HIVE_DB_NAME}' (matching pattern) are EXTERNAL_TABLE - safe for the manual distcp data-copy path"
   return 0
 }
 
-# filter_tables_by_pattern: print the entries of a newline-separated table
-# list that HIVE_TABLE_PATTERN selects (the whole list when there is no
-# pattern). Used by both check_all_tables_external() and
-# reconcile_external_table_data(), so the tables checked and the tables
-# copied are always the same set - the same tables REPL DUMP itself
-# selected.
-#
-# HIVE_TABLE_PATTERN may still be wrapped in the single quotes the caller
-# supplied (see derive_db_vars()) - those quotes are only meaningful to
-# parse_db_specs()/REPL DUMP's grammar, not to grep, so one matched pair is
-# stripped first. Hive evaluates the pattern as a case-insensitive Java
-# regex; grep -P (PCRE) supports the same constructs the documented
-# examples use, including the "(?!orders$).*" negative lookahead, so it is
-# preferred, with grep -E as the fallback where -P is unavailable. The
-# pattern is matched against the whole table name.
-#
-# Returns 1 (with an error on stderr) if the pattern cannot be evaluated -
-# an unevaluable pattern must never be read as "matches nothing", which
-# would silently skip the tables it was meant to select.
-filter_tables_by_pattern() {
-  local tables="$1"
-  if [[ -z "$HIVE_TABLE_PATTERN" ]]; then
-    [[ -n "$tables" ]] && printf '%s\n' "$tables"
-    return 0
-  fi
-  [[ -z "$tables" ]] && return 0
-
-  local table_pattern_regex="$HIVE_TABLE_PATTERN"
-  if [[ "$table_pattern_regex" == \'*\' ]]; then
-    table_pattern_regex="${table_pattern_regex#\'}"
-    table_pattern_regex="${table_pattern_regex%\'}"
-  fi
-
-  local matches grep_rc=0
-  if echo x | grep -qP 'x' 2>/dev/null; then
-    matches=$(printf '%s\n' "$tables" | grep -iP "^(?:${table_pattern_regex})$" 2>/dev/null) || grep_rc=$?
-  else
-    matches=$(printf '%s\n' "$tables" | grep -iE "^(${table_pattern_regex})$" 2>/dev/null) || grep_rc=$?
-  fi
-  if (( grep_rc > 1 )); then
-    echo "ERROR: Table pattern '${table_pattern_regex}' for '${HIVE_DB_NAME}' could not be evaluated as a regex by grep - cannot tell which tables it selects" >&2
-    return 1
-  fi
-  [[ -n "$matches" ]] && printf '%s\n' "$matches"
-  return 0
-}
-
-# table_describe_fields: print a table's Table Type (line 1) and LOCATION
-# (line 2) from a single DESCRIBE FORMATTED against the given JDBC URL.
-# Works for both default-warehouse-path and custom-LOCATION tables. A view
-# has no LOCATION, so line 2 is empty for one.
-table_describe_fields() {
+# table_location: print the LOCATION of a single table via DESCRIBE
+# FORMATTED against the given JDBC URL. Works for both default-warehouse-
+# path and custom-LOCATION tables.
+table_location() {
   local jdbc_url="$1"
   local db="$2"
   local tbl="$3"
-  local out tbl_type tbl_loc
 
-  out=$(beeline_exec "${jdbc_url}" \
+  beeline_exec "${jdbc_url}" \
     --silent=true \
     --showHeader=false \
     --outputformat=tsv2 \
-    -e "USE ${db}; DESCRIBE FORMATTED ${tbl};" 2>&1) || true
-  tbl_type=$(printf '%s\n' "$out" | grep -i "^Table Type:" | head -n 1 | awk -F'\t' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
-  tbl_loc=$(printf '%s\n' "$out" | grep -i "^Location:" | head -n 1 | awk -F'\t' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
-  printf '%s\n%s\n' "$tbl_type" "$tbl_loc"
+    -e "USE ${db}; DESCRIBE FORMATTED ${tbl};" 2>&1 \
+    | grep -i "^Location:" | awk -F'\t' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 # reconcile_external_table_data: for every table actually present in
@@ -3515,7 +3319,7 @@ distcp_collision_dgen_args() {
     nn_hosts_spec="${nameservice_nn_hosts_pair#*:}"
     nn_ids=()
     IFS=',' read -ra pairs <<< "$nn_hosts_spec"
-    for pair in ${pairs[@]+"${pairs[@]}"}; do
+    for pair in "${pairs[@]}"; do
       nn_id="${pair%%=*}"
       nn_addr="${pair#*=}"
       if [[ -z "$nn_id" || -z "$nn_addr" || "$nn_id" == "$pair" ]]; then
@@ -3525,41 +3329,12 @@ distcp_collision_dgen_args() {
       nn_ids+=("$nn_id")
       printf -- "-Ddfs.namenode.rpc-address.%s.%s=%s\n" "$nameservice" "$nn_id" "$nn_addr"
     done
-    joined_ids="$(IFS=,; echo "${nn_ids[*]:-}")"
+    joined_ids="$(IFS=,; echo "${nn_ids[*]}")"
     printf -- "-Ddfs.ha.namenodes.%s=%s\n" "$nameservice" "$joined_ids"
     printf -- "-Ddfs.client.failover.proxy.provider.%s=org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider\n" "$nameservice"
   done
 }
 
-# uri_path: print the path component of a "scheme://authority/path" URI,
-# normalized to a leading "/" and no trailing "/" ("/" for an empty path).
-uri_path() {
-  local rest="${1#*://}" p
-  if [[ "$rest" == */* ]]; then
-    p="/${rest#*/}"
-  else
-    p="/"
-  fi
-  while [[ "$p" == */ && "$p" != "/" ]]; do
-    p="${p%/}"
-  done
-  printf '%s' "$p"
-}
-
-# uri_path_depth: print the number of non-empty components in a path.
-uri_path_depth() {
-  local -a parts=()
-  local part n=0
-  IFS='/' read -ra parts <<< "$1"
-  for part in ${parts[@]+"${parts[@]}"}; do
-    [[ -n "$part" ]] && n=$(( n + 1 ))
-  done
-  printf '%s' "$n"
-}
-
-# LIMITATION: only each table's own LOCATION directory is reconciled. A
-# partition whose LOCATION lies outside its table's directory is not
-# copied by this function.
 reconcile_external_table_data() {
   # The token-renewal-exclude property must name every authority that
   # actually appears in this distcp's src_loc/dst_loc URIs - BOTH sides, not
@@ -3585,7 +3360,7 @@ reconcile_external_table_data() {
 
   echo "$SUBSEP"
   echo "Reconciling external table data via manual distcp (EFFECTIVE_RECONCILE_EXTERNAL_DATA=true)..."
-  echo "DistCp options: ${distcp_token_exclude_opt} -Dmapreduce.job.queuename=${YARN_QUEUE} ${distcp_collision_dgen_arr[*]:-} ${DISTCP_OPTS}"
+  echo "DistCp options: ${distcp_token_exclude_opt} -Dmapreduce.job.queuename=${YARN_QUEUE} ${distcp_collision_dgen_arr[*]} ${DISTCP_OPTS}"
   echo ""
 
   local tables_output tables
@@ -3598,17 +3373,8 @@ reconcile_external_table_data() {
     echo "ERROR: Could not list tables in '${HIVE_DB_NAME}' on load target for data reconciliation (after $(format_duration $(( $(date +%s) - _stage_t0 ))))"
     return 1
   }
-  tables=$(echo "$tables_output" | grep -E "^[A-Za-z0-9_]+$" || true)
+  tables=$(echo "$tables_output" | grep -E "^[A-Za-z0-9_]+$")
   echo "SHOW TABLES completed in $(format_duration $(( $(date +%s) - _stage_t0 )))"
-
-  # Only the tables this run's spec selected - the same set
-  # check_all_tables_external() verified and REPL DUMP replicated. Other
-  # tables in the same database belong to a different spec (or to none)
-  # and may be managed/ACID, which a raw distcp must never touch.
-  if ! tables=$(filter_tables_by_pattern "$tables"); then
-    echo "ERROR: Could not apply table pattern for '${HIVE_DB_NAME}' - not reconciling any table rather than the wrong ones"
-    return 1
-  fi
 
   if [[ -z "$tables" ]]; then
     echo "[WARN] No tables found in '${HIVE_DB_NAME}' on load target after metadata-only LOAD - nothing to reconcile"
@@ -3641,27 +3407,16 @@ reconcile_external_table_data() {
   # invocation outside any beeline session, so the equivalent is passing
   # the same underlying MapReduce property directly as a -D generic
   # option instead.
-  local -a distcp_dgen_arr=("$distcp_token_exclude_opt" -Dmapreduce.job.queuename="${YARN_QUEUE}" ${distcp_collision_dgen_arr[@]+"${distcp_collision_dgen_arr[@]}"})
+  local -a distcp_dgen_arr=("$distcp_token_exclude_opt" -Dmapreduce.job.queuename="${YARN_QUEUE}" "${distcp_collision_dgen_arr[@]}")
 
-  local tbl src_loc dst_loc src_type
+  local tbl src_loc dst_loc
   local failed=0
   while IFS= read -r tbl; do
     [[ -z "$tbl" ]] && continue
     local _tbl_t0=$(date +%s)
 
-    { IFS= read -r src_type; IFS= read -r src_loc; } < <(table_describe_fields "$DUMP_JDBC_URL" "$HIVE_DB_NAME" "$tbl")
-
-    if [[ "$src_type" == "VIRTUAL_VIEW" ]]; then
-      echo "Skipping ${HIVE_DB_NAME}.${tbl}: VIRTUAL_VIEW (no data to copy)"
-      continue
-    fi
-    if [[ "$src_type" != "EXTERNAL_TABLE" ]]; then
-      echo "ERROR: Table '${tbl}' is '${src_type:-unknown}' on the dump source, not EXTERNAL_TABLE - never copying it with a raw distcp, skipping"
-      failed=1
-      continue
-    fi
-
-    { IFS= read -r _; IFS= read -r dst_loc; } < <(table_describe_fields "$LOAD_JDBC_URL" "$HIVE_DB_NAME" "$tbl")
+    src_loc=$(table_location "$DUMP_JDBC_URL" "$HIVE_DB_NAME" "$tbl")
+    dst_loc=$(table_location "$LOAD_JDBC_URL" "$HIVE_DB_NAME" "$tbl")
 
     if [[ -z "$src_loc" || -z "$dst_loc" ]]; then
       echo "ERROR: Could not resolve LOCATION for table '${tbl}' (source='${src_loc}' dest='${dst_loc}') - skipping distcp for this table"
@@ -3669,7 +3424,7 @@ reconcile_external_table_data() {
       continue
     fi
 
-    # table_describe_fields() reports each side's LOCATION exactly as that side's
+    # table_location() reports each side's LOCATION exactly as that side's
     # OWN Hive/metastore natively understands it - i.e. using the raw,
     # literal DUMP_NAMESERVICE/LOAD_NAMESERVICE name, NEVER our synthetic
     # aliases (Hive has no knowledge of them). In the same-nameservice-
@@ -3702,40 +3457,12 @@ reconcile_external_table_data() {
       dst_loc="hdfs://${LOAD_URI_NS}${dst_loc#hdfs://"${LOAD_NAMESERVICE}"}"
     fi
 
-    # -delete: remove destination files that no longer exist at the source,
-    # so the replica mirrors the source exactly. Without it, files the
-    # source removed (e.g. the old files an INSERT OVERWRITE replaced) stay
-    # on the replica and are read alongside the new ones as duplicate rows.
-    # Added only when it is provably scoped to this one table's directory:
-    # both LOCATIONs have the same path (this script's design keeps them
-    # path-identical - see compute_repl_external_base_dir()), that path is at
-    # least 3 levels deep (never a filesystem root or a warehouse root), and
-    # DISTCP_OPTS has -update/-overwrite, which distcp requires for -delete.
-    local -a per_table_opts=(${distcp_opts_arr[@]+"${distcp_opts_arr[@]}"})
-    local src_path dst_path delete_skip_reason=""
-    src_path="$(uri_path "$src_loc")"
-    dst_path="$(uri_path "$dst_loc")"
-    if [[ " ${distcp_opts_arr[*]:-} " == *" -delete "* ]]; then
-      :
-    elif [[ " ${distcp_opts_arr[*]:-} " != *" -update "* && " ${distcp_opts_arr[*]:-} " != *" -overwrite "* ]]; then
-      delete_skip_reason="DISTCP_OPTS has neither -update nor -overwrite"
-    elif [[ "$src_path" != "$dst_path" ]]; then
-      delete_skip_reason="source path '${src_path}' and dest path '${dst_path}' differ"
-    elif (( $(uri_path_depth "$dst_path") < 3 )); then
-      delete_skip_reason="dest path '${dst_path}' is too shallow to delete under safely"
-    else
-      per_table_opts+=(-delete)
-    fi
-    if [[ -n "$delete_skip_reason" ]]; then
-      echo "[WARN] -delete not used for ${HIVE_DB_NAME}.${tbl}: ${delete_skip_reason} - copying without it (files removed at the source stay on the replica)"
-    fi
-
     echo "$SUBSEP"
     echo "Table  : ${HIVE_DB_NAME}.${tbl}"
     echo "Source : ${src_loc}"
     echo "Dest   : ${dst_loc}"
-    echo "Executing: hadoop distcp ${distcp_token_exclude_opt} -Dmapreduce.job.queuename=${YARN_QUEUE} ${distcp_collision_dgen_arr[*]:-} ${per_table_opts[*]:-} ${src_loc} ${dst_loc}"
-    if ! run_as_hdfs hadoop distcp ${distcp_dgen_arr[@]+"${distcp_dgen_arr[@]}"} ${per_table_opts[@]+"${per_table_opts[@]}"} "${src_loc}" "${dst_loc}"; then
+    echo "Executing: hadoop distcp ${distcp_token_exclude_opt} -Dmapreduce.job.queuename=${YARN_QUEUE} ${distcp_collision_dgen_arr[*]} ${DISTCP_OPTS} ${src_loc} ${dst_loc}"
+    if ! run_as_hdfs hadoop distcp "${distcp_dgen_arr[@]}" "${distcp_opts_arr[@]}" "${src_loc}" "${dst_loc}"; then
       echo "ERROR: distcp failed for table '${tbl}' (${src_loc} -> ${dst_loc}) after $(format_duration $(( $(date +%s) - _tbl_t0 )))"
       failed=1
       continue
@@ -3753,17 +3480,6 @@ reconcile_external_table_data() {
   echo ""
 }
 
-# print_bootstrap_partial_state_notice: printed when a bootstrap fails at or
-# after REPL LOAD - the only points where the load target may already hold a
-# partially loaded database. A failure before REPL LOAD leaves the load target
-# untouched, so it is not printed there.
-print_bootstrap_partial_state_notice() {
-  echo ""
-  echo "ERROR: Bootstrap failed at $(date). The load-target database may be in an inconsistent state."
-  echo "Before re-running, check: REPL STATUS ${HIVE_DB_NAME} on the load target and clean up if needed."
-  echo "Log File: $LOG_FILE"
-}
-
 # replicate_one_db: replicate a single database - runs a bootstrap cycle
 # if the destination database does not yet exist, or an incremental cycle
 # if it does. This is the main entry point used for every database when
@@ -3775,8 +3491,10 @@ replicate_one_db() {
 
   derive_db_vars "$db_spec"
 
-  # LOG_FILE (this database's log) is set by the main loop, which also
-  # directs this function's output into it.
+  ########################################
+  # Per-database log file
+  ########################################
+  LOG_FILE="$LOG_DIR/hive_bdr_${HIVE_DB_NAME}_$(date +%Y%m%d_%H%M%S).log"
 
   SEP="======================================================================"
   SUBSEP="----------------------------------------------------------------------"
@@ -3812,43 +3530,27 @@ replicate_one_db() {
   echo "[1/${TOTAL_STEPS}] Checking if database exists on load target..."
   local _stage_t0=$(date +%s)
 
-  # A failed query must abort this database, never read as "does not
-  # exist": that would route an existing replica into a bootstrap. A
-  # database that genuinely does not exist still returns exit code 0 with
-  # zero rows.
-  if ! DB_CHECK_OUTPUT=$( beeline_exec "${LOAD_JDBC_URL}" \
+  DB_CHECK_OUTPUT=$( beeline_exec "${LOAD_JDBC_URL}" \
     --silent=true \
     --showHeader=false \
     --outputformat=tsv2 \
-    -e "SHOW DATABASES LIKE '${HIVE_DB_NAME}';" 2>&1 ); then
-    echo "ERROR: Could not check whether '${HIVE_DB_NAME}' exists on load target (${LOAD_URI_NS}) - aborting this database rather than guessing bootstrap vs. incremental (after $(format_duration $(( $(date +%s) - _stage_t0 ))))"
-    echo "$DB_CHECK_OUTPUT"
-    return 1
-  fi
+    -e "SHOW DATABASES LIKE '${HIVE_DB_NAME}';" 2>&1 || true )
 
   # beeline prints its own connection/session chatter (e.g. "Setting
   # property: ...", "!connect ...", timestamped "INFO ..." lines,
   # "Executing command: ...") even with --silent=true - none of that is
   # suppressed by --silent, which only affects query RESULT formatting.
-  # The database exists only if one output line IS its name - compared
-  # case-insensitively, since the Hive Metastore stores and returns database
-  # names in lowercase. A LIKE pattern can also return other databases (Hive
-  # versions that treat "_" as a single-character wildcard make
-  # 'sales_us' match 'sales1us' too), and beeline chrome lines are never
-  # exactly the name, so every other line is ignored rather than failing the
-  # database.
-  DB_EXISTS=""
-  local _db_line _db_others=""
-  while IFS= read -r _db_line; do
-    _db_line="${_db_line%$'\r'}"
-    if [[ "${_db_line,,}" == "${HIVE_DB_NAME,,}" ]]; then
-      DB_EXISTS="$_db_line"
-    elif [[ "$_db_line" =~ ^[A-Za-z0-9_]+$ ]]; then
-      _db_others+="${_db_others:+, }${_db_line}"
-    fi
-  done <<< "$DB_CHECK_OUTPUT"
-  if [[ -n "$_db_others" ]]; then
-    echo "[INFO] SHOW DATABASES LIKE '${HIVE_DB_NAME}' also returned other database(s), ignored: ${_db_others}"
+  # Only accept a line that looks like a valid Hive identifier (letters,
+  # digits, underscore) as the actual result; every other line - no
+  # matter its shape - is beeline chrome, not data.
+  DB_EXISTS=$(echo "$DB_CHECK_OUTPUT" | grep -E "^[A-Za-z0-9_]+$" | head -n 1 || true)
+
+  # The Hive Metastore stores and returns database names in lowercase, so
+  # compare case-insensitively.
+  if [[ -n "$DB_EXISTS" && "${DB_EXISTS,,}" != "${HIVE_DB_NAME,,}" ]]; then
+    echo "ERROR: Database exist check failed on load target"
+    echo "$DB_CHECK_OUTPUT"
+    return 1
   fi
   echo "[1/${TOTAL_STEPS}] Completed in $(format_duration $(( $(date +%s) - _stage_t0 )))"
 
@@ -3871,7 +3573,7 @@ replicate_one_db() {
   # never reads RECONCILE_EXTERNAL_DATA at all), even though REPL DUMP/LOAD
   # would still internally perform a real bootstrap underneath - silently
   # skipping this script's own bootstrap-only safeguards
-  # (RECONCILE_EXTERNAL_DATA check/flip, snapshot enablement, the partial-state notice).
+  # (RECONCILE_EXTERNAL_DATA check/flip, snapshot enablement, the ERR trap).
   ########################################
   echo "$SUBSEP"
   echo "[2/${TOTAL_STEPS}] Determining replication mode..."
@@ -3879,19 +3581,13 @@ replicate_one_db() {
 
   local BOOTSTRAP
   if [[ -n "$DB_EXISTS" ]]; then
-    # Same rule as the existence check above: a failed SHOW TABLES must not
-    # be counted as "0 tables" (which means bootstrap).
-    local existing_table_count existing_tables_output
-    if ! existing_tables_output=$(beeline_exec "${LOAD_JDBC_URL}" \
+    local existing_table_count
+    existing_table_count=$(beeline_exec "${LOAD_JDBC_URL}" \
       --silent=true \
       --showHeader=false \
       --outputformat=tsv2 \
-      -e "USE ${HIVE_DB_NAME}; SHOW TABLES;" 2>&1); then
-      echo "ERROR: Could not list tables in '${HIVE_DB_NAME}' on load target (${LOAD_URI_NS}) - aborting this database rather than guessing bootstrap vs. incremental"
-      echo "$existing_tables_output"
-      return 1
-    fi
-    existing_table_count=$(printf '%s\n' "$existing_tables_output" | grep -c -E "^[A-Za-z0-9_]+$" || true)
+      -e "USE ${HIVE_DB_NAME}; SHOW TABLES;" 2>&1 \
+      | grep -c -E "^[A-Za-z0-9_]+$")
 
     if [[ "$existing_table_count" -eq 0 ]]; then
       echo "Database '${HIVE_DB_NAME}' exists on load target but has 0 tables - Bootstrap mode (empty database is bootstrap-eligible per Hive's own REPL LOAD constraint)"
@@ -3916,6 +3612,10 @@ replicate_one_db() {
   LAST_DB_MODE=$([ "$BOOTSTRAP" = "true" ] && echo "Bootstrap + Incremental" || echo "Incremental Only")
 
   if [[ "$BOOTSTRAP" == "true" ]]; then
+    # If bootstrap fails partway through, warn that the destination
+    # database may be left in a partial state and should be checked
+    # before re-running.
+    trap 'echo ""; echo "ERROR: Bootstrap failed at $(date). The load-target database may be in an inconsistent state."; echo "Before re-running, check: REPL STATUS ${HIVE_DB_NAME} on the load target and clean up if needed."; echo "Log File: $LOG_FILE"' ERR
 
     if [[ "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ]]; then
       local _stage_t0=$(date +%s)
@@ -3930,6 +3630,7 @@ replicate_one_db() {
       local _stage_t0=$(date +%s)
       if ! check_all_tables_external "$DUMP_JDBC_URL"; then
         echo "ERROR: Aborting bootstrap for ${HIVE_DB_NAME} - see error above (after $(format_duration $(( $(date +%s) - _stage_t0 ))))"
+        trap - ERR
         return 1
       fi
       echo "EXTERNAL_TABLE check completed in $(format_duration $(( $(date +%s) - _stage_t0 )))"
@@ -3961,6 +3662,7 @@ $(materialized_view_props)
 
     if ! beeline_exec "${DUMP_JDBC_URL}" -e "$DUMP_CMD"; then
       echo "ERROR: Bootstrap REPL DUMP failed for ${HIVE_DB_NAME} (after $(format_duration $(( $(date +%s) - _stage_t0 ))))"
+      trap - ERR
       return 1
     fi
     echo "[3/${TOTAL_STEPS}] REPL DUMP completed in $(format_duration $(( $(date +%s) - _stage_t0 )))"
@@ -4016,8 +3718,6 @@ $(ha_config_props)
 $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
-$(distcp_crc_props)
-$(force_distcp_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
@@ -4027,21 +3727,9 @@ $(force_distcp_props)
     # HA-resolution flags are needed here: this standalone "hdfs dfs" call
     # runs on whichever host this script executes on, and the raw name is
     # always natively resolvable via that cluster's own hdfs-site.xml.
-    #
-    # With REPL_EXTERNAL_BASE_DIR_ROOT="/" (the fixed value at the top of
-    # this script) the base dir is the load cluster's filesystem ROOT, which
-    # always exists - and a "chmod 1777" there would make the whole
-    # filesystem root world-writable. The mkdir/chmod only apply when the
-    # base dir is a real subdirectory.
-    local base_dir_path="${REPL_EXTERNAL_BASE_DIR#hdfs://}"
-    base_dir_path="/${base_dir_path#*/}"
-    if [[ "$base_dir_path" == "/" ]]; then
-      echo "[INFO] External table base directory is the filesystem root (${REPL_EXTERNAL_BASE_DIR}) - leaving it and its permissions untouched"
-    else
-      echo "Ensuring external table base directory exists on load target: ${REPL_EXTERNAL_BASE_DIR}"
-      run_as_hdfs hdfs dfs -mkdir -p "${REPL_EXTERNAL_BASE_DIR}" || true
-      run_as_hdfs hdfs dfs -chmod 1777 "${REPL_EXTERNAL_BASE_DIR}" || true
-    fi
+    echo "Ensuring external table base directory exists on load target: ${REPL_EXTERNAL_BASE_DIR}"
+    run_as_hdfs hdfs dfs -mkdir -p "${REPL_EXTERNAL_BASE_DIR}" || true
+    run_as_hdfs hdfs dfs -chmod 1777 "${REPL_EXTERNAL_BASE_DIR}" || true
     echo ""
 
     echo "$SUBSEP"
@@ -4050,7 +3738,7 @@ $(force_distcp_props)
 
     if ! beeline_exec_load "${LOAD_JDBC_URL}" -e "$LOAD_CMD"; then
       echo "ERROR: Bootstrap REPL LOAD failed for ${HIVE_DB_NAME} (after $(format_duration $(( $(date +%s) - _stage_t0 ))))"
-      print_bootstrap_partial_state_notice
+      trap - ERR
       return 1
     fi
     echo "[4/${TOTAL_STEPS}] REPL LOAD completed in $(format_duration $(( $(date +%s) - _stage_t0 )))"
@@ -4060,7 +3748,7 @@ $(force_distcp_props)
       local _stage_t0=$(date +%s)
       if ! reconcile_external_table_data; then
         echo "ERROR: External data reconciliation failed for ${HIVE_DB_NAME} (after $(format_duration $(( $(date +%s) - _stage_t0 ))))"
-        print_bootstrap_partial_state_notice
+        trap - ERR
         return 1
       fi
       echo "External data reconciliation completed in $(format_duration $(( $(date +%s) - _stage_t0 )))"
@@ -4078,6 +3766,8 @@ $(force_distcp_props)
     echo "[5/${TOTAL_STEPS}] Completed in $(format_duration $(( $(date +%s) - _stage_t0 )))"
     echo ""
 
+    # Bootstrap completed successfully - clear the error trap.
+    trap - ERR
   else
     if ! run_incremental_cycle; then
       echo "ERROR: Incremental replication cycle failed for ${HIVE_DB_NAME}"
@@ -4181,28 +3871,6 @@ SUBSEP="----------------------------------------------------------------------"
 # - see expand_db_specs() above.
 expand_db_specs
 
-# Several specs for the SAME database (e.g. "sales.'orders'|sales.'customers'")
-# share one REPL DUMP staging directory (.../<db>/from_<suffix>), so each
-# spec's incremental dump is computed against whichever spec dumped there
-# last, not against its own previous dump. The run proceeds - changing the
-# staging path would orphan existing replication lineage - but this is
-# flagged so it can be replaced by a single spec with a combined table
-# pattern (e.g. "sales.'(orders|customers)'").
-declare -A _specs_per_db=()
-for _spec in "${DB_SPECS[@]}"; do
-  _db="${_spec%%.*}"
-  _specs_per_db[$_db]+="${_specs_per_db[$_db]:+ | }${_spec}"
-done
-for _db in "${!_specs_per_db[@]}"; do
-  if [[ "${_specs_per_db[$_db]}" == *" | "* ]]; then
-    echo "[WARN] Database '${_db}' appears in more than one DB spec: ${_specs_per_db[$_db]}"
-    echo "[WARN]   These share one staging directory, so their incremental dumps interfere with each"
-    echo "[WARN]   other. Combine them into one spec with a single table pattern, e.g."
-    echo "[WARN]   ${_db}.'(table_a|table_b)'."
-  fi
-done
-unset _specs_per_db _spec _db
-
 DB_COUNT=${#DB_SPECS[@]}
 
 echo "$SEP"
@@ -4219,7 +3887,7 @@ fi
 echo "Direction    : $REPLICATION_DIRECTION"
 if [[ "$DIRECTION_CHANGE" == true ]]; then
   echo "Run type     : DIRECTION CHANGE (${DIRECTION_CHANGE_KIND}) - flips which cluster is primary,"
-  echo "               converges over up to ${FAILOVER_MAX_ROUNDS} DUMP/LOAD rounds; table data copy: RECONCILE_ON_DIRECTION_CHANGE=${RECONCILE_ON_DIRECTION_CHANGE}"
+  echo "               copies NO table data, converges over up to ${FAILOVER_MAX_ROUNDS} DUMP/LOAD rounds"
 else
   echo "Run type     : ongoing replication (bootstrap/incremental) - copies table data"
 fi
@@ -4273,8 +3941,6 @@ if [[ "$SAME_NAMESERVICE_COLLISION" == true ]]; then
 fi
 echo "Snapshot Copy: ${HIVE_REPL_SNAPSHOT_COPY} $([ "${HIVE_REPL_SNAPSHOT_COPY,,}" == "true" ] && echo "(snapshot-diff external table copy enabled)" || echo "(normal listing-based external table copy)")"
 echo "YARN Queue   : ${YARN_QUEUE} (REPL LOAD data-copy jobs only)"
-echo "Force DistCp : ${HIVE_REPL_FORCE_DISTCP} $([ "${HIVE_REPL_FORCE_DISTCP,,}" == "true" ] && echo "(all REPL LOAD copies run as DistCp jobs)" || echo "(small copies run inside HiveServer2)")"
-echo "Skip CRC     : ${HIVE_REPL_SKIP_CRC_CHECK} $([ "${HIVE_REPL_SKIP_CRC_CHECK,,}" == "true" ] && echo "(REPL LOAD DistCp runs with -skipcrccheck)" || echo "(REPL LOAD DistCp compares checksums)")"
 echo "Kerberos     : ${KERBEROS_ENABLED^^}"
 if [[ "$KERBEROS_ENABLED" == "yes" ]]; then
   echo "Execution Mode: Kerberos (no sudo, beeline uses ticket)"
@@ -4303,60 +3969,6 @@ echo ""
 # and does not need escaping - skipping it for those columns avoids 7 of
 # the 8 per-database subshells this would otherwise cost.
 csv_field() { printf '"%s"' "${1//\"/\"\"}"; }
-
-# acquire_db_lock / release_db_lock: one lock per database, held for the
-# whole bootstrap, incremental or direction-change run of that database, so
-# two invocations can never run REPL DUMP/LOAD against the same database at
-# the same time - e.g. a cron-scheduled incremental firing while a
-# multi-hour bootstrap or a failover is still in progress. The lock file
-# path (${INCREMENTAL_LOCK_DIR}/<db>.lock) is the one earlier versions of
-# this script used for incremental cycles only, so a run of an older
-# version still holding it is respected.
-#
-# acquire_db_lock returns 0 = lock held (or locking unavailable - see
-# below), 1 = another run holds it. A lock that cannot be set up at all
-# (lock dir not writable, no `flock` binary) is WARNED about and the
-# database proceeds unlocked: the lock is a safety net and must never be
-# the reason replication does not run.
-DB_LOCK_FD=""
-acquire_db_lock() {
-  local db="$1"
-  local lock_file="${INCREMENTAL_LOCK_DIR}/${db}.lock"
-  DB_LOCK_FD=""
-  if ! command -v flock >/dev/null 2>&1; then
-    echo "[WARN] 'flock' is not installed - running '${db}' without a concurrency lock"
-    return 0
-  fi
-  mkdir -p "$INCREMENTAL_LOCK_DIR" 2>/dev/null || true
-  if ! { exec {DB_LOCK_FD}>>"$lock_file"; } 2>/dev/null; then
-    echo "[WARN] Could not open lock file ${lock_file} - running '${db}' without a concurrency lock"
-    DB_LOCK_FD=""
-    return 0
-  fi
-  # flock -n exits 1 only when the lock is held elsewhere; any other
-  # non-zero status is flock itself failing, which is not evidence of
-  # another run.
-  local flock_rc=0
-  flock -n "$DB_LOCK_FD" || flock_rc=$?
-  if (( flock_rc == 1 )); then
-    echo "WARN: Another run for '${db}' is in progress (lock: ${lock_file}) - skipping this database to avoid concurrent REPL DUMP/LOAD against it."
-    exec {DB_LOCK_FD}>&-
-    DB_LOCK_FD=""
-    return 1
-  elif (( flock_rc != 0 )); then
-    echo "[WARN] flock failed (exit ${flock_rc}) on ${lock_file} - running '${db}' without a concurrency lock"
-    exec {DB_LOCK_FD}>&-
-    DB_LOCK_FD=""
-  fi
-  return 0
-}
-
-release_db_lock() {
-  [[ -z "$DB_LOCK_FD" ]] && return 0
-  flock -u "$DB_LOCK_FD" 2>/dev/null || true
-  exec {DB_LOCK_FD}>&- 2>/dev/null || true
-  DB_LOCK_FD=""
-}
 
 # RUN_SUMMARY_CSV - one row per database, appended immediately after that
 # database finishes (not built up and written once at the end), so a run
@@ -4396,42 +4008,22 @@ for db_spec in "${DB_SPECS[@]}"; do
   # the reversed direction (dst_to_src + DIRECTION_CHANGE=false) and failback
   # (src_to_dst + DIRECTION_CHANGE=true) unreachable - see DIRECTION_CHANGE's
   # doc comment near the top of this file for the full four-state table.
-  #
-  # A database another run is already working on is SKIPPED, not FAILED -
-  # it is being replicated, just not by this invocation.
-  #
-  # Per-database log file: everything the database's run prints (stdout,
-  # stderr and fd-3 heartbeat lines) is appended to LOG_FILE and still passes
-  # through to the session log. The function runs in THIS shell (only its
-  # output is redirected), so the variables it sets are kept. If the file
-  # cannot be written, tee reports it and keeps passing output through.
-  db_log_name="${db_spec%%.*}"
-  db_log_name="${db_log_name//[^A-Za-z0-9_]/_}"
   if [[ "$DIRECTION_CHANGE" == true ]]; then
-    LOG_FILE="$LOG_DIR/hive_bdr_direction_change_${db_log_name}_$(date +%Y%m%d_%H%M%S).log"
-  else
-    LOG_FILE="$LOG_DIR/hive_bdr_${db_log_name}_$(date +%Y%m%d_%H%M%S).log"
-  fi
-  if ! acquire_db_lock "${db_spec%%.*}"; then
-    db_status="SKIPPED"
-    db_error="locked by another run"
-  elif [[ "$DIRECTION_CHANGE" == true ]]; then
     LAST_DB_MODE="$DIRECTION_CHANGE_KIND"
-    if ! failover_one_db "$db_spec" "$DB_IDX" "$DB_COUNT" > >(tee -a "$LOG_FILE") 2>&1 3>&1; then
+    if ! failover_one_db "$db_spec" "$DB_IDX" "$DB_COUNT"; then
       echo "ERROR: ${DIRECTION_CHANGE_KIND} (direction change) failed for DB spec: ${db_spec}"
       FAILED_DBS+=("$db_spec")
       db_status="FAILED"
       db_error="${DIRECTION_CHANGE_KIND} (direction change) failed"
     fi
   else
-    if ! replicate_one_db "$db_spec" "$DB_IDX" "$DB_COUNT" > >(tee -a "$LOG_FILE") 2>&1 3>&1; then
+    if ! replicate_one_db "$db_spec" "$DB_IDX" "$DB_COUNT"; then
       echo "ERROR: Replication failed for DB spec: ${db_spec}"
       FAILED_DBS+=("$db_spec")
       db_status="FAILED"
       db_error="Replication failed"
     fi
   fi
-  release_db_lock
 
   db_end_epoch=$(date +%s)
   db_end_iso="$(date -Iseconds 2>/dev/null || date)"
@@ -4464,7 +4056,7 @@ echo "Total     : ${DB_COUNT}"
 echo "Failed    : ${#FAILED_DBS[@]}"
 if [[ ${#FAILED_DBS[@]} -gt 0 ]]; then
   echo "Failed DBs:"
-  for f in ${FAILED_DBS[@]+"${FAILED_DBS[@]}"}; do
+  for f in "${FAILED_DBS[@]}"; do
     echo "  - $f"
   done
   echo ""
