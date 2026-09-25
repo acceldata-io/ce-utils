@@ -1,7 +1,7 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
 # Hadoop Disaster Recovery Continuous Replication Script
-# Version: 4.2.0
+# Version: v6
 # Copyright (c) 2025 Acceldata Inc. All rights reserved.
 #
 #
@@ -13,7 +13,7 @@
 #   cluster free from replication workload.
 #
 # Usage:
-#   ./hadoop_dr_replication_v6.sh \
+#   ./hadoop_dr_replication-v6.sh \
 #     "<SOURCE_NN_HOST:PORT>"   \
 #     "<DEST_NN_HOST:PORT>"     \
 #     "<DIR1,DIR2,...>"         \
