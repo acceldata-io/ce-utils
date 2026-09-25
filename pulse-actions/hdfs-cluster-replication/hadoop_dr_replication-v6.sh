@@ -1,7 +1,7 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
 # Hadoop Disaster Recovery Continuous Replication Script
-# Version: 4.2.0
+# Version: v6
 # Copyright (c) 2025 Acceldata Inc. All rights reserved.
 #
 #
@@ -339,6 +339,10 @@
 #     Example: export DEST_HTTP_SCHEME=https
 #   - DEST_NN_WEB_PORT      - NameNode web UI port for destination cluster (default: 50070)
 #     Example: export DEST_NN_WEB_PORT=9870
+#   - CURL_BIN              - curl binary used for NameNode JMX calls (default: curl from PATH)
+#     Set when the host needs a specific curl, e.g. Centrify-joined hosts whose system curl
+#     cannot use the Centrify-managed Kerberos ticket:
+#     Example: export CURL_BIN=/usr/share/centrifydc/bin/curl
 #
 #   Note: SOURCE_HTTP_SCHEME/PORT and DEST_HTTP_SCHEME/PORT are intentionally separate to support
 #   cross-cluster replication between different Hadoop distributions or versions with different JMX
@@ -861,6 +865,9 @@ SOURCE_HTTP_SCHEME="${SOURCE_HTTP_SCHEME:-http}"  # http or https for source clu
 SOURCE_NN_WEB_PORT="${SOURCE_NN_WEB_PORT:-50070}" # NameNode web UI port for source (commonly 50070 or 9870)
 DEST_HTTP_SCHEME="${DEST_HTTP_SCHEME:-http}"     # http or https for destination cluster
 DEST_NN_WEB_PORT="${DEST_NN_WEB_PORT:-50070}"     # NameNode web UI port for destination (commonly 50070 or 9870)
+
+# curl binary for NameNode JMX calls (bare command name or absolute path, e.g. /usr/share/centrifydc/bin/curl)
+CURL_BIN="${CURL_BIN:-curl}"
 
 # Kerberos credential cache path (KRB5CCNAME) If your Kerberos plugin stores cache at a custom location (e.g.,
 # /tmp/krb_*), set this environment variable to point to the cache file. Example: export
@@ -1498,12 +1505,12 @@ resolve_active_namenode_hostport() {
         log "[DEBUG] [ACTIVE-NN-RESOLVE] Checking service state of ${nn_id} ($nn_addr) via JMX: $jmx_url"
 
         if [[ "$KERBEROS_ENABLED" == "yes" ]]; then
-            jmx_response=$(curl -ik --silent --max-time 10 --fail --negotiate -u : "$jmx_url" 2>/dev/null || true)
+            jmx_response=$("$CURL_BIN" -ik --silent --max-time 10 --fail --negotiate -u : "$jmx_url" 2>/dev/null || true)
             if [[ -z "$jmx_response" ]] || ! echo "$jmx_response" | grep -q "FSNamesystem"; then
-                jmx_response=$(curl -ik --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
+                jmx_response=$("$CURL_BIN" -ik --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
             fi
         else
-            jmx_response=$(curl -ik --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
+            jmx_response=$("$CURL_BIN" -ik --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
         fi
 
         if [[ -z "$jmx_response" ]] || ! echo "$jmx_response" | grep -q "FSNamesystem"; then
@@ -1522,7 +1529,7 @@ resolve_active_namenode_hostport() {
     done
 
     echo "[ERROR] Could not find an ACTIVE NameNode among DST_NN_HOSTS ('$nn_hosts') via JMX." >&2
-    echo "[ERROR] Verify manually, e.g.: curl -sk \"${DEST_HTTP_SCHEME}://<nn-host>:${DEST_NN_WEB_PORT}/jmx?qry=Hadoop:service=NameNode,name=FSNamesystem\"" >&2
+    echo "[ERROR] Verify manually, e.g.: \"$CURL_BIN\" -sk \"${DEST_HTTP_SCHEME}://<nn-host>:${DEST_NN_WEB_PORT}/jmx?qry=Hadoop:service=NameNode,name=FSNamesystem\"" >&2
     echo "[ERROR] Every nn-id reported non-active or unreachable -- see [DEBUG] [ACTIVE-NN-RESOLVE] lines" >&2
     echo "[ERROR] above (re-run with DISTCP_DEBUG=yes if those were suppressed) for the per-NameNode detail." >&2
     exit 19
@@ -1809,11 +1816,15 @@ parse_copy_opts
 # Check if required commands exist
 check_prerequisites() {
     local missing_commands=()
-    for cmd in hdfs hadoop curl; do
+    for cmd in hdfs hadoop; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             missing_commands+=("$cmd")
         fi
     done
+    if ! command -v "$CURL_BIN" >/dev/null 2>&1; then
+        echo "[ERROR] curl binary not found: '$CURL_BIN' (set CURL_BIN to the curl to use, e.g. /usr/share/centrifydc/bin/curl)" >&2
+        exit 1
+    fi
     
     if [[ ${#missing_commands[@]} -gt 0 ]]; then
         echo "[ERROR] Missing required commands: ${missing_commands[*]}" >&2
@@ -3537,7 +3548,7 @@ check_cluster_health() {
         if [[ -n "${KRB5CCNAME:-}" ]]; then
             # Export KRB5CCNAME for curl to use
             export KRB5CCNAME
-            curl_cmd="curl -ik --silent --max-time 10 --fail --negotiate -u : \"$jmx_url\""
+            curl_cmd="\"$CURL_BIN\" -ik --silent --max-time 10 --fail --negotiate -u : \"$jmx_url\""
             echo ""
             echo "  >>> Curl Command (Kerberos with custom cache):"
             echo "  >>>   KRB5CCNAME=\"${KRB5CCNAME}\" $curl_cmd"
@@ -3545,7 +3556,7 @@ check_cluster_health() {
             log "[DEBUG] Using Kerberos with KRB5CCNAME=\"${KRB5CCNAME}\""
         else
             # Kerberos mode but no custom cache - use default location
-            curl_cmd="curl -ik --silent --max-time 10 --fail --negotiate -u : \"$jmx_url\""
+            curl_cmd="\"$CURL_BIN\" -ik --silent --max-time 10 --fail --negotiate -u : \"$jmx_url\""
             echo ""
             echo "  >>> Curl Command (Kerberos, default cache):"
             echo "  >>>   $curl_cmd"
@@ -3554,28 +3565,28 @@ check_cluster_health() {
         fi
         
         # Execute curl with Kerberos authentication
-        jmx_response=$(curl -ik --silent --max-time 10 --fail --negotiate -u : "$jmx_url" 2>/dev/null || true)
+        jmx_response=$("$CURL_BIN" -ik --silent --max-time 10 --fail --negotiate -u : "$jmx_url" 2>/dev/null || true)
         
         # Check if Kerberos authentication failed
         if [[ -z "$jmx_response" ]] || ! echo "$jmx_response" | grep -q "FSNamesystem"; then
             log "[WARN] Kerberos authentication failed, trying without Kerberos..."
-            curl_cmd="curl -ik --silent --max-time 10 --fail \"$jmx_url\""
+            curl_cmd="\"$CURL_BIN\" -ik --silent --max-time 10 --fail \"$jmx_url\""
             echo ""
             echo "  >>> Fallback Curl Command (no Kerberos):"
             echo "  >>>   $curl_cmd"
             echo ""
             log "[DEBUG] Fallback to non-Kerberos mode"
-            jmx_response=$(curl -ik --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
+            jmx_response=$("$CURL_BIN" -ik --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
         fi
     else
         # Non-Kerberos mode
-        curl_cmd="curl -ik --silent --max-time 10 --fail \"$jmx_url\""
+        curl_cmd="\"$CURL_BIN\" -ik --silent --max-time 10 --fail \"$jmx_url\""
         echo ""
         echo "  >>> Curl Command (no Kerberos):"
         echo "  >>>   $curl_cmd"
         echo ""
         log "[DEBUG] Using non-Kerberos mode"
-        jmx_response=$(curl -ik --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
+        jmx_response=$("$CURL_BIN" -ik --silent --max-time 10 --fail "$jmx_url" 2>/dev/null || true)
     fi
     
     # Check if we got a valid response
