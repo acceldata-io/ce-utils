@@ -947,7 +947,12 @@ AUTO_DERIVE_HA_CLIENT_CONFIG="${AUTO_DERIVE_HA_CLIENT_CONFIG:-no}"
 # identity, an operator re-running this script after a failover/failback role swap (SOURCE_CLUSTER and
 # DEST_CLUSTER arguments swapped -- see REVERSE_DIFF_BOOTSTRAP above) MUST also swap the values of
 # SRC_NN_HOSTS and DST_NN_HOSTS to match, so each still describes the NameService now occupying that argument
-# slot.
+# slot. SOURCE_HTTP_SCHEME/SOURCE_NN_WEB_PORT and DEST_HTTP_SCHEME/DEST_NN_WEB_PORT are also per role and must be
+# swapped too when the two clusters use different values.
+#
+# When both clusters share one nameservice name, these values are the ONLY thing that sets the direction of a
+# run (SOURCE_CLUSTER and DEST_CLUSTER are the same string). The script checks them against this host's own
+# NameNodes before running and exits 33 if they are the wrong way round (see verify_same_nameservice_direction).
 ###############################################################################
 SRC_NN_HOSTS="${SRC_NN_HOSTS:-}"
 DST_NN_HOSTS="${DST_NN_HOSTS:-}"
@@ -1645,6 +1650,102 @@ resolve_active_namenode_hostport() {
     exit 19
 }
 
+# Print the host (without port) of each "<nn-id>=<host>:<port>" entry of an NN_HOSTS list, one per line.
+_nn_hosts_hostnames() {
+    local -a pairs=()
+    local pair addr
+    IFS=',' read -r -a pairs <<<"$1"
+    for pair in ${pairs[@]+"${pairs[@]}"}; do
+        [[ -z "$pair" || "$pair" != *=* ]] && continue
+        addr="${pair#*=}"
+        printf '%s\n' "${addr%%:*}"
+    done
+    return 0
+}
+
+# True if host $1 is one of the hosts that follow. Case-insensitive; when only one side of a comparison is
+# fully qualified, the short host names are compared instead.
+_host_in_list() {
+    local h="${1,,}" c
+    shift
+    for c in "$@"; do
+        c="${c,,}"
+        [[ -z "$c" ]] && continue
+        if [[ "$h" == "$c" ]]; then
+            return 0
+        fi
+        if [[ "$h" != *.* || "$c" != *.* ]] && [[ "${h%%.*}" == "${c%%.*}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# -----------------------------------------------------------------------------
+# verify_same_nameservice_direction: in the same-nameservice case, SOURCE_CLUSTER and DEST_CLUSTER are the same
+# string, so the direction of a run is set only by SRC_NN_HOSTS/DST_NN_HOSTS. Values left unswapped after a
+# failover/failback would silently replicate the old primary over the active cluster.
+#
+# The NameNodes of the shared nameservice in this host's own configuration ("hdfs getconf", local config only,
+# no RPC) belong to the cluster this script runs on: the destination in pull mode, the source in push mode.
+# Exits 33 when those NameNodes are listed in the NN_HOSTS of the other side and not in the expected side's.
+# When they cannot be read, or match neither or both sides, only a warning is logged.
+# -----------------------------------------------------------------------------
+verify_same_nameservice_direction() {
+    local ns="$SOURCE_CLUSTER" ids_csv out id addr
+    local -a nn_ids=() local_hosts=() expected_hosts=() other_hosts=()
+    local expected_var other_var expected_label other_label
+
+    if [[ "${REPLICATION_MODE,,}" == "push" ]]; then
+        expected_var="SRC_NN_HOSTS" other_var="DST_NN_HOSTS" expected_label="source" other_label="destination"
+    else
+        expected_var="DST_NN_HOSTS" other_var="SRC_NN_HOSTS" expected_label="destination" other_label="source"
+    fi
+
+    if ids_csv="$(run_as_hdfs hdfs getconf -confKey "dfs.ha.namenodes.${ns}" 2>/dev/null)" && [[ -n "${ids_csv//[[:space:]]/}" ]]; then
+        IFS=',' read -r -a nn_ids <<<"${ids_csv//[[:space:]]/}"
+        for id in ${nn_ids[@]+"${nn_ids[@]}"}; do
+            [[ -z "$id" ]] && continue
+            if addr="$(run_as_hdfs hdfs getconf -confKey "dfs.namenode.rpc-address.${ns}.${id}" 2>/dev/null)"; then
+                addr="${addr//[[:space:]]/}"
+                [[ -n "$addr" ]] && local_hosts+=("${addr%%:*}")
+            fi
+        done
+    elif out="$(run_as_hdfs hdfs getconf -confKey "dfs.namenode.rpc-address.${ns}" 2>/dev/null)"; then
+        out="${out//[[:space:]]/}"
+        [[ -n "$out" ]] && local_hosts+=("${out%%:*}")
+    fi
+
+    if [[ ${#local_hosts[@]} -eq 0 ]]; then
+        log "[WARN] [NAMESERVICE-ALIAS] Could not read this host's NameNodes for nameservice '$ns' from local configuration; cannot confirm that $expected_var describes the cluster this script runs on (the $expected_label in ${REPLICATION_MODE} mode). Make sure SRC_NN_HOSTS/DST_NN_HOSTS were swapped after any failover/failback."
+        return 0
+    fi
+
+    mapfile -t expected_hosts < <(_nn_hosts_hostnames "${!expected_var}")
+    mapfile -t other_hosts < <(_nn_hosts_hostnames "${!other_var}")
+
+    local h in_expected=false in_other=false
+    for h in "${local_hosts[@]}"; do
+        _host_in_list "$h" ${expected_hosts[@]+"${expected_hosts[@]}"} && in_expected=true
+        _host_in_list "$h" ${other_hosts[@]+"${other_hosts[@]}"} && in_other=true
+    done
+
+    if [[ "$in_expected" == "true" && "$in_other" != "true" ]]; then
+        log "[INFO] [NAMESERVICE-ALIAS] This host's NameNodes for '$ns' (${local_hosts[*]}) are in $expected_var: this host is on the $expected_label cluster, as ${REPLICATION_MODE} mode requires."
+        return 0
+    fi
+    if [[ "$in_other" == "true" && "$in_expected" != "true" ]]; then
+        echo "[ERROR] Replication direction does not match this host (same-nameservice mode, nameservice '$ns')." >&2
+        echo "[ERROR] This host's NameNodes (${local_hosts[*]}) are listed in $other_var, i.e. this host is on the $other_label cluster," >&2
+        echo "[ERROR] but in ${REPLICATION_MODE} mode the script must run on the $expected_label cluster ($expected_var)." >&2
+        echo "[ERROR] After a failover/failback, swap the values of SRC_NN_HOSTS and DST_NN_HOSTS, or run the script on the other cluster." >&2
+        log "[ERROR] [NAMESERVICE-ALIAS] Refusing to run: this host's NameNodes (${local_hosts[*]}) are in $other_var, not $expected_var. Running would replicate in the opposite direction to the one intended for this host."
+        exit 33
+    fi
+    log "[WARN] [NAMESERVICE-ALIAS] This host's NameNodes for '$ns' (${local_hosts[*]}) match neither or both of SRC_NN_HOSTS/DST_NN_HOSTS; cannot confirm the replication direction. Make sure SRC_NN_HOSTS/DST_NN_HOSTS were swapped after any failover/failback."
+    return 0
+}
+
 # Scan "$@" for ANY "hdfs://" reference (covers both the "-fs hdfs://<ns>" form used by hdfs
 # dfs/dfsadmin/snapshotDiff, and the bare "hdfs://<ns>/path" URIs hadoop distcp takes as its trailing
 # source/dest args). If AUTO_DERIVE_HA_CLIENT_CONFIG is enabled AND at least one "hdfs://" is referenced, sets the
@@ -1732,6 +1833,10 @@ run_as_hdfs() {
 # handled immediately (see _on_signal) instead of only after the copy finishes. DISTCP_CHILD_PID and
 # DISTCP_LOG_OFFSET (size of $LOG when the client started) let _on_signal stop the client and kill the YARN
 # application it submitted.
+#
+# Every call is also recorded for the run summary (see record_distcp_job): its wall-clock time, from start of
+# the client to its exit, and the job's "DistCp Counters". Callers name the job first with
+# set_distcp_job_context <dir> <phase>.
 DISTCP_CHILD_PID=""
 DISTCP_LOG_OFFSET=0
 run_as_distcp() {
@@ -1748,12 +1853,209 @@ run_as_distcp() {
     if [[ -n "${LOG:-}" && -f "$LOG" ]]; then
         DISTCP_LOG_OFFSET=$(wc -c <"$LOG" 2>/dev/null | tr -d ' ') || DISTCP_LOG_OFFSET=0
     fi
-    local rc=0
+    local rc=0 job_start_ts
+    job_start_ts=$(date +%s)
     "${cmd[@]}" &
     DISTCP_CHILD_PID=$!
     wait "$DISTCP_CHILD_PID" || rc=$?
     DISTCP_CHILD_PID=""
+    record_distcp_job "$rc" "$(($(date +%s) - job_start_ts))" "$DISTCP_LOG_OFFSET" || true
     return "$rc"
+}
+
+# -----------------------------------------------------------------------------
+# DistCp job accounting for the run summary.
+#
+# One entry per DistCp invocation, in the order they ran, in parallel arrays: directory, phase (what the copy
+# was for, e.g. "Incremental dr_snap_4 -> dr_snap_5"), result, wall-clock seconds, and the job's DistCp
+# counters as "Name=value" lines. A directory whose incremental needed no copy (EMPTY_DIFF_SHORTCUT) is recorded
+# with result SKIPPED and no counters.
+#
+# Counters come from the "DistCp Counters" group that the DistCp client prints (Hadoop's job counter dump, INFO
+# level) when the MapReduce job ends. The client's output reaches $LOG through the script's output tee, which
+# can lag the client's exit slightly, so record_distcp_job waits briefly for the group to appear. A job that
+# ended before submitting (or a client logging below INFO) has no counters; its time is still recorded.
+# -----------------------------------------------------------------------------
+DISTCP_JOB_DIRS=()
+DISTCP_JOB_PHASES=()
+DISTCP_JOB_RESULTS=()
+DISTCP_JOB_SECS=()
+DISTCP_JOB_COUNTERS=()
+DISTCP_JOB_CTX_DIR=""
+DISTCP_JOB_CTX_PHASE=""
+
+# set_distcp_job_context <dir> <phase>: names the next run_as_distcp call for the summary.
+set_distcp_job_context() {
+    DISTCP_JOB_CTX_DIR="$1"
+    DISTCP_JOB_CTX_PHASE="$2"
+}
+
+# "Name=value" lines of the last "DistCp Counters" group in $LOG after byte offset $1.
+_distcp_counters_since() {
+    local offset="${1:-0}"
+    [[ -n "${LOG:-}" && -f "$LOG" ]] || return 0
+    tail -c +"$((offset + 1))" "$LOG" 2>/dev/null | awk '
+        /^[[:space:]]*DistCp Counters[[:space:]]*$/ { in_group = 1; n = 0; split("", c); next }
+        in_group && /^[[:space:]]+[^=]+=[0-9]+[[:space:]]*$/ {
+            line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line); c[++n] = line; next
+        }
+        in_group { in_group = 0 }
+        END { for (i = 1; i <= n; i++) print c[i] }
+    ' || true
+}
+
+# record_distcp_job <rc> <seconds> <log offset>: records the DistCp call that just ended and logs a one-line
+# metric for it. Waits up to 3 seconds (1 second for a failed job) for the counters to reach $LOG.
+record_distcp_job() {
+    local rc="$1" secs="$2" offset="$3" counters="" tries i
+    tries=30
+    ((rc == 0)) || tries=10
+    if [[ -n "${LOG:-}" && -f "$LOG" ]]; then
+        for ((i = 0; i < tries; i++)); do
+            if tail -c +"$((offset + 1))" "$LOG" 2>/dev/null | grep -q "DistCp Counters"; then
+                sleep 0.3
+                break
+            fi
+            sleep 0.1
+        done
+        counters="$(_distcp_counters_since "$offset")"
+    fi
+    local result="SUCCEEDED"
+    ((rc == 0)) || result="FAILED (exit $rc)"
+    DISTCP_JOB_DIRS+=("${DISTCP_JOB_CTX_DIR:-?}")
+    DISTCP_JOB_PHASES+=("${DISTCP_JOB_CTX_PHASE:-DistCp}")
+    DISTCP_JOB_RESULTS+=("$result")
+    DISTCP_JOB_SECS+=("$secs")
+    DISTCP_JOB_COUNTERS+=("$counters")
+    local copied files
+    copied="$(_distcp_counter "$counters" "Bytes Copied")"
+    files="$(_distcp_counter "$counters" "Files Copied")"
+    log "[METRIC] [DISTCP] ${DISTCP_JOB_CTX_DIR:-?}: ${DISTCP_JOB_CTX_PHASE:-DistCp} ${result} in $(format_duration "$secs")${counters:+; copied $(format_bytes "${copied:-0}") in ${files:-0} file(s)}"
+    DISTCP_JOB_CTX_DIR=""
+    DISTCP_JOB_CTX_PHASE=""
+    return 0
+}
+
+# record_skipped_distcp <dir> <phase>: records a copy that was not needed (no changes on either side).
+record_skipped_distcp() {
+    DISTCP_JOB_DIRS+=("$1")
+    DISTCP_JOB_PHASES+=("$2")
+    DISTCP_JOB_RESULTS+=("SKIPPED (no changes)")
+    DISTCP_JOB_SECS+=(0)
+    DISTCP_JOB_COUNTERS+=("")
+}
+
+# _distcp_counter <counter lines> <name...>: value of the first named counter present, or nothing. Several names
+# cover spellings that differ between Hadoop releases (the bandwidth counter is "Bandwidth in Btyes" in some).
+_distcp_counter() {
+    local lines="$1" name line
+    shift
+    for name in "$@"; do
+        while IFS= read -r line; do
+            if [[ "${line%%=*}" == "$name" ]]; then
+                printf '%s' "${line#*=}"
+                return 0
+            fi
+        done <<<"$lines"
+    done
+    return 0
+}
+
+# format_bytes <bytes>: "0 B", "512 B", "190.73 MB", "1.25 TB" (1024-based, as HDFS tools report sizes).
+format_bytes() {
+    awk -v b="${1:-0}" 'BEGIN {
+        split("B KB MB GB TB PB", u, " "); i = 1
+        while (b >= 1024 && i < 6) { b /= 1024; i++ }
+        if (i == 1) printf "%d %s", b, u[i]; else printf "%.2f %s", b, u[i]
+    }'
+}
+
+# print_distcp_summary: the DistCp section of the run summary -- totals over every DistCp job of this run, then
+# one block per job with its duration and counters. Throughput is Bytes Copied divided by the job's wall-clock
+# time; the bandwidth line is DistCp's own "Bandwidth in Bytes" counter (the sum of per-file copy rates of all
+# map tasks), shown as reported.
+print_distcp_summary() {
+    local n=${#DISTCP_JOB_DIRS[@]} i ran=0 ok=0 failed=0 skipped=0 total_secs=0
+    local total_bytes=0 total_files=0 total_dirs=0 c v
+    for ((i = 0; i < n; i++)); do
+        case "${DISTCP_JOB_RESULTS[i]}" in
+            SKIPPED*) skipped=$((skipped + 1)); continue ;;
+            SUCCEEDED) ok=$((ok + 1)) ;;
+            *) failed=$((failed + 1)) ;;
+        esac
+        ran=$((ran + 1))
+        total_secs=$((total_secs + DISTCP_JOB_SECS[i]))
+        c="${DISTCP_JOB_COUNTERS[i]}"
+        v="$(_distcp_counter "$c" "Bytes Copied")"; total_bytes=$((total_bytes + ${v:-0}))
+        v="$(_distcp_counter "$c" "Files Copied")"; total_files=$((total_files + ${v:-0}))
+        v="$(_distcp_counter "$c" "DIR_COPY" "Directories Copied")"; total_dirs=$((total_dirs + ${v:-0}))
+    done
+
+    echo " DISTCP"
+    if ((n == 0)); then
+        echo "   Jobs              : none this run"
+        return 0
+    fi
+    echo "   Jobs              : $ran run ($ok succeeded, $failed failed), $skipped skipped (no changes)"
+    echo "   Total DistCp Time : $(format_duration "$total_secs") ($total_secs s)"
+    echo "   Data Copied       : $(format_bytes "$total_bytes") ($total_bytes bytes)"
+    echo "   Files Copied      : $total_files"
+    echo "   Dirs Copied       : $total_dirs"
+
+    local secs bytes expected files dirs fskip bskip ffail bfail bw rate
+    for ((i = 0; i < n; i++)); do
+        echo ""
+        echo "   [$((i + 1))] ${DISTCP_JOB_DIRS[i]}  --  ${DISTCP_JOB_PHASES[i]}"
+        echo "       Result          : ${DISTCP_JOB_RESULTS[i]}"
+        [[ "${DISTCP_JOB_RESULTS[i]}" == SKIPPED* ]] && continue
+        secs="${DISTCP_JOB_SECS[i]}"
+        echo "       Duration        : $(format_duration "$secs") ($secs s)"
+        c="${DISTCP_JOB_COUNTERS[i]}"
+        if [[ -z "$c" ]]; then
+            echo "       Counters        : not reported (the job ended before DistCp printed its counters)"
+            continue
+        fi
+        bytes="$(_distcp_counter "$c" "Bytes Copied")"
+        expected="$(_distcp_counter "$c" "Bytes Expected")"
+        files="$(_distcp_counter "$c" "Files Copied")"
+        dirs="$(_distcp_counter "$c" "DIR_COPY" "Directories Copied")"
+        fskip="$(_distcp_counter "$c" "Files Skipped")"
+        bskip="$(_distcp_counter "$c" "Bytes Skipped")"
+        ffail="$(_distcp_counter "$c" "Files Failed")"
+        bfail="$(_distcp_counter "$c" "Bytes Failed")"
+        bw="$(_distcp_counter "$c" "Bandwidth in Bytes" "Bandwidth in Btyes")"
+        if [[ -n "$expected" ]]; then
+            echo "       Bytes Copied    : $(format_bytes "${bytes:-0}") of $(format_bytes "$expected") expected (${bytes:-0} bytes)"
+        else
+            echo "       Bytes Copied    : $(format_bytes "${bytes:-0}") (${bytes:-0} bytes)"
+        fi
+        echo "       Files Copied    : ${files:-0}"
+        echo "       Dirs Copied     : ${dirs:-0}"
+        if [[ -n "$fskip$bskip" ]] && ((${fskip:-0} + ${bskip:-0} > 0)); then
+            echo "       Skipped         : ${fskip:-0} file(s), $(format_bytes "${bskip:-0}") (already identical on the destination)"
+        fi
+        if [[ -n "$ffail$bfail" ]] && ((${ffail:-0} + ${bfail:-0} > 0)); then
+            echo "       Failed          : ${ffail:-0} file(s), $(format_bytes "${bfail:-0}")"
+        fi
+        rate=$(( ${bytes:-0} / (secs > 0 ? secs : 1) ))
+        echo "       Throughput      : $(format_bytes "$rate")/s (bytes copied / duration)"
+        if [[ -n "$bw" ]]; then
+            echo "       Bandwidth       : $(format_bytes "$bw")/s (DistCp counter)"
+        fi
+    done
+    return 0
+}
+
+# format_duration <seconds>: "45s", "2m 17s", "1h 02m 05s".
+format_duration() {
+    local s="${1:-0}"
+    if ((s >= 3600)); then
+        printf '%dh %02dm %02ds' $((s / 3600)) $((s % 3600 / 60)) $((s % 60))
+    elif ((s >= 60)); then
+        printf '%dm %02ds' $((s / 60)) $((s % 60))
+    else
+        printf '%ds' "$s"
+    fi
 }
 
 # YARN job name for every DistCp this script runs into destination directory $1: "pulse-dr-<8 hex>", a checksum
@@ -2686,8 +2988,8 @@ cleanup_old_snapshots() {
     local cleanup_ls_rc
     # Anchored "prefix_<digits-only>" match (NOT a loose "^prefix_" prefix match): a loose prefix match
     # also matches rollback_once_for_failure()'s "${SNAP_PREFIX}_rollback_<epoch>" snapshots, which are
-    # meant to be transient (best-effort deleted right after use) but can linger if that delete ever
-    # fails. A lingering rollback snapshot would then count against the SNAP_RETAIN budget and get
+    # kept for up to ROLLBACK_MARKER_MAX_AGE_SECS after a rollback. A rollback snapshot would then count
+    # against the SNAP_RETAIN budget and get
     # ranked into the retain/delete decision below, risking deletion of the actual
     # last-common snapshot the next incremental diff needs -- see the anchored fix in
     # derive_direction_state for the matching (and more severe) index-derivation half of this bug.
@@ -2737,9 +3039,9 @@ cleanup_old_snapshots() {
         log "[DEBUG] No snapshots to remove on $cluster_name for $d"
     fi
 
-    # Leftover rollback snapshots ("${snap_prefix}_rollback_<epoch>"). rollback_once_for_failure deletes its
-    # snapshot on success but keeps it for inspection when the rollback fails, and retention above never
-    # matches that name, so without this they accumulate (each pinning deleted data). One is removed once it is
+    # Leftover rollback snapshots ("${snap_prefix}_rollback_<epoch>"). rollback_once_for_failure keeps its
+    # snapshot (it holds the changes the rollback discarded), and retention above never matches that name, so
+    # without this they accumulate (each pinning deleted data). One is removed once it is
     # older than ROLLBACK_MARKER_MAX_AGE_SECS -- the same window after which that failure's rollback marker is
     # treated as stale. The creation time is the epoch in the name, so no listing timestamp is needed.
     local r r_epoch r_age now_epoch
@@ -2780,6 +3082,8 @@ cleanup_old_snapshots() {
 #   DERIVED_SRC_SNAP_COUNT / DERIVED_DST_SNAP_COUNT
 #                            - number of ${SNAP_PREFIX}_<N> snapshots listed on
 #                              each cluster (0 when DIRECTION_STATE_OK is false).
+#   DERIVED_MAX_SNAP_INDEX   - highest snapshot index present on EITHER cluster,
+#                              or -1 if neither has one.
 #   DIRECTION_STATE_OK       - "true"/"false". false means the live listing
 #                              itself failed/was unreachable on either
 #                              cluster -- caller MUST fail closed (abort this
@@ -2803,6 +3107,7 @@ derive_direction_state() {
     DIRECTION_STATE_OK="false"
     DERIVED_SRC_SNAP_COUNT=0
     DERIVED_DST_SNAP_COUNT=0
+    DERIVED_MAX_SNAP_INDEX=-1
 
     local src_ls_err="/tmp/pulse_replication_action_snaplist_src_$$.log"
     local dst_ls_err="/tmp/pulse_replication_action_snaplist_dst_$$.log"
@@ -2837,10 +3142,10 @@ derive_direction_state() {
     # empirically verified). The array of matched snapshot names is then read from the file separately.
     # Anchored "prefix_<digits-only>" match (NOT a loose "^prefix_" prefix match): a loose prefix match
     # also matches rollback_once_for_failure()'s "${SNAP_PREFIX}_rollback_<epoch>" snapshots. Those are
-    # DEST_CLUSTER-only and their epoch-timestamp suffix is purely numeric, so a loose match here would
-    # let a lingering rollback snapshot (its own cleanup delete is best-effort and can fail -- see
+    # created on DEST_CLUSTER and their epoch-timestamp suffix is purely numeric, so a loose match here would
+    # let a rollback snapshot (kept for up to ROLLBACK_MARKER_MAX_AGE_SECS -- see
     # rollback_once_for_failure) get parsed below as a legitimate snapshot INDEX far beyond any real
-    # sequential index. Since it only ever exists on DEST_CLUSTER, that fake index would always be
+    # sequential index. Since it exists only on one cluster, that fake index would always be
     # "beyond the last common index that SOURCE_CLUSTER lacks" -- exactly the condition this function
     # treats as a genuine direction-reversal signal -- silently false-triggering reverse-diff-bootstrap
     # or a refused incremental sync for a directory that never actually reversed.
@@ -2893,13 +3198,15 @@ derive_direction_state() {
         fi
     done
 
-    # Indices strictly beyond common_max, per side.
-    local src_beyond=false dst_beyond=false
+    # Indices strictly beyond common_max, per side, and the highest index on either side.
+    local src_beyond=false dst_beyond=false max_idx=-1
     for idx in ${src_idx_set[@]+"${!src_idx_set[@]}"}; do
         ((idx > common_max)) && src_beyond=true
+        ((idx > max_idx)) && max_idx=$idx
     done
     for idx in ${dst_idx_set[@]+"${!dst_idx_set[@]}"}; do
         ((idx > common_max)) && dst_beyond=true
+        ((idx > max_idx)) && max_idx=$idx
     done
 
     LAST_COMMON_SNAP_INDEX=$common_max
@@ -2921,6 +3228,7 @@ derive_direction_state() {
 
     DERIVED_SRC_SNAP_COUNT=${#src_snaps[@]}
     DERIVED_DST_SNAP_COUNT=${#dst_snaps[@]}
+    DERIVED_MAX_SNAP_INDEX=$max_idx
     DIRECTION_STATE_OK="true"
     rm -f "$src_ls_err" "$dst_ls_err" 2>/dev/null || true
     return 0
@@ -4510,6 +4818,7 @@ rollback_once_for_failure() {
     log "[ROLLBACK] Running DistCp rollback: hadoop distcp $DISTCP_ROLLBACK_FULL_OPTS $DISTCP_ROLLBACK_OPTS $src_snap_path $dst_live_path"
     # Rollback DistCp stderr goes through global redirection (exec 2>&1), no need to tee to LOG again
     local rollback_distcp_success=false
+    set_distcp_job_context "$d" "Rollback to ${prev_snap} (destination restore)"
     # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
     if run_as_distcp hadoop distcp $DISTCP_ROLLBACK_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_ROLLBACK_OPTS "$src_snap_path" "$dst_live_path"; then
         rollback_distcp_success=true
@@ -4563,13 +4872,10 @@ rollback_once_for_failure() {
         echo "[ROLLBACK SUCCESS] DistCp rollback completed successfully for $d"
         echo "------------------------------------------------------------------------------------------------------------------------------------------"
         log "[ROLLBACK] DistCp rollback succeeded for $d. Audit diff saved to $diff_out"
-        # Best-effort: delete the temporary rollback snapshot to keep snapshot list tidy
-        log_substage "Rollback Step 4: Cleaning up temporary rollback snapshot"
-        if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -deleteSnapshot "$d" "$rollback_snap"; then
-            log "[ROLLBACK] Deleted temporary rollback snapshot $rollback_snap on destination"
-        else
-            log "[WARN] Could not delete temporary snapshot $rollback_snap (manual cleanup may be required)"
-        fi
+        # The rollback snapshot is kept: it is the only copy of the destination changes the rollback just
+        # discarded, which after a failover/failback can be writes made on the former primary that were never
+        # replicated. cleanup_old_snapshots removes it once it is older than ROLLBACK_MARKER_MAX_AGE_SECS.
+        log "[ROLLBACK] Kept rollback snapshot $rollback_snap on destination $d: it holds the changes this rollback discarded (listed in $diff_out). It is removed automatically after ${ROLLBACK_MARKER_MAX_AGE_SECS}s (ROLLBACK_MARKER_MAX_AGE_SECS); copy anything needed out of $d/.snapshot/$rollback_snap before then."
 
         # The -rdiff restores DEST's CONTENT to $prev_snap, but it does so by deleting, re-copying and
         # overwriting files, so HDFS's snapshot diff from $prev_snap to DEST's live state is no longer empty
@@ -4631,12 +4937,18 @@ rollback_once_for_failure() {
 #      so DistCp's "target unchanged since fromSnapshot" precondition holds.
 #   3) Clear any stale rollback markers for this baseline pair (from a prior failed run).
 #
+# $3="yes" (preserve): the baseline was already complete and the destination has changed since, so step 1
+# would overwrite or delete data written after the baseline. A "${SNAP_PREFIX}_rollback_<epoch>" snapshot of
+# the destination is taken first, kept for ROLLBACK_MARKER_MAX_AGE_SECS like a rollback's snapshot; if it
+# cannot be created, nothing is changed and the directory fails.
+#
 # Runs only while state == ${SNAP_PREFIX}_0; once state advances to _1 it never runs again. Returns 0 on
 # success (caller proceeds to -diff), 1 on failure (caller fails the directory).
 # -----------------------------------------------------------------------------
 reconcile_and_rebaseline_dest() {
     local d="$1"
     local baseline_snap="$2"
+    local preserve_dest="${3:-no}"
     local key
     key=$(sanitize "$d")
     local src_base_uri="hdfs://$SRC_URI_NS${d}/.snapshot/${baseline_snap}"
@@ -4645,6 +4957,19 @@ reconcile_and_rebaseline_dest() {
     log_substage "Baseline bootstrap: reconciling destination to source snapshot $baseline_snap"
     log "[INIT] Reconciling destination $d to source snapshot $baseline_snap (one-time bootstrap safeguard)"
 
+    # Step 0 (preserve only): keep the destination's current data before step 1 overwrites it.
+    if [[ "$preserve_dest" == "yes" ]]; then
+        local preserve_snap
+        preserve_snap="${SNAP_PREFIX}_rollback_$(date +%s)"
+        log "[WARN] [INIT] $d: $baseline_snap is complete on both clusters but the destination ($DEST_CLUSTER) has changed since it. The reconcile below overwrites those changes; creating snapshot $preserve_snap on the destination first to keep them."
+        if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -createSnapshot "$d" "$preserve_snap"; then
+            echo "[ERROR] FAILED to create snapshot '$preserve_snap' on DESTINATION: $d"
+            log "[ERROR] [INIT] Could not snapshot the destination before the reconcile for $d. Nothing was changed. Inspect the destination changes with: hdfs $(render_nameservice_ha_args_for_display)snapshotDiff -fs hdfs://$DST_URI_NS $d $baseline_snap ."
+            return 1
+        fi
+        log "[WARN] [INIT] Kept snapshot $preserve_snap on destination $d: it holds the changes the reconcile overwrites. It is removed automatically after ${ROLLBACK_MARKER_MAX_AGE_SECS}s (ROLLBACK_MARKER_MAX_AGE_SECS); copy anything needed out of $d/.snapshot/$preserve_snap before then."
+    fi
+
     # Step 1: full -update -delete from source baseline snapshot into destination (backfills any gaps and
     # removes destination-only files, so the destination mirrors the snapshot)
     local reconcile_err="/tmp/distcp_reconcile_err_${key}_$$.log"
@@ -4652,6 +4977,7 @@ reconcile_and_rebaseline_dest() {
     log_cmd "Baseline Reconcile DistCp Command"
     echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -delete $src_base_uri $dst_uri"
     echo ""
+    set_distcp_job_context "$d" "Baseline reconcile (${baseline_snap})"
     # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
     if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -delete "$src_base_uri" "$dst_uri" 2> >(tee "$reconcile_err" >&2); then
         log "[INFO] Baseline reconcile DistCp succeeded for $d"
@@ -4713,6 +5039,13 @@ reconcile_and_rebaseline_dest() {
 # old destination), and applies that diff onto the CURRENT $DEST_CLUSTER (physically the old source, which may
 # have taken writes during the outage).
 #
+# The new snapshot is numbered one above the highest index on EITHER cluster (DERIVED_MAX_SNAP_INDEX), not
+# $last_snap + 1: a reversal means DEST_CLUSTER already holds snapshots beyond $last_snap (cut while it was the
+# source), so $last_snap + 1 normally exists there already with different content. Those older DEST-only
+# snapshots sit below the new common snapshot afterwards, so direction derivation ignores them and retention
+# removes them. The new destination snapshot must be created by this run (an existing one of that name is
+# refused), and its content is compared with the source's before state is advanced, as in Stage 4's 4e-bis.
+#
 # Uses an INCREMENTAL `distcp -diff`, NOT a full distcp, as the primary (and only automatic) attempt -- avoids
 # re-copying the entire dataset on failover.
 #
@@ -4740,9 +5073,13 @@ reconcile_reverse_diff_bootstrap() {
     local nameservice_ha_display_args
     nameservice_ha_display_args="$(render_nameservice_ha_args_for_display)"
 
-    local idx reverse_next_snap
+    local idx next_idx reverse_next_snap
     idx=${last_snap##*_}
-    reverse_next_snap="${SNAP_PREFIX}_$((idx + 1))"
+    next_idx=$((idx + 1))
+    if [[ "${DERIVED_MAX_SNAP_INDEX:-}" =~ ^[0-9]+$ ]] && ((DERIVED_MAX_SNAP_INDEX >= next_idx)); then
+        next_idx=$((DERIVED_MAX_SNAP_INDEX + 1))
+    fi
+    reverse_next_snap="${SNAP_PREFIX}_${next_idx}"
 
     log_substage "Reverse-diff bootstrap: $d ($last_snap -> $reverse_next_snap, new source=$SOURCE_CLUSTER)"
     log "[REVERSE-BOOTSTRAP] Direction reversal for $d: attempting incremental reverse diff $last_snap -> $reverse_next_snap"
@@ -4786,6 +5123,7 @@ reconcile_reverse_diff_bootstrap() {
     echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $reverse_next_snap $src_uri $dst_uri"
     echo ""
     local bootstrap_distcp_success
+    set_distcp_job_context "$d" "Reverse-diff bootstrap ${last_snap} -> ${reverse_next_snap}"
     # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
     if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$reverse_next_snap" "$src_uri" "$dst_uri" 2> >(tee "$bootstrap_err" >&2); then
         bootstrap_distcp_success=true
@@ -4892,13 +5230,24 @@ reconcile_reverse_diff_bootstrap() {
     log_substage "Reverse-diff bootstrap Step 3: creating $reverse_next_snap on new destination ($DEST_CLUSTER)"
     local out_dst
     out_dst=$(run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -createSnapshot "$d" "$reverse_next_snap" 2>&1 | grep -v "^SLF4J:" || true) || true
-    if echo "$out_dst" | grep -q "already a snapshot with the same name"; then
-        log "[WARN] [REVERSE-BOOTSTRAP] Snapshot $reverse_next_snap already exists on new destination for $d"
-    elif echo "$out_dst" | grep -q "Created snapshot"; then
+    if echo "$out_dst" | grep -q "Created snapshot"; then
         log "[INFO] [REVERSE-BOOTSTRAP] Snapshot $reverse_next_snap created on new destination for $d"
     else
+        # An existing snapshot of this name was not cut from the data just copied, so it is never adopted.
         echo "[ERROR] Reverse-diff bootstrap: FAILED to create $reverse_next_snap on new destination ($DEST_CLUSTER): $d"
-        log "[ERROR] [REVERSE-BOOTSTRAP] Destination snapshot creation failed: $out_dst. Data was copied but state NOT advanced -- re-run will retry snapshot creation."
+        log "[ERROR] [REVERSE-BOOTSTRAP] Destination snapshot creation failed: $out_dst. Data was copied but state NOT advanced."
+        log "[ERROR] [REVERSE-BOOTSTRAP] Pause writers on $DEST_CLUSTER for $d, remove any existing '$reverse_next_snap' there, then create it from the copied data and re-run:"
+        log "[ERROR] [REVERSE-BOOTSTRAP]   hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS -createSnapshot $d $reverse_next_snap"
+        return 1
+    fi
+
+    # --- Step 3b: the new common snapshot must hold the same content on both clusters ---
+    if ! verify_snapshot_content_parity "$d" "$reverse_next_snap"; then
+        echo "[ERROR] Reverse-diff bootstrap: snapshot '$reverse_next_snap' differs between $SOURCE_CLUSTER and $DEST_CLUSTER for $d (see [CONTENT-PARITY] above)"
+        log "[ERROR] [REVERSE-BOOTSTRAP] Content-parity check failed for '$reverse_next_snap' on $d. State NOT advanced; the destination must be re-synced to '$reverse_next_snap'."
+        print_resync_guidance "$d" "$reverse_next_snap"
+        cleanup_old_snapshots "$SRC_URI_NS" "$d" "source" "$SNAP_RETAIN" "$SNAP_PREFIX"
+        cleanup_old_snapshots "$DST_URI_NS" "$d" "destination" "$SNAP_RETAIN" "$SNAP_PREFIX"
         return 1
     fi
 
@@ -5323,6 +5672,7 @@ main() {
     # has no ordering dependency on derive_nameservice_ha_conf() either way.
     # -----------------------------------------------------------------------------
     if [[ "$SAME_NAMESERVICE_COLLISION" == "true" ]]; then
+        verify_same_nameservice_direction
         resolve_active_namenode_hostport "$DST_NN_HOSTS"
         DST_URI_NS="$RESOLVED_ACTIVE_NN_HOSTPORT"
         log "[INFO] [NAMESERVICE-ALIAS] DST_URI_NS resolved to active NameNode: $DST_URI_NS"
@@ -5889,6 +6239,7 @@ main() {
                 # Run DistCp with stderr captured for error analysis
                 DISTCP_STDERR_FILE="/tmp/full_distcp_err_$(sanitize "$d")_$$.log"
                 TEMP_FILES+=("$DISTCP_STDERR_FILE")
+                set_distcp_job_context "$d" "Bootstrap full copy (${SNAP_PREFIX}_0)"
                 # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
                 if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -delete "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
                     echo ""
@@ -6278,6 +6629,19 @@ main() {
         fi
 
         last_snap="$LAST_COMMON_SNAP_NAME"
+
+        # Baseline whose destination copy was lost: the state records ${SNAP_PREFIX}_0, the source still has
+        # it, and the destination has no ${SNAP_PREFIX}_<N> snapshot at all (the post-copy re-creation of the
+        # destination baseline in Stage 3 deleted it and then failed to create it). The destination has never
+        # been a source for this pair, so continuing from ${SNAP_PREFIX}_0 lets step 4c reconcile it and
+        # re-create the destination baseline.
+        if [[ -z "$last_snap" ]] && [[ "$cached_snap" == "${SNAP_PREFIX}_0" ]] &&
+            ((DERIVED_DST_SNAP_COUNT == 0)) &&
+            run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -test -e "$d/.snapshot/${SNAP_PREFIX}_0" 2>/dev/null; then
+            log "[WARN] [Stage 4] $d: state is ${SNAP_PREFIX}_0 and the source has it, but the destination has no ${SNAP_PREFIX}_<N> snapshot (the destination baseline was never re-created after the full copy). Continuing from ${SNAP_PREFIX}_0 so the baseline reconcile re-creates it."
+            last_snap="${SNAP_PREFIX}_0"
+        fi
+
         if [[ -z "$last_snap" ]]; then
             echo ""
             echo "=========================================================================================================================================="
@@ -6538,8 +6902,29 @@ main() {
         #      baseline snapshot so DistCp's "target unchanged since fromSnapshot" precondition
         #      holds. This works for BOTH AUTO_FULL_DISTCP=yes and =no, and prevents a silently
         #      empty DR. Subsequent snapshots (idx > 0) skip this and rely on ROLLBACK_ON_FAILURE.
+        #
+        #      When ${SNAP_PREFIX}_0 already has the same content on both clusters, the baseline is complete:
+        #        - destination unchanged since its ${SNAP_PREFIX}_0 -> the reconcile would change nothing and
+        #          is skipped (the usual case after AUTO_FULL_DISTCP=yes);
+        #        - destination changed since then -> the changes were made after a complete baseline (for
+        #          example writes on the former primary when failover happens before the first incremental),
+        #          so reconcile_and_rebaseline_dest snapshots the destination first to keep what it overwrites.
         baseline_snap="${SNAP_PREFIX}_0"
+        baseline_needs_reconcile=true
+        baseline_preserve_dest=no
         if [[ "$last_snap" == "$baseline_snap" ]]; then
+            baseline_parity_rc=0
+            verify_snapshot_content_parity "$d" "$baseline_snap" quiet || baseline_parity_rc=$?
+            if ((baseline_parity_rc == 0)); then
+                if snapshot_diff_is_empty "$DST_URI_NS" "$d" "$baseline_snap" "."; then
+                    baseline_needs_reconcile=false
+                    log "[INFO] [Stage 4] $d: $baseline_snap has the same content on both clusters and the destination is unchanged since it. Baseline is complete; skipping the one-time reconcile copy."
+                else
+                    baseline_preserve_dest=yes
+                fi
+            fi
+        fi
+        if [[ "$last_snap" == "$baseline_snap" ]] && [[ "$baseline_needs_reconcile" == "true" ]]; then
             echo ""
             echo "=========================================================================================================================================="
             echo ">>> 🔧 BASELINE BOOTSTRAP SELF-HEAL for $d <<<"
@@ -6548,7 +6933,7 @@ main() {
             echo ">>> (One-time per directory; ensures the destination baseline is complete and consistent.)"
             echo "=========================================================================================================================================="
             echo ""
-            if ! reconcile_and_rebaseline_dest "$d" "$baseline_snap"; then
+            if ! reconcile_and_rebaseline_dest "$d" "$baseline_snap" "$baseline_preserve_dest"; then
                 echo "============================================"
                 echo ">>> [ERROR] [STAGE 4] Baseline reconcile/re-baseline FAILED for: $d <<<"
                 echo "============================================"
@@ -6585,6 +6970,7 @@ main() {
 
         if [[ "$skip_distcp" == "true" ]]; then
             log "[SYNC] $d: no changes on SOURCE between $last_snap and $next_snap and none on DEST since $last_snap -- skipping DistCp (no YARN job)."
+            record_skipped_distcp "$d" "Incremental ${last_snap} -> ${next_snap}"
             DISTCP_SUCCESS=true
         else
             log_cmd "Syncing directory: $d ($last_snap -> $next_snap)"
@@ -6600,6 +6986,7 @@ main() {
             # Use tee to write distcp stderr to temp file AND to stderr (which goes through global redirection to
             # LOG and console). Since stderr is redirected to stdout via exec 2>&1, this ensures real-time output
             # without buffering delays.
+            set_distcp_job_context "$d" "Incremental ${last_snap} -> ${next_snap}"
             # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
             if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
                 DISTCP_SUCCESS=true
@@ -6609,11 +6996,14 @@ main() {
         fi
         
         if [[ "$DISTCP_SUCCESS" == "true" ]]; then
-            echo ""
-            echo "[DEBUG MARKER] DistCp execution completed successfully for $d"
-            log "[INFO] Distcp diff sync succeeded for $d"
-            METRICS_SUCCESSFUL_DIRECTORIES=$((METRICS_SUCCESSFUL_DIRECTORIES + 1))
-            echo ""
+            # When the no-change shortcut skipped DistCp, that was already logged above; only a real copy is
+            # reported as a DistCp result.
+            if [[ "$skip_distcp" != "true" ]]; then
+                echo ""
+                echo "[DEBUG MARKER] DistCp execution completed successfully for $d"
+                log "[INFO] Distcp diff sync succeeded for $d"
+                echo ""
+            fi
         else
             echo ""
             echo "============================================"
@@ -6677,6 +7067,7 @@ main() {
                         echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
                         echo "======================"
                         echo ""
+                        set_distcp_job_context "$d" "Incremental retry ${last_snap} -> ${next_snap}"
                         # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
                         if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_RETRY_STDERR" >&2); then
                             DISTCP_RETRY_SUCCESS=true
@@ -6690,7 +7081,6 @@ main() {
                             echo "[RETRY SUCCESS] DistCp retry succeeded for $d after rollback"
                             echo "------------------------------------------------------------------------------------------------------------------------------------------"
                             log "[INFO] Distcp diff sync succeeded on retry for $d"
-                            METRICS_SUCCESSFUL_DIRECTORIES=$((METRICS_SUCCESSFUL_DIRECTORIES + 1))
                             echo ""
                         else
                             echo "============================================"
@@ -6885,12 +7275,14 @@ main() {
             continue
         fi
 
-        # 4f) Advance state (persist the last successful snapshot name)
+        # 4f) Advance state (persist the last successful snapshot name). The directory counts as succeeded only
+        # here, once the copy, the destination snapshot and the content-parity check have all passed.
         if write_state_file "$state" "$(build_state_content "$next_snap")" "$key"; then
             log "[SYNC] State advanced to $next_snap for $d"
         else
             log "[ERROR] Failed to write state file $state"
         fi
+        METRICS_SUCCESSFUL_DIRECTORIES=$((METRICS_SUCCESSFUL_DIRECTORIES + 1))
         dir_end_ts=$(date +%s)
         log "[METRIC] [STAGE 4] Directory '$d' completed in $((dir_end_ts - dir_start_ts)) seconds"
         echo ""
@@ -6923,70 +7315,68 @@ main() {
     SCRIPT_RUNTIME=$((SCRIPT_END_TS - SCRIPT_START_TS))
     SCRIPT_START_TIME=$(date -d "@$SCRIPT_START_TS" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -r "$SCRIPT_START_TS" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "N/A")
     SCRIPT_END_TIME=$(date '+%Y-%m-%d %H:%M:%S')
-    
-    # Calculate human-readable runtime
-    RUNTIME_HOURS=$((SCRIPT_RUNTIME / 3600))
-    RUNTIME_MINUTES=$(((SCRIPT_RUNTIME % 3600) / 60))
-    RUNTIME_SECONDS=$((SCRIPT_RUNTIME % 60))
-    if [[ $RUNTIME_HOURS -gt 0 ]]; then
-        RUNTIME_STR="${RUNTIME_HOURS}h ${RUNTIME_MINUTES}m ${RUNTIME_SECONDS}s"
-    elif [[ $RUNTIME_MINUTES -gt 0 ]]; then
-        RUNTIME_STR="${RUNTIME_MINUTES}m ${RUNTIME_SECONDS}s"
-    else
-        RUNTIME_STR="${RUNTIME_SECONDS}s"
-    fi
-    
+
+    # Directories baselined this run (full copy done, or waiting on the printed manual copy) are neither synced
+    # nor failed: their first incremental runs next time.
+    local baselined_dirs=0 sd
+    for sd in "${SOURCE_DIRS[@]}"; do
+        if [[ -n "${STAGE4_SKIP_REASON["$sd"]:-}" && "${STAGE4_SKIP_FAILED["$sd"]:-false}" != "true" ]]; then
+            baselined_dirs=$((baselined_dirs + 1))
+        fi
+    done
+
     # Determine overall status
     if [[ "$ALL_OK" == "true" ]] && [[ $METRICS_FAILED_DIRECTORIES -eq 0 ]]; then
         OVERALL_STATUS="SUCCESS"
-        STATUS_ICON="[OK]"
-    elif [[ $METRICS_FAILED_DIRECTORIES -gt 0 ]] && [[ $METRICS_SUCCESSFUL_DIRECTORIES -gt 0 ]]; then
+    elif [[ $METRICS_FAILED_DIRECTORIES -gt 0 ]] && ((METRICS_SUCCESSFUL_DIRECTORIES + baselined_dirs > 0)); then
         OVERALL_STATUS="PARTIAL"
-        STATUS_ICON="[WARN]"
     else
         OVERALL_STATUS="FAILED"
-        STATUS_ICON="[ERROR]"
     fi
+
+    local mode_desc kerberos_desc
+    if [[ "${REPLICATION_MODE,,}" == "push" ]]; then
+        mode_desc="Push (DistCp runs on the source cluster)"
+    else
+        mode_desc="Pull (DistCp runs on the destination cluster)"
+    fi
+    [[ "$KERBEROS_ENABLED" == "yes" ]] && kerberos_desc="Enabled" || kerberos_desc="Disabled"
 
     # -----------------------------------------------------------------------------
     # Final Summary
     # -----------------------------------------------------------------------------
-    echo "────────────────────────────────────────────────────────────────────────────"
-    echo "DR REPLICATION SUMMARY"
-    echo "────────────────────────────────────────────────────────────────────────────"
-    echo "Status              : $STATUS_ICON $OVERALL_STATUS"
+    local rule="=============================================================================="
     echo ""
-    echo "Execution Details:"
-    echo "  Start Time        : $SCRIPT_START_TIME"
-    echo "  End Time          : $SCRIPT_END_TIME"
-    echo "  Total Runtime     : $RUNTIME_STR ($SCRIPT_RUNTIME seconds)"
+    echo "$rule"
+    echo " DR REPLICATION SUMMARY"
+    echo "$rule"
+    echo " Status              : $OVERALL_STATUS"
+    echo " Start Time          : $SCRIPT_START_TIME"
+    echo " End Time            : $SCRIPT_END_TIME"
+    echo " Total Runtime       : $(format_duration "$SCRIPT_RUNTIME") ($SCRIPT_RUNTIME s)"
     echo ""
-    echo "Cluster Configuration:"
-    echo "  Source Cluster    : $SOURCE_CLUSTER"
-    echo "  Destination       : $DEST_CLUSTER"
-    echo "  Directories       : ${#SOURCE_DIRS[@]} directory(ies)"
-    echo "    ${SOURCE_DIRS[*]}"
+    echo " REPLICATION"
+    echo "   Source Cluster    : $SOURCE_CLUSTER"
+    echo "   Target Cluster    : $DEST_CLUSTER"
+    echo "   Mode              : $mode_desc"
+    echo "   Snapshot Prefix   : $SNAP_PREFIX (retaining $SNAP_RETAIN per directory)"
+    echo "   Kerberos          : $kerberos_desc"
+    echo "   Directories       : ${#SOURCE_DIRS[@]} configured | $METRICS_SUCCESSFUL_DIRECTORIES synced | $baselined_dirs baselined | $METRICS_FAILED_DIRECTORIES failed"
+    for sd in "${SOURCE_DIRS[@]}"; do
+        echo "                       $sd"
+    done
     echo ""
-    echo "Settings:"
-    echo "  Snapshot Prefix   : $SNAP_PREFIX"
-    echo "  Snapshots Retained: $SNAP_RETAIN per directory"
-    echo "  Kerberos          : ${KERBEROS_ENABLED^^}"
-    if [[ "$KERBEROS_ENABLED" == "yes" ]]; then
-        echo "  Execution Mode    : Kerberos (no sudo)"
-    else
-        echo "  Execution Mode    : sudo (${HDFS_USER}/${DISTCP_USER})"
-    fi
-    echo "  Log File          : $LOG"
+    print_distcp_summary
     if [[ "$METRICS_HDFS_MIRROR_FAILURES" -gt 0 ]]; then
-        echo "────────────────────────────────────────────────────────────────────────────"
-        echo "  [WARN] HDFS State Mirror : $METRICS_HDFS_MIRROR_FAILURES failure(s) this run"
-        echo "                            Cross-node failover state mirroring (HDFS_STATE_DIR=$HDFS_STATE_DIR)"
-        echo "                            is degraded. Local state/replication itself is unaffected,"
-        echo "                            but a fresh/failover node may misclassify an already-"
-        echo "                            replicating directory as brand-new if this persists."
-        echo "                            Search this log for '[HDFS-STATE-MIRROR]' [WARN] lines."
+        echo ""
+        echo " WARNINGS"
+        echo "   HDFS State Mirror : $METRICS_HDFS_MIRROR_FAILURES write failure(s) under $HDFS_STATE_DIR this run. Replication is"
+        echo "                       unaffected, but a run from another node (failover) starts without the cached"
+        echo "                       state. See the [HDFS-STATE-MIRROR] [WARN] lines in this log."
     fi
-    echo "────────────────────────────────────────────────────────────────────────────"
+    echo ""
+    echo " Log File            : $LOG"
+    echo "$rule"
     echo ""
 
     log_stage_complete "5" "Completion"
@@ -7059,9 +7449,11 @@ main "$@"
 #         before old ones are pruned (see DESTRUCTIVE OPERATIONS below).
 #
 #   [2] <dir>/.snapshot/${SNAP_PREFIX}_rollback_<epoch>   (DEST_CLUSTER only)
-#         Temporary snapshot created during a rollback attempt. Deleted again
-#         on rollback success; left in place for inspection if it fails, and
-#         removed by retention cleanup once older than ROLLBACK_MARKER_MAX_AGE_SECS.
+#         Snapshot of the destination taken just before a rollback (or before a
+#         baseline reconcile that would overwrite changes made after a complete
+#         baseline). It holds the changes that operation discards, so it is kept
+#         whether the operation succeeds or fails, and removed by retention
+#         cleanup once older than ROLLBACK_MARKER_MAX_AGE_SECS.
 #
 #   [3] ${HDFS_STATE_DIR}/dr-last-snap-<SNAP_PREFIX>@<sanitized_dir>.txt   (on BOTH clusters)
 #         (default dir: /tmp/pulse_replication_action)
@@ -7089,6 +7481,10 @@ main "$@"
 #         running a full "distcp -update -delete" from source into the
 #         destination's LIVE path — overwrites/backfills destination files that
 #         differ AND DELETES destination files not present in the source.
+#         Skipped when ${SNAP_PREFIX}_0 already matches on both clusters and the
+#         destination is unchanged since it. When it matches but the destination
+#         has changed, a ${SNAP_PREFIX}_rollback_<epoch> snapshot of the
+#         destination is taken first (see HDFS artifact [2]).
 #
 #   [3] rollback_once_for_failure()           Stage 4 — ONLY when a "target
 #       hadoop distcp -rdiff                  modified since snapshot" error
