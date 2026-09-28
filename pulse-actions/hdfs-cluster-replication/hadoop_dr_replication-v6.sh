@@ -73,7 +73,8 @@
 #   ROLLBACK_MARKER_MAX_AGE_SECS = 86400     Age after which a rollback marker no longer blocks rollback
 #   FORCE_REBASELINE             = no        yes = re-baseline directories with cleared state (full copy)
 #   EMPTY_DIFF_SHORTCUT          = yes       Skip the DistCp/YARN job for a directory with no changes; no = always run it
-#   YARN_CLI_TIMEOUT             = 60        Seconds allowed per "yarn application" call (kill on interrupt, pre-rollback check)
+#   YARN_CLI_TIMEOUT             = 180       Seconds allowed per "yarn application" call (kill on interrupt, pre-rollback check)
+#   ROLLBACK_REQUIRE_YARN_CHECK  = yes       yes = refuse a rollback when YARN cannot be queried for a running DistCp; no = warn and roll back
 #
 # Positional arguments (order matters):
 #   1) SOURCE_NN_HOST:PORT  - Source HDFS NameNode URI (example: prod-namenode-1.example.com:8020)
@@ -203,7 +204,8 @@
 #     The lock is local to the host. Schedule a policy on one host only; as a safeguard,
 #     every DistCp is named "distcp: pulse-dr-<hash>" in YARN (mapreduce.job.name, one
 #     name per destination directory), and a rollback is refused while a job of that name
-#     is still running (see check_no_running_dr_job).
+#     is still running (see check_no_running_dr_job), or, with ROLLBACK_REQUIRE_YARN_CHECK=yes
+#     (default), when YARN cannot be queried to confirm that none is.
 #   - INTERRUPTS: SIGINT/SIGTERM stop the run: the running DistCp client is stopped, the
 #     YARN application it submitted is killed, the failure summary is printed and the
 #     script exits 130/143. Remaining directories are not processed.
@@ -864,15 +866,32 @@ if [[ ! "${EMPTY_DIFF_SHORTCUT,,}" =~ ^(yes|no)$ ]]; then
 fi
 
 ###############################################################################
-# YARN_CLI_TIMEOUT (env var, default 60): seconds allowed for each "yarn
+# YARN_CLI_TIMEOUT (env var, default 180): seconds allowed for each "yarn
 # application" call (killing the job of an interrupted DistCp; checking for a
 # DistCp still running before a rollback). Bounds the wait on an unreachable
 # ResourceManager.
 ###############################################################################
-YARN_CLI_TIMEOUT="${YARN_CLI_TIMEOUT:-60}"
+YARN_CLI_TIMEOUT="${YARN_CLI_TIMEOUT:-180}"
 if [[ ! "$YARN_CLI_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
     echo "[ERROR] YARN_CLI_TIMEOUT must be a positive number of seconds: '$YARN_CLI_TIMEOUT'" >&2
     exit 32
+fi
+
+###############################################################################
+# ROLLBACK_REQUIRE_YARN_CHECK (env var, default "yes"): before a rollback
+# (ROLLBACK_ON_FAILURE=yes), the script asks YARN whether a DistCp of this
+# policy is still writing into the directory (check_no_running_dr_job). When
+# YARN cannot be queried (yarn CLI missing, ResourceManager unreachable, or the
+# call exceeded YARN_CLI_TIMEOUT):
+#   yes - the rollback is refused and the directory fails this run. The
+#         one-time rollback for this failure is not used up, so the next run
+#         retries it once YARN answers.
+#   no  - a warning is logged and the rollback proceeds.
+###############################################################################
+ROLLBACK_REQUIRE_YARN_CHECK="${ROLLBACK_REQUIRE_YARN_CHECK:-yes}"
+if [[ ! "${ROLLBACK_REQUIRE_YARN_CHECK,,}" =~ ^(yes|no)$ ]]; then
+    echo "[ERROR] ROLLBACK_REQUIRE_YARN_CHECK must be 'yes' or 'no': '$ROLLBACK_REQUIRE_YARN_CHECK'" >&2
+    exit 34
 fi
 
 ###############################################################################
@@ -1203,6 +1222,8 @@ FAILURE_REASON=""
 # Metrics tracking for status determination (simplified - only success/failure counts)
 METRICS_SUCCESSFUL_DIRECTORIES=0
 METRICS_FAILED_DIRECTORIES=0
+# Directories that completed an incremental (or reverse-diff) sync this run, for the per-directory summary lines.
+declare -A DIR_SYNCED=()
 
 # Counter for HDFS state-mirror write failures (mirror_state_file_to_hdfs /
 # _mirror_one_cluster, including its on-demand mkdir). These are all best-effort/ non-fatal by design (see HDFS_STATE_DIR docs) and never
@@ -1867,7 +1888,7 @@ run_as_distcp() {
 # DistCp job accounting for the run summary.
 #
 # One entry per DistCp invocation, in the order they ran, in parallel arrays: directory, phase (what the copy
-# was for, e.g. "Incremental dr_snap_4 -> dr_snap_5"), result, wall-clock seconds, and the job's DistCp
+# was for, e.g. "Incremental dr_snap_4 -> dr_snap_5"; kept short, it is a column of the summary table), result, wall-clock seconds, and the job's DistCp
 # counters as "Name=value" lines. A directory whose incremental needed no copy (EMPTY_DIFF_SHORTCUT) is recorded
 # with result SKIPPED and no counters.
 #
@@ -1970,86 +1991,140 @@ format_bytes() {
     }'
 }
 
-# print_distcp_summary: the DistCp section of the run summary -- totals over every DistCp job of this run, then
-# one block per job with its duration and counters. Throughput is Bytes Copied divided by the job's wall-clock
-# time; the bandwidth line is DistCp's own "Bandwidth in Bytes" counter (the sum of per-file copy rates of all
-# map tasks), shown as reported.
+# format_rate <bytes> <seconds>: "2.73 MB/s"; "n/a" for a zero duration.
+format_rate() {
+    local bytes="${1:-0}" secs="${2:-0}"
+    if ((secs > 0)); then
+        printf '%s/s' "$(format_bytes "$((bytes / secs))")"
+    else
+        printf 'n/a'
+    fi
+}
+
+# _print_table <right-aligned column numbers, comma separated>: prints tab-separated rows from stdin as an
+# aligned table, indented 3 spaces. The first row is the header and gets a dashed underline. A row whose first
+# field is "-" is printed as a dashed rule across all columns.
+_print_table() {
+    awk -F'\t' -v right="$1" '
+        BEGIN { n = split(right, r, ","); for (i = 1; i <= n; i++) ra[r[i]] = 1 }
+        { rows[NR] = $0; for (i = 1; i <= NF; i++) if (length($i) > w[i]) w[i] = length($i); if (NF > nf) nf = NF }
+        function dashes(i,   j, s) { s = ""; for (j = 0; j < w[i]; j++) s = s "-"; return s }
+        END {
+            for (k = 1; k <= NR; k++) {
+                nfk = split(rows[k], f, "\t")
+                if (f[1] == "-") { line = " "; for (i = 1; i <= nf; i++) line = line "  " dashes(i); print " " substr(line, 2); continue }
+                line = ""
+                for (i = 1; i <= nf; i++) {
+                    v = (i <= nfk) ? f[i] : ""
+                    line = line "  " sprintf(ra[i] ? "%" w[i] "s" : "%-" w[i] "s", v)
+                }
+                sub(/[[:space:]]+$/, "", line)
+                print " " line
+                if (k == 1) { line = " "; for (i = 1; i <= nf; i++) line = line "  " dashes(i); print " " substr(line, 2) }
+            }
+        }
+    '
+}
+
+# print_distcp_summary: the DistCp section of the run summary -- one table row per DistCp job of this run with
+# a totals row, then notes for failed jobs and for files DistCp skipped or failed to copy.
+#
+# Throughput is Bytes Copied divided by the job's wall-clock time, so it includes YARN scheduling and job
+# setup; it is the rate to plan replication windows with. Bandwidth is DistCp's "Bandwidth in Bytes" counter:
+# each map task adds its bytes copied divided by its own run time in whole seconds (at least 1), so it is the
+# aggregate transfer rate while maps were copying. A map that runs under 2 seconds reports its whole byte count
+# as its rate, which makes the counter equal to or larger than Bytes Copied and meaningless as a rate; the
+# column shows n/a in that case.
 print_distcp_summary() {
     local n=${#DISTCP_JOB_DIRS[@]} i ran=0 ok=0 failed=0 skipped=0 total_secs=0
-    local total_bytes=0 total_files=0 total_dirs=0 c v
-    for ((i = 0; i < n; i++)); do
-        case "${DISTCP_JOB_RESULTS[i]}" in
-            SKIPPED*) skipped=$((skipped + 1)); continue ;;
-            SUCCEEDED) ok=$((ok + 1)) ;;
-            *) failed=$((failed + 1)) ;;
-        esac
-        ran=$((ran + 1))
-        total_secs=$((total_secs + DISTCP_JOB_SECS[i]))
-        c="${DISTCP_JOB_COUNTERS[i]}"
-        v="$(_distcp_counter "$c" "Bytes Copied")"; total_bytes=$((total_bytes + ${v:-0}))
-        v="$(_distcp_counter "$c" "Files Copied")"; total_files=$((total_files + ${v:-0}))
-        v="$(_distcp_counter "$c" "DIR_COPY" "Directories Copied")"; total_dirs=$((total_dirs + ${v:-0}))
-    done
+    local total_bytes=0 total_files=0 total_dirs=0 c result phase
+    local secs bytes files dirs fskip bskip ffail bfail bw bw_col
+    local -a rows=() notes=()
 
     echo " DISTCP"
     if ((n == 0)); then
         echo "   Jobs              : none this run"
         return 0
     fi
-    echo "   Jobs              : $ran run ($ok succeeded, $failed failed), $skipped skipped (no changes)"
-    echo "   Total DistCp Time : $(format_duration "$total_secs") ($total_secs s)"
-    echo "   Data Copied       : $(format_bytes "$total_bytes") ($total_bytes bytes)"
-    echo "   Files Copied      : $total_files"
-    echo "   Dirs Copied       : $total_dirs"
 
-    local secs bytes expected files dirs fskip bskip ffail bfail bw rate
+    rows+=("$(printf '#\tDirectory\tJob\tResult\tDuration\tData Copied\tFiles\tDirs\tThroughput\tBandwidth')")
     for ((i = 0; i < n; i++)); do
-        echo ""
-        echo "   [$((i + 1))] ${DISTCP_JOB_DIRS[i]}  --  ${DISTCP_JOB_PHASES[i]}"
-        echo "       Result          : ${DISTCP_JOB_RESULTS[i]}"
-        [[ "${DISTCP_JOB_RESULTS[i]}" == SKIPPED* ]] && continue
-        secs="${DISTCP_JOB_SECS[i]}"
-        echo "       Duration        : $(format_duration "$secs") ($secs s)"
-        c="${DISTCP_JOB_COUNTERS[i]}"
-        if [[ -z "$c" ]]; then
-            echo "       Counters        : not reported (the job ended before DistCp printed its counters)"
+        result="${DISTCP_JOB_RESULTS[i]}"
+        phase="${DISTCP_JOB_PHASES[i]//"${SNAP_PREFIX}_"/_}"
+        if [[ "$result" == SKIPPED* ]]; then
+            skipped=$((skipped + 1))
+            rows+=("$(printf '%s\t%s\t%s\tSKIPPED\t-\t-\t-\t-\t-\t-' "$((i + 1))" "${DISTCP_JOB_DIRS[i]}" "$phase")")
             continue
         fi
-        bytes="$(_distcp_counter "$c" "Bytes Copied")"
-        expected="$(_distcp_counter "$c" "Bytes Expected")"
-        files="$(_distcp_counter "$c" "Files Copied")"
-        dirs="$(_distcp_counter "$c" "DIR_COPY" "Directories Copied")"
+        ran=$((ran + 1))
+        if [[ "$result" == SUCCEEDED ]]; then
+            ok=$((ok + 1))
+        else
+            failed=$((failed + 1))
+            notes+=("[$((i + 1))] ${DISTCP_JOB_DIRS[i]}: ${result}; see the DistCp output for this job in the log")
+        fi
+        secs="${DISTCP_JOB_SECS[i]}"
+        total_secs=$((total_secs + secs))
+        c="${DISTCP_JOB_COUNTERS[i]}"
+        if [[ -z "$c" ]]; then
+            rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t-\t-\t-\t-\t-' "$((i + 1))" "${DISTCP_JOB_DIRS[i]}" "$phase" "${result%% *}" "$(format_duration "$secs")")")
+            if [[ "$result" == SUCCEEDED ]]; then
+                notes+=("[$((i + 1))] ${DISTCP_JOB_DIRS[i]}: counters not reported (DistCp did not print them)")
+            fi
+            continue
+        fi
+        bytes="$(_distcp_counter "$c" "Bytes Copied")"; bytes="${bytes:-0}"
+        files="$(_distcp_counter "$c" "Files Copied")"; files="${files:-0}"
+        dirs="$(_distcp_counter "$c" "DIR_COPY" "Directories Copied")"; dirs="${dirs:-0}"
         fskip="$(_distcp_counter "$c" "Files Skipped")"
         bskip="$(_distcp_counter "$c" "Bytes Skipped")"
         ffail="$(_distcp_counter "$c" "Files Failed")"
         bfail="$(_distcp_counter "$c" "Bytes Failed")"
         bw="$(_distcp_counter "$c" "Bandwidth in Bytes" "Bandwidth in Btyes")"
-        if [[ -n "$expected" ]]; then
-            echo "       Bytes Copied    : $(format_bytes "${bytes:-0}") of $(format_bytes "$expected") expected (${bytes:-0} bytes)"
+        total_bytes=$((total_bytes + bytes))
+        total_files=$((total_files + files))
+        total_dirs=$((total_dirs + dirs))
+        if [[ -n "$bw" ]] && ((bytes > 0 && bw < bytes)); then
+            bw_col="$(format_bytes "$bw")/s"
         else
-            echo "       Bytes Copied    : $(format_bytes "${bytes:-0}") (${bytes:-0} bytes)"
+            bw_col="n/a"
         fi
-        echo "       Files Copied    : ${files:-0}"
-        echo "       Dirs Copied     : ${dirs:-0}"
-        if [[ -n "$fskip$bskip" ]] && ((${fskip:-0} + ${bskip:-0} > 0)); then
-            echo "       Skipped         : ${fskip:-0} file(s), $(format_bytes "${bskip:-0}") (already identical on the destination)"
+        rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$((i + 1))" "${DISTCP_JOB_DIRS[i]}" "$phase" "${result%% *}" \
+            "$(format_duration "$secs")" "$(format_bytes "$bytes")" "$files" "$dirs" "$(format_rate "$bytes" "$secs")" "$bw_col")")
+        if ((${ffail:-0} + ${bfail:-0} > 0)); then
+            notes+=("[$((i + 1))] ${DISTCP_JOB_DIRS[i]}: ${ffail:-0} file(s), $(format_bytes "${bfail:-0}") failed to copy")
         fi
-        if [[ -n "$ffail$bfail" ]] && ((${ffail:-0} + ${bfail:-0} > 0)); then
-            echo "       Failed          : ${ffail:-0} file(s), $(format_bytes "${bfail:-0}")"
-        fi
-        rate=$(( ${bytes:-0} / (secs > 0 ? secs : 1) ))
-        echo "       Throughput      : $(format_bytes "$rate")/s (bytes copied / duration)"
-        if [[ -n "$bw" ]]; then
-            echo "       Bandwidth       : $(format_bytes "$bw")/s (DistCp counter)"
+        if ((${fskip:-0} + ${bskip:-0} > 0)); then
+            notes+=("[$((i + 1))] ${DISTCP_JOB_DIRS[i]}: ${fskip:-0} file(s), $(format_bytes "${bskip:-0}") skipped (already identical on the destination)")
         fi
     done
+    rows+=("-")
+    rows+=("$(printf '\tTotal\t\t\t%s\t%s\t%s\t%s\t%s\t' "$(format_duration "$total_secs")" "$(format_bytes "$total_bytes")" \
+        "$total_files" "$total_dirs" "$(format_rate "$total_bytes" "$total_secs")")")
+
+    echo "   Jobs              : $ran run ($ok succeeded, $failed failed), $skipped skipped (no changes)"
+    echo ""
+    printf '%s\n' "${rows[@]}" | _print_table "1,5,6,7,8,9,10"
+    echo ""
+    echo "   Job        : _N is snapshot ${SNAP_PREFIX}_N"
+    echo "   Throughput : data copied / job duration, including YARN job startup"
+    echo "   Bandwidth  : DistCp bandwidth counter, all map tasks combined (n/a when maps ran under 2 s)"
+    if ((${#notes[@]} > 0)); then
+        echo ""
+        echo "   Notes"
+        for i in "${!notes[@]}"; do
+            echo "     ${notes[i]}"
+        done
+    fi
     return 0
 }
 
-# format_duration <seconds>: "45s", "2m 17s", "1h 02m 05s".
+# format_duration <seconds>: "45s", "2m 17s", "1h 02m 05s", "2d 03h 04m 05s".
 format_duration() {
     local s="${1:-0}"
-    if ((s >= 3600)); then
+    if ((s >= 86400)); then
+        printf '%dd %02dh %02dm %02ds' $((s / 86400)) $((s % 86400 / 3600)) $((s % 3600 / 60)) $((s % 60))
+    elif ((s >= 3600)); then
         printf '%dh %02dm %02ds' $((s / 3600)) $((s % 3600 / 60)) $((s % 60))
     elif ((s >= 60)); then
         printf '%dm %02ds' $((s / 60)) $((s % 60))
@@ -2071,11 +2146,11 @@ dr_job_name() {
 }
 
 # Run a "yarn" CLI command as the identity that submits the DistCp jobs, bounded by YARN_CLI_TIMEOUT seconds
-# (default 60) so an unreachable ResourceManager cannot hang the script.
+# (default 180) so an unreachable ResourceManager cannot hang the script.
 run_yarn_cli() {
     local -a prefix=()
     if command -v timeout >/dev/null 2>&1; then
-        prefix=(timeout "${YARN_CLI_TIMEOUT:-60}")
+        prefix=(timeout "${YARN_CLI_TIMEOUT:-180}")
     fi
     if [[ "$KERBEROS_ENABLED" == "yes" ]]; then
         ${prefix[@]+"${prefix[@]}"} yarn "$@"
@@ -2098,6 +2173,8 @@ _distcp_app_ids_since() {
 # is local to each host) or to a run whose client was killed. Returns 0 if none is active, 1 if one is (its
 # application ids are logged and left in RUNNING_DR_JOB_IDS), 2 if YARN could not be queried.
 RUNNING_DR_JOB_IDS=""
+# Set by rollback_once_for_failure when it refused a rollback because YARN could not be queried.
+ROLLBACK_YARN_UNCHECKED=false
 check_no_running_dr_job() {
     local d="$1" name out rc=0
     RUNNING_DR_JOB_IDS=""
@@ -4634,7 +4711,8 @@ rollback_once_for_failure() {
     # this policy on a different host, or the YARN job of a run whose client was killed): that copy's writes
     # are exactly what made this DistCp report "target has been modified". Checked before the marker, so a
     # refused rollback does not use up this failure's one-time rollback. If YARN cannot be queried, the
-    # rollback proceeds as configured.
+    # rollback is refused (ROLLBACK_REQUIRE_YARN_CHECK=yes) or proceeds with a warning (no).
+    ROLLBACK_YARN_UNCHECKED=false
     local job_check_rc=0
     check_no_running_dr_job "$d" || job_check_rc=$?
     if ((job_check_rc == 1)); then
@@ -4644,7 +4722,12 @@ rollback_once_for_failure() {
         log "[ERROR] [ROLLBACK] Let it finish, or stop it (yarn application -kill <id>), then re-run this script. If it is another host running this same policy, schedule the policy on one host only."
         return 1
     elif ((job_check_rc == 2)); then
-        log "[WARN] [ROLLBACK] Could not query YARN to confirm that no other DistCp is writing into $d (yarn CLI missing or ResourceManager unreachable). Proceeding with the rollback as configured."
+        if [[ "${ROLLBACK_REQUIRE_YARN_CHECK,,}" == "yes" ]]; then
+            ROLLBACK_YARN_UNCHECKED=true
+            log "[ERROR] [ROLLBACK] Could not query YARN to confirm that no other DistCp is writing into $d (yarn CLI missing, ResourceManager unreachable, or no answer within YARN_CLI_TIMEOUT=${YARN_CLI_TIMEOUT}s). Refusing to roll back (ROLLBACK_REQUIRE_YARN_CHECK=yes)."
+            return 1
+        fi
+        log "[WARN] [ROLLBACK] Could not query YARN to confirm that no other DistCp is writing into $d (yarn CLI missing, ResourceManager unreachable, or no answer within YARN_CLI_TIMEOUT=${YARN_CLI_TIMEOUT}s). Proceeding with the rollback (ROLLBACK_REQUIRE_YARN_CHECK=no)."
     fi
 
     # If marker exists, skip automatic rollback for this exact failure -- UNLESS
@@ -4818,7 +4901,7 @@ rollback_once_for_failure() {
     log "[ROLLBACK] Running DistCp rollback: hadoop distcp $DISTCP_ROLLBACK_FULL_OPTS $DISTCP_ROLLBACK_OPTS $src_snap_path $dst_live_path"
     # Rollback DistCp stderr goes through global redirection (exec 2>&1), no need to tee to LOG again
     local rollback_distcp_success=false
-    set_distcp_job_context "$d" "Rollback to ${prev_snap} (destination restore)"
+    set_distcp_job_context "$d" "Rollback to ${prev_snap}"
     # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
     if run_as_distcp hadoop distcp $DISTCP_ROLLBACK_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_ROLLBACK_OPTS "$src_snap_path" "$dst_live_path"; then
         rollback_distcp_success=true
@@ -4977,7 +5060,7 @@ reconcile_and_rebaseline_dest() {
     log_cmd "Baseline Reconcile DistCp Command"
     echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -delete $src_base_uri $dst_uri"
     echo ""
-    set_distcp_job_context "$d" "Baseline reconcile (${baseline_snap})"
+    set_distcp_job_context "$d" "Reconcile ${baseline_snap}"
     # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
     if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -delete "$src_base_uri" "$dst_uri" 2> >(tee "$reconcile_err" >&2); then
         log "[INFO] Baseline reconcile DistCp succeeded for $d"
@@ -5123,7 +5206,7 @@ reconcile_reverse_diff_bootstrap() {
     echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $reverse_next_snap $src_uri $dst_uri"
     echo ""
     local bootstrap_distcp_success
-    set_distcp_job_context "$d" "Reverse-diff bootstrap ${last_snap} -> ${reverse_next_snap}"
+    set_distcp_job_context "$d" "Reverse-diff ${last_snap} -> ${reverse_next_snap}"
     # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
     if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$reverse_next_snap" "$src_uri" "$dst_uri" 2> >(tee "$bootstrap_err" >&2); then
         bootstrap_distcp_success=true
@@ -5260,6 +5343,7 @@ reconcile_reverse_diff_bootstrap() {
     fi
 
     METRICS_SUCCESSFUL_DIRECTORIES=$((METRICS_SUCCESSFUL_DIRECTORIES + 1))
+    DIR_SYNCED["$d"]="true"
 
     # --- Step 5: cleanup old snapshots on both clusters (same as normal Stage 4 4g/4h) ---
     cleanup_old_snapshots "$SRC_URI_NS" "$d" "source" "$SNAP_RETAIN" "$SNAP_PREFIX"
@@ -5552,6 +5636,8 @@ main() {
     echo "  Arg 16 (REVERSE_DIFF_BOOTSTRAP) : $REVERSE_DIFF_BOOTSTRAP"
     echo "  Arg 17 (HDFS_STATE_DIR)      : $HDFS_STATE_DIR"
     echo "  DIR_BOOTSTRAP_MODE (fixed)   : $DIR_BOOTSTRAP_MODE (hardcoded, not configurable)"
+    echo "  YARN_CLI_TIMEOUT (env)       : ${YARN_CLI_TIMEOUT}s"
+    echo "  ROLLBACK_REQUIRE_YARN_CHECK (env) : $ROLLBACK_REQUIRE_YARN_CHECK"
     echo "  AUTO_DERIVE_HA_CLIENT_CONFIG     : $AUTO_DERIVE_HA_CLIENT_CONFIG"
     if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" == "yes" ]]; then
         echo "  SRC_NN_HOSTS                 : $SRC_NN_HOSTS"
@@ -6239,7 +6325,7 @@ main() {
                 # Run DistCp with stderr captured for error analysis
                 DISTCP_STDERR_FILE="/tmp/full_distcp_err_$(sanitize "$d")_$$.log"
                 TEMP_FILES+=("$DISTCP_STDERR_FILE")
-                set_distcp_job_context "$d" "Bootstrap full copy (${SNAP_PREFIX}_0)"
+                set_distcp_job_context "$d" "Bootstrap ${SNAP_PREFIX}_0"
                 # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
                 if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -delete "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
                     echo ""
@@ -7067,7 +7153,7 @@ main() {
                         echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
                         echo "======================"
                         echo ""
-                        set_distcp_job_context "$d" "Incremental retry ${last_snap} -> ${next_snap}"
+                        set_distcp_job_context "$d" "Retry ${last_snap} -> ${next_snap}"
                         # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
                         if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_RETRY_STDERR" >&2); then
                             DISTCP_RETRY_SUCCESS=true
@@ -7148,10 +7234,13 @@ main() {
                         echo "============================================"
                         echo ">>> [ERROR] [STAGE 4] Rollback NOT performed for: $d <<<"
                         echo "============================================"
-                        log "[WARN] [Stage 4] Rollback not performed (marker existed, a DistCp for this directory is still running, or the rollback failed -- see [ROLLBACK] above). Manual intervention required for $d"
+                        log "[WARN] [Stage 4] Rollback not performed (marker existed, a DistCp for this directory is still running, YARN could not be queried, or the rollback failed -- see [ROLLBACK] above). Manual intervention required for $d"
                         if [[ -n "$RUNNING_DR_JOB_IDS" ]]; then
                             # The destination is still being written by that job; re-syncing now would race it.
                             log "[WARN] [Stage 4] Wait for YARN application(s) $(echo "$RUNNING_DR_JOB_IDS" | tr '\n' ' ')to finish (or kill them), then re-run this script before any manual re-sync."
+                        elif [[ "$ROLLBACK_YARN_UNCHECKED" == "true" ]]; then
+                            # Nothing was changed; the rollback for this failure is still available to the next run.
+                            log "[WARN] [Stage 4] Restore access to the YARN ResourceManager from this host, confirm no DistCp of this policy is running (yarn application -list | grep '$(dr_job_name "$d")'), then re-run this script: it retries the rollback. If YARN cannot be reached, run with ROLLBACK_REQUIRE_YARN_CHECK=no only after confirming that yourself."
                         else
                             print_resync_guidance "$d" "$last_snap"
                         fi
@@ -7283,6 +7372,7 @@ main() {
             log "[ERROR] Failed to write state file $state"
         fi
         METRICS_SUCCESSFUL_DIRECTORIES=$((METRICS_SUCCESSFUL_DIRECTORIES + 1))
+        DIR_SYNCED["$d"]="true"
         dir_end_ts=$(date +%s)
         log "[METRIC] [STAGE 4] Directory '$d' completed in $((dir_end_ts - dir_start_ts)) seconds"
         echo ""
@@ -7353,7 +7443,7 @@ main() {
     echo " Status              : $OVERALL_STATUS"
     echo " Start Time          : $SCRIPT_START_TIME"
     echo " End Time            : $SCRIPT_END_TIME"
-    echo " Total Runtime       : $(format_duration "$SCRIPT_RUNTIME") ($SCRIPT_RUNTIME s)"
+    echo " Total Runtime       : $(format_duration "$SCRIPT_RUNTIME")"
     echo ""
     echo " REPLICATION"
     echo "   Source Cluster    : $SOURCE_CLUSTER"
@@ -7362,8 +7452,23 @@ main() {
     echo "   Snapshot Prefix   : $SNAP_PREFIX (retaining $SNAP_RETAIN per directory)"
     echo "   Kerberos          : $kerberos_desc"
     echo "   Directories       : ${#SOURCE_DIRS[@]} configured | $METRICS_SUCCESSFUL_DIRECTORIES synced | $baselined_dirs baselined | $METRICS_FAILED_DIRECTORIES failed"
+    local dir_w=0 dir_status
     for sd in "${SOURCE_DIRS[@]}"; do
-        echo "                       $sd"
+        ((${#sd} > dir_w)) && dir_w=${#sd}
+    done
+    for sd in "${SOURCE_DIRS[@]}"; do
+        if [[ "${DIR_SYNCED["$sd"]:-}" == "true" ]]; then
+            dir_status="Synced"
+        elif [[ -n "${STAGE4_SKIP_REASON["$sd"]:-}" && "${STAGE4_SKIP_FAILED["$sd"]:-false}" != "true" ]]; then
+            if [[ "${STAGE4_SKIP_REASON["$sd"]}" == waiting* ]]; then
+                dir_status="Baselined (manual full copy pending)"
+            else
+                dir_status="Baselined (full copy done; incrementals start next run)"
+            fi
+        else
+            dir_status="FAILED (see [ERROR] lines for this directory in the log)"
+        fi
+        printf '                       %-*s  %s\n' "$dir_w" "$sd" "$dir_status"
     done
     echo ""
     print_distcp_summary
