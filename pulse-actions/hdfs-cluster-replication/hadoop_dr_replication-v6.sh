@@ -467,9 +467,11 @@
 #   Stage 0: Initialization & argument parsing
 #            - Parse CLI args and set defaults
 #   Stage 1: Cluster health checks
-#            - Verify superuser privilege on BOTH clusters (unconditional; runs before
-#              any of the branching below, via "hdfs dfsadmin -report")
-#            - Validate NameNode JMX accessibility and HA ACTIVE state (if available)
+#            - Validate NameNode JMX accessibility and HA ACTIVE state (host:port clusters), or
+#              a time-bounded reachability probe (NameService clusters) -- first, so an
+#              unreachable cluster fails fast with the right diagnosis
+#            - Verify superuser privilege on BOTH clusters (unconditional, in every mode,
+#              via "hdfs dfsadmin -report")
 #   Stage 2: Enable snapshot capability (idempotent, per-directory, re-verified every run)
 #            - Re-verify snapshot capability on source and destination directories, every run:
 #              one "hdfs lsSnapshottableDir" per cluster lists the directories that already are;
@@ -1197,8 +1199,8 @@ FAILURE_REASON=""
 METRICS_SUCCESSFUL_DIRECTORIES=0
 METRICS_FAILED_DIRECTORIES=0
 
-# Counter for HDFS state-mirror write/mkdir failures (ensure_hdfs_state_dir, mirror_state_file_to_hdfs /
-# _mirror_one_cluster). These are all best-effort/ non-fatal by design (see HDFS_STATE_DIR docs) and never
+# Counter for HDFS state-mirror write failures (mirror_state_file_to_hdfs /
+# _mirror_one_cluster, including its on-demand mkdir). These are all best-effort/ non-fatal by design (see HDFS_STATE_DIR docs) and never
 # fail a directory's sync, but a mirror that has been silently broken for a long time (e.g. a permissions
 # change on one cluster) would otherwise be invisible until the exact moment of a real failover. Surfaced in
 # the Stage 5 summary so an operator sees it during routine, non-emergency runs instead of only discovering it
@@ -2523,32 +2525,6 @@ confirm_brand_new_against_live_snapshots() {
     return 0
 }
 
-# Idempotently ensure ${HDFS_STATE_DIR} exists on the given cluster. Best-effort: logs [WARN] and returns 0
-# (never aborts the script) on any failure -- an unreachable cluster, permission denied, or any other mkdir
-# error just means the cross-node LAST-SNAP PERFORMANCE-HINT CACHE mirror is degraded for this run; local-disk
-# operation is entirely unaffected and continues normally.
-#
-# NOTE (post live-direction-derivation rework): this directory no longer holds any value used for
-# safety-critical direction determination. It only caches the last common snapshot NAME as an optimistic
-# fast-path hint (see verify_cached_snap_fast_path / derive_direction_state) to avoid a live double-listing of
-# .snapshot on both clusters on every run. A missing or stale mirror here never produces a wrong direction
-# verdict -- it only means this run falls through to the full live listing-and-intersection algorithm, which
-# is slower but always correct and always attempted before any safety-critical decision.
-ensure_hdfs_state_dir() {
-    local cluster="$1"
-    local label="$2"
-    local mkdir_err="/tmp/pulse_replication_action_mkdir_err_$$.log"
-    if run_as_hdfs hdfs dfs -fs "hdfs://${cluster}" -mkdir -p "${HDFS_STATE_DIR}" 2>"$mkdir_err"; then
-        log "[DEBUG] [HDFS-STATE-MIRROR] Confirmed/created ${HDFS_STATE_DIR} on $label cluster ($cluster)"
-    else
-        log "[WARN] [HDFS-STATE-MIRROR] Could not create/confirm ${HDFS_STATE_DIR} on $label cluster ($cluster). HDFS state mirroring will be unavailable for this run on this cluster (cross-node failover convenience degraded); LOCAL state file operation is unaffected and this run continues normally."
-        [[ -s "$mkdir_err" ]] && log "[WARN] [HDFS-STATE-MIRROR] mkdir stderr: $(tr '\n' ' ' <"$mkdir_err")"
-        METRICS_HDFS_MIRROR_FAILURES=$((METRICS_HDFS_MIRROR_FAILURES + 1))
-    fi
-    rm -f "$mkdir_err" 2>/dev/null || true
-    return 0
-}
-
 # Atomic state file write to prevent corruption, PLUS best-effort HDFS mirror on both clusters for cross-node
 # failover resilience.
 #
@@ -2622,13 +2598,21 @@ mirror_state_file_to_hdfs() {
 # "$cluster:$label" pair looped over) because SOURCE_CLUSTER/DEST_CLUSTER are typically "host:port" -- packing
 # "$cluster:$label" into one string and splitting on ":" would break on the port's own colon. Two explicit
 # calls avoid that fragility entirely.
+#
+# ${HDFS_STATE_DIR} is created on demand: "hdfs dfs -put" does not create a missing parent directory, so when
+# the first upload fails the directory is created ("-mkdir -p", idempotent) and the upload retried once. In the
+# normal case the directory already exists and no mkdir call is made.
 _mirror_one_cluster() {
     local key="$1" mirror_tmp="$2" cluster="$3" label="$4"
-    local dest_uri
-    dest_uri="hdfs://${cluster}${HDFS_STATE_DIR}/$(state_file_name "$key")"
+    local dest_uri target
+    target="${HDFS_STATE_DIR}/$(state_file_name "$key")"
+    dest_uri="hdfs://${cluster}${target}"
     local put_err="/tmp/mirror_put_err_${key}_$$.log"
-    if run_as_hdfs hdfs dfs -fs "hdfs://${cluster}" -put -f "$mirror_tmp" "${HDFS_STATE_DIR}/$(state_file_name "$key")" 2>"$put_err"; then
+    if run_as_hdfs hdfs dfs -fs "hdfs://${cluster}" -put -f "$mirror_tmp" "$target" 2>"$put_err"; then
         log "[DEBUG] [HDFS-STATE-MIRROR] Mirrored state for key=$key to $label cluster ($cluster): $dest_uri"
+    elif run_as_hdfs hdfs dfs -fs "hdfs://${cluster}" -mkdir -p "${HDFS_STATE_DIR}" 2>"$put_err" &&
+        run_as_hdfs hdfs dfs -fs "hdfs://${cluster}" -put -f "$mirror_tmp" "$target" 2>"$put_err"; then
+        log "[DEBUG] [HDFS-STATE-MIRROR] Created ${HDFS_STATE_DIR} on $label cluster ($cluster) and mirrored state for key=$key: $dest_uri"
     else
         log "[WARN] [HDFS-STATE-MIRROR] Failed to mirror state for key=$key to $label cluster ($cluster) at $dest_uri. NON-FATAL: local state file remains authoritative; this directory's sync is unaffected. Cross-node failover convenience is degraded for this directory until a mirror write succeeds."
         [[ -s "$put_err" ]] && log "[WARN] [HDFS-STATE-MIRROR] hdfs -put stderr: $(tr '\n' ' ' <"$put_err")"
@@ -3931,7 +3915,7 @@ DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_MAPREDUCE_OPTS $DISTCP
 #
 # WHY THIS EXISTS: without this check, an HA cluster entry skipped Stage 1 entirely with zero live validation,
 # and the first real command against it was whatever Stage 2 happened to run first (e.g.
-# ensure_hdfs_state_dir's "hdfs dfs ... -mkdir"). If the NameService is missing from this node's
+# "hdfs lsSnapshottableDir"). If the NameService is missing from this node's
 # hdfs-site.xml, unreachable, or misconfigured, that first real call hangs for the client's full RPC
 # retry/timeout window (can be many minutes) instead of failing immediately with a clear message -- exactly
 # the "script just sits there" symptom this function exists to prevent.
@@ -4680,12 +4664,16 @@ reconcile_and_rebaseline_dest() {
         return 1
     fi
 
-    # Step 2: refresh the destination baseline snapshot to match the reconciled state
-    if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -ls "$d/.snapshot" 2>/dev/null | grep -q "/$(snap_re "$baseline_snap")\$"; then
-        log "[DEBUG] Deleting destination baseline snapshot $baseline_snap to refresh it"
-        if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -deleteSnapshot "$d" "$baseline_snap" 2>/dev/null; then
-            log "[WARN] Failed to delete destination baseline snapshot $baseline_snap (will attempt recreate anyway)"
-        fi
+    # Step 2: refresh the destination baseline snapshot to match the reconciled state. Deleted directly (no
+    # listing first): a snapshot that does not exist is reported by HDFS as "does not exist" and needs no delete.
+    local base_del_err
+    log "[DEBUG] Deleting destination baseline snapshot $baseline_snap to refresh it"
+    if base_del_err=$(run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -deleteSnapshot "$d" "$baseline_snap" 2>&1 >/dev/null); then
+        log "[DEBUG] Deleted destination baseline snapshot $baseline_snap"
+    elif grep -qi "does not exist" <<<"$base_del_err"; then
+        log "[DEBUG] Destination baseline snapshot $baseline_snap not present; creating it"
+    else
+        log "[WARN] Failed to delete destination baseline snapshot $baseline_snap (will attempt recreate anyway): $(tr '\n' ' ' <<<"$base_del_err")"
     fi
     if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -createSnapshot "$d" "$baseline_snap"; then
         log "[INFO] Destination baseline snapshot $baseline_snap refreshed to reconciled state for $d"
@@ -5374,32 +5362,14 @@ main() {
         derive_nameservice_ha_conf
     fi
 
-    # -----------------------------------------------------------------------------
-    # Stage 1a: Superuser privilege check (runs UNCONDITIONALLY, ahead of the
-    # SKIP_HEALTH_CHECKS/HA branching below) -- same rationale as the
-    # AUTO_DERIVE_HA_CLIENT_CONFIG derivation above: a check placed inside only one of Stage
-    # 1's branches would be silently skipped whenever the other branch is the one that
-    # fires. Missing superuser privilege on either cluster otherwise surfaces much later
-    # and more confusingly, as an allowSnapshot/createSnapshot failure in Stage 2/3 --
-    # or, if only ONE cluster is missing the grant, as what looks like a per-directory
-    # problem instead of an identity/permission one.
-    # -----------------------------------------------------------------------------
     log_stage "1" "Cluster Health Checks"
-    log_substage "Verifying superuser privilege on both clusters"
-    superuser_ok=true
-    if ! check_superuser_privilege "$SRC_URI_NS" "SOURCE"; then
-        superuser_ok=false
-    fi
-    if ! check_superuser_privilege "$DST_URI_NS" "DEST"; then
-        superuser_ok=false
-    fi
-    if [[ "$superuser_ok" != "true" ]]; then
-        log_stage_failed "1" "Cluster Health Checks" "Superuser privilege check failed (see [ERROR] lines above)"
-        exit 1
-    fi
 
     # -----------------------------------------------------------------------------
-    # Stage 1b: Cluster reachability / HA-state checks (see check_cluster_health)
+    # Stage 1a: Cluster reachability / HA-state checks (see check_cluster_health and
+    # check_nameservice_reachable). These run first because they are time-bounded: an
+    # unreachable or unresolvable cluster fails here within the timeout. The superuser check
+    # (Stage 1b, below) has no timeout, so running it first would hang for the client's full
+    # RPC retry window and then report the problem as a missing superuser grant.
     # -----------------------------------------------------------------------------
     if [[ "$SKIP_HEALTH_CHECKS" == "yes" ]] || [[ "$source_is_ha" == "true" ]] || [[ "$dest_is_ha" == "true" ]]; then
         if [[ "$SKIP_HEALTH_CHECKS" == "yes" ]]; then
@@ -5446,7 +5416,6 @@ main() {
                 exit 1
             fi
         fi
-        log_stage_complete "1" "Cluster Health Checks"
     else
         log_substage "Checking SOURCE cluster: $source_host"
         if ! check_cluster_health "$source_host" "SOURCE" "$SOURCE_HTTP_SCHEME" "$SOURCE_NN_WEB_PORT"; then
@@ -5459,8 +5428,30 @@ main() {
             log_stage_failed "1" "Cluster Health Checks" "Destination cluster health check failed"
             exit 1
         fi
-        log_stage_complete "1" "Cluster Health Checks"
     fi
+
+    # -----------------------------------------------------------------------------
+    # Stage 1b: Superuser privilege check (runs UNCONDITIONALLY, after every branch of
+    # Stage 1a above, including SKIP_HEALTH_CHECKS=yes) -- a check placed inside only one of
+    # Stage 1a's branches would be silently skipped whenever the other branch is the one that
+    # fires. Missing superuser privilege on either cluster otherwise surfaces much later
+    # and more confusingly, as an allowSnapshot/createSnapshot failure in Stage 2/3 --
+    # or, if only ONE cluster is missing the grant, as what looks like a per-directory
+    # problem instead of an identity/permission one.
+    # -----------------------------------------------------------------------------
+    log_substage "Verifying superuser privilege on both clusters"
+    superuser_ok=true
+    if ! check_superuser_privilege "$SRC_URI_NS" "SOURCE"; then
+        superuser_ok=false
+    fi
+    if ! check_superuser_privilege "$DST_URI_NS" "DEST"; then
+        superuser_ok=false
+    fi
+    if [[ "$superuser_ok" != "true" ]]; then
+        log_stage_failed "1" "Cluster Health Checks" "Superuser privilege check failed (see [ERROR] lines above)"
+        exit 1
+    fi
+    log_stage_complete "1" "Cluster Health Checks"
 
     # -----------------------------------------------------------------------------
     # Stage 2: Enable snapshots on every directory, every run (idempotent -- see the
@@ -5470,13 +5461,8 @@ main() {
     log_stage "2" "Enable Snapshot Capability (Per-Directory)"
     mkdir -p "$SNAP_LOCK_DIR"
 
-    # Ensure the HDFS-mirrored state directory exists on BOTH clusters (idempotent, once per invocation, not
-    # per-directory -- same idempotency philosophy as SNAP_LOCK_DIR above, just extended to two remote
-    # filesystems). Best-effort: failure here does NOT abort the run. It only means HDFS state mirroring will
-    # be unavailable this run (mirror_state_file_to_hdfs's own -put calls will then also fail and log [WARN],
-    # but local-only operation continues normally).
-    ensure_hdfs_state_dir "$SRC_URI_NS" "SOURCE"
-    ensure_hdfs_state_dir "$DST_URI_NS" "DEST"
+    # ${HDFS_STATE_DIR} (the HDFS state mirror) is created on demand by the first mirror upload that needs it
+    # (see _mirror_one_cluster), not on every run.
 
     # Directories that cannot be replicated this run, with the reason. Filled by Stage 2 (source directory
     # missing, snapshots cannot be enabled, destination directory cannot be created) and Stage 3 (state cannot
@@ -5994,14 +5980,15 @@ main() {
                 base="${SNAP_PREFIX}_0"
                 log "[DEBUG] Creating post-DistCp baseline snapshot for directory: $d"
 
-                # Delete the old dr_snap_0 on destination (from before DistCp)
-                if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -ls "$d/.snapshot" 2>/dev/null | grep -q "/$(snap_re "$base")\$"; then
-                    log "[DEBUG] Deleting old baseline snapshot $base on destination (pre-DistCp state)"
-                    if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -deleteSnapshot "$d" "$base" 2>/dev/null; then
-                        log "[INFO] Deleted old baseline snapshot $base on destination"
-                    else
-                        log "[WARN] Failed to delete old baseline snapshot $base on destination (may proceed anyway)"
-                    fi
+                # Delete the old dr_snap_0 on destination (from before DistCp). Deleted directly (no listing first):
+                # a snapshot that does not exist is reported by HDFS as "does not exist" and needs no delete.
+                log "[DEBUG] Deleting old baseline snapshot $base on destination (pre-DistCp state)"
+                if base_del_err=$(run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -deleteSnapshot "$d" "$base" 2>&1 >/dev/null); then
+                    log "[INFO] Deleted old baseline snapshot $base on destination"
+                elif grep -qi "does not exist" <<<"$base_del_err"; then
+                    log "[DEBUG] Old baseline snapshot $base not present on destination"
+                else
+                    log "[WARN] Failed to delete old baseline snapshot $base on destination (may proceed anyway): $(tr '\n' ' ' <<<"$base_del_err")"
                 fi
 
                 # Create new baseline snapshot on destination (post-DistCp state)
