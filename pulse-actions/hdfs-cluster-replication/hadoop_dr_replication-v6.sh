@@ -53,6 +53,28 @@
 #   (AUTO_FULL_DISTCP through REPLICATION_MODE, REVERSE_DIFF_BOOTSTRAP and HDFS_STATE_DIR fall back to the
 #   environment variable of the same name before these defaults.)
 #
+# Environment-only settings (no positional argument; set with "export NAME=value" before running).
+# Full details for each are further down in this header or next to the variable in the script.
+#   DISTCP_MAPREDUCE_OPTS        = ""        -D job properties for every DistCp job (mapper memory/heap)
+#   HADOOP_CLIENT_OPTS           = -Xmx5g    JVM heap of the DistCp driver/client (not the mappers)
+#   DISTCP_DEBUG                 = no        yes = verbose DistCp and diagnostic logging
+#   LOG_RETAIN                   = -1        Keep the newest N logs per policy; -1 = never delete
+#   LOG_JOB_NAME                 = derived   Name of this policy's log directory under LOG_PATH
+#   SOURCE_HTTP_SCHEME           = http      http or https for source NameNode JMX
+#   SOURCE_NN_WEB_PORT           = 50070     Source NameNode web UI port (often 9870 on Hadoop 3)
+#   DEST_HTTP_SCHEME             = http      http or https for destination NameNode JMX
+#   DEST_NN_WEB_PORT             = 50070     Destination NameNode web UI port (often 9870 on Hadoop 3)
+#   CURL_BIN                     = curl      curl binary for JMX calls (name or absolute path)
+#   KRB5CCNAME                   = ""        Kerberos ticket cache path, if not the default location
+#   AUTO_DERIVE_HA_CLIENT_CONFIG = no        yes = build HA client config from SRC_/DST_NN_HOSTS
+#   SRC_NN_HOSTS                 = ""        Source NameNodes, "nn1=host:port,nn2=host:port"
+#   DST_NN_HOSTS                 = ""        Destination NameNodes, same format (swap both on failover)
+#   RUN_LOCK_MAX_AGE_SECS        = 86400     Alert (exit 30) when another run has held the lock this long
+#   ROLLBACK_MARKER_MAX_AGE_SECS = 86400     Age after which a rollback marker no longer blocks rollback
+#   FORCE_REBASELINE             = no        yes = re-baseline directories with cleared state (full copy)
+#   EMPTY_DIFF_SHORTCUT          = yes       Skip the DistCp/YARN job for a directory with no changes; no = always run it
+#   YARN_CLI_TIMEOUT             = 60        Seconds allowed per "yarn application" call (kill on interrupt, pre-rollback check)
+#
 # Positional arguments (order matters):
 #   1) SOURCE_NN_HOST:PORT  - Source HDFS NameNode URI (example: prod-namenode-1.example.com:8020)
 #   2) DEST_NN_HOST:PORT    - Destination HDFS NameNode URI (example: dr-namenode-1.example.com:8020)
@@ -88,6 +110,11 @@
 #                                -Dmapreduce.map.java.opts=-Xmx<~80% of MB>m   Mapper JVM heap.
 #                                                  Keep -Xmx < memory.mb (leave ~20% headroom) or YARN
 #                                                  kills the container.
+#                                These -D options can instead be set in the DISTCP_MAPREDUCE_OPTS env var
+#                                (see below), which avoids restating the DistCp flags here.
+#                                -D for mapred.job.queue.name / mapreduce.job.queuename, mapreduce.job.tags
+#                                or mapreduce.job.hdfs-servers.token-renewal.exclude is rejected: the
+#                                script sets these itself.
 #                              Example value:
 #                                "-strategy dynamic -direct -update -pugptx -skipcrccheck -m 20 -bandwidth 100"
 #                              Generic Hadoop options (-D..., -conf, -libjars, ...) may appear anywhere in
@@ -121,6 +148,8 @@
 #                                non-empty value -> filtering ENABLED using these pattern(s)
 #                              Multiple comma-separated patterns = multiple exclude rules
 #                              (each is ORed - a path matching ANY pattern is excluded).
+#                              Patterns are separated by commas or newlines. A comma inside {...}
+#                              (e.g. {1,3}), inside [...] or escaped as "\," belongs to the pattern.
 #                              Each pattern is validated at startup and the run fails fast with the
 #                              offending pattern if it does not compile as a regex.
 #                              Example value:
@@ -171,6 +200,17 @@
 #     for RUN_LOCK_MAX_AGE_SECS (env var, default 86400), skipped runs exit 30 instead,
 #     so a stuck run shows up in monitoring. Requires flock (util-linux). See
 #     acquire_run_lock.
+#     The lock is local to the host. Schedule a policy on one host only; as a safeguard,
+#     every DistCp is named "distcp: pulse-dr-<hash>" in YARN (mapreduce.job.name, one
+#     name per destination directory), and a rollback is refused while a job of that name
+#     is still running (see check_no_running_dr_job).
+#   - INTERRUPTS: SIGINT/SIGTERM stop the run: the running DistCp client is stopped, the
+#     YARN application it submitted is killed, the failure summary is printed and the
+#     script exits 130/143. Remaining directories are not processed.
+#   - A failure in one directory (source missing, snapshot or state problem, DistCp
+#     error) fails that directory only; the others are still replicated and the run
+#     exits non-zero. When a directory cannot recover by itself (its destination changed
+#     after the last common snapshot), the log prints the exact recovery commands.
 #   - DIR_BOOTSTRAP_MODE is HARDCODED to "yes" (auto-bootstrap missing destination
 #     directories). It is NOT a CLI argument and NOT an environment variable --
 #     there is no override. Missing destination directories are always created
@@ -343,7 +383,18 @@
 #     default heap (~1 GB) can OOM on large directories (e.g. "java.lang.OutOfMemoryError" /
 #     "GC overhead limit exceeded" before the YARN job is even submitted). Raise it for big trees:
 #     Example: export HADOOP_CLIENT_OPTS="-Xmx4g"
-#     (Mapper-side memory is tuned separately via -Dmapreduce.map.memory.mb in COPY_OPTS, arg 8.)
+#     (Mapper-side memory is tuned separately via DISTCP_MAPREDUCE_OPTS, below.)
+#   - DISTCP_MAPREDUCE_OPTS - MapReduce job properties for every DistCp job (default: none).
+#     Only -Dkey=value options; applied to full, incremental, reconcile, reverse-diff bootstrap
+#     and rollback copies. Lets you tune the job without restating the DistCp flags in COPY_OPTS.
+#     Example: export DISTCP_MAPREDUCE_OPTS="-Dmapreduce.map.memory.mb=4096 -Dmapreduce.map.java.opts=-Xmx3276m"
+#     Keep -Xmx below memory.mb (leave ~20% headroom) or YARN kills the container.
+#     Values cannot contain spaces (e.g. several JVM flags in one mapreduce.map.java.opts).
+#     Rejected (script exits): anything other than -D, glob characters (* ? [), and the
+#     script-managed keys mapred.job.queue.name / mapreduce.job.queuename (use YARN_QUEUE, arg 9),
+#     mapreduce.job.tags, and mapreduce.job.hdfs-servers.token-renewal.exclude (derived from
+#     REPLICATION_MODE). The same keys are rejected in COPY_OPTS (arg 8).
+#     A -D in COPY_OPTS (arg 8) for the same key takes precedence over this variable.
 #   - SOURCE_HTTP_SCHEME    - HTTP scheme for source cluster JMX access (default: http)
 #     Example: export SOURCE_HTTP_SCHEME=https
 #   - SOURCE_NN_WEB_PORT    - NameNode web UI port for source cluster (default: 50070)
@@ -420,11 +471,16 @@
 #              any of the branching below, via "hdfs dfsadmin -report")
 #            - Validate NameNode JMX accessibility and HA ACTIVE state (if available)
 #   Stage 2: Enable snapshot capability (idempotent, per-directory, re-verified every run)
-#            - Allow snapshot on source and destination directories, every run (the
-#              allowSnapshot RPC is idempotent server-side: "already snapshottable" counts
-#              as success), so a destination that loses its snapshottable flag out-of-band
-#              (recreated dir, disallowSnapshot, restore from a non-snapshottable backup)
-#              is re-enabled automatically instead of silently staying broken.
+#            - Re-verify snapshot capability on source and destination directories, every run:
+#              one "hdfs lsSnapshottableDir" per cluster lists the directories that already are;
+#              allowSnapshot (idempotent) runs only for the others, or for every directory when
+#              that listing is unavailable. A destination that loses its snapshottable flag
+#              out-of-band (recreated dir, disallowSnapshot, restore from a non-snapshottable
+#              backup) is re-enabled automatically instead of silently staying broken.
+#            - A directory whose source cannot be made snapshottable (e.g. it does not exist),
+#              or whose destination cannot be created or made snapshottable, is failed for this
+#              run with the reason; nothing is created on the destination for it, and every
+#              other directory continues.
 #            - If destination dir missing:
 #                * In "yes" mode (auto-bootstrap): create the dir on destination with same owner/permissions
 #                * In "no" mode (manual): print full DistCp instructions and exit for operator
@@ -789,6 +845,33 @@ fi
 # Example: export FORCE_REBASELINE=yes
 ###############################################################################
 FORCE_REBASELINE="${FORCE_REBASELINE:-no}"
+
+###############################################################################
+# EMPTY_DIFF_SHORTCUT (env var, default "yes"): skip the incremental DistCp (and
+# its YARN job) for a directory with no changes -- the source snapshotDiff from
+# the last common snapshot to the new one is empty AND the destination has no
+# changes since its copy of the last common snapshot. Costs one snapshotDiff per
+# directory; saves a YARN job for every unchanged directory. Any snapshotDiff
+# error or unexpected output falls back to running DistCp. "no" always runs
+# DistCp.
+###############################################################################
+EMPTY_DIFF_SHORTCUT="${EMPTY_DIFF_SHORTCUT:-yes}"
+if [[ ! "${EMPTY_DIFF_SHORTCUT,,}" =~ ^(yes|no)$ ]]; then
+    echo "[ERROR] EMPTY_DIFF_SHORTCUT must be 'yes' or 'no': '$EMPTY_DIFF_SHORTCUT'" >&2
+    exit 31
+fi
+
+###############################################################################
+# YARN_CLI_TIMEOUT (env var, default 60): seconds allowed for each "yarn
+# application" call (killing the job of an interrupted DistCp; checking for a
+# DistCp still running before a rollback). Bounds the wait on an unreachable
+# ResourceManager.
+###############################################################################
+YARN_CLI_TIMEOUT="${YARN_CLI_TIMEOUT:-60}"
+if [[ ! "$YARN_CLI_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[ERROR] YARN_CLI_TIMEOUT must be a positive number of seconds: '$YARN_CLI_TIMEOUT'" >&2
+    exit 32
+fi
 
 ###############################################################################
 # Per-NameService HA client config injection (env var only for now -> default OFF). No CLI argument slot
@@ -1642,19 +1725,135 @@ run_as_hdfs() {
 # Also the single choke point for per-NameService HA config injection for distcp -- see run_as_hdfs's doc
 # comment for the full rationale. Here the subcommand token is always "distcp" (cmd[0]=hadoop, cmd[1]=distcp),
 # so injected args are spliced in right after it, same positioning logic.
+#
+# The client runs as a background child that this shell waits on, so an INT/TERM delivered to the script is
+# handled immediately (see _on_signal) instead of only after the copy finishes. DISTCP_CHILD_PID and
+# DISTCP_LOG_OFFSET (size of $LOG when the client started) let _on_signal stop the client and kill the YARN
+# application it submitted.
+DISTCP_CHILD_PID=""
+DISTCP_LOG_OFFSET=0
 run_as_distcp() {
     local cmd=("$@")
     _collect_nameservice_inject_args "$@"
     if [[ ${#NAMESERVICE_INJECT_ARGS[@]} -gt 0 ]]; then
         cmd=("${cmd[0]}" "${cmd[1]}" "${NAMESERVICE_INJECT_ARGS[@]}" "${cmd[@]:2}")
     fi
-    if [[ "$KERBEROS_ENABLED" == "yes" ]]; then
-        # Kerberos enabled: run as current user (root) to preserve tickets and environment
-        "${cmd[@]}"
-    else
+    if [[ "$KERBEROS_ENABLED" != "yes" ]]; then
         # Kerberos not enabled: switch to DISTCP_USER via sudo -E to preserve environment
-        sudo -E -u "$DISTCP_USER" "${cmd[@]}"
+        cmd=(sudo -E -u "$DISTCP_USER" "${cmd[@]}")
     fi
+    DISTCP_LOG_OFFSET=0
+    if [[ -n "${LOG:-}" && -f "$LOG" ]]; then
+        DISTCP_LOG_OFFSET=$(wc -c <"$LOG" 2>/dev/null | tr -d ' ') || DISTCP_LOG_OFFSET=0
+    fi
+    local rc=0
+    "${cmd[@]}" &
+    DISTCP_CHILD_PID=$!
+    wait "$DISTCP_CHILD_PID" || rc=$?
+    DISTCP_CHILD_PID=""
+    return "$rc"
+}
+
+# YARN job name for every DistCp this script runs into destination directory $1: "pulse-dr-<8 hex>", a checksum
+# of DEST_CLUSTER, SNAP_PREFIX and the directory. DistCp names its job "distcp: <mapreduce.job.name>", so the
+# job shows in "yarn application -list" as "distcp: pulse-dr-<hex>". Every run of the same policy, on any host,
+# uses the same name for the same directory, which lets check_no_running_dr_job find a copy still writing into
+# it. Hex only, so the value is safe in the unquoted, word-split DistCp option strings.
+dr_job_name_prefix() {
+    printf 'pulse-dr-'
+}
+dr_job_name() {
+    printf '%s%s' "$(dr_job_name_prefix)" "$(printf '%s|%s|%s' "$DEST_CLUSTER" "$SNAP_PREFIX" "$1" | cksum | awk '{printf "%08x", $1}')"
+}
+
+# Run a "yarn" CLI command as the identity that submits the DistCp jobs, bounded by YARN_CLI_TIMEOUT seconds
+# (default 60) so an unreachable ResourceManager cannot hang the script.
+run_yarn_cli() {
+    local -a prefix=()
+    if command -v timeout >/dev/null 2>&1; then
+        prefix=(timeout "${YARN_CLI_TIMEOUT:-60}")
+    fi
+    if [[ "$KERBEROS_ENABLED" == "yes" ]]; then
+        ${prefix[@]+"${prefix[@]}"} yarn "$@"
+    else
+        ${prefix[@]+"${prefix[@]}"} sudo -E -u "$DISTCP_USER" yarn "$@"
+    fi
+}
+
+# YARN application ids that DistCp reported in $LOG after byte offset $1 ("Submitted application ..." and
+# "Running job: job_..." lines), one per line.
+_distcp_app_ids_since() {
+    local offset="${1:-0}"
+    [[ -n "${LOG:-}" && -f "$LOG" ]] || return 0
+    tail -c +"$((offset + 1))" "$LOG" 2>/dev/null |
+        grep -oE '(application|job)_[0-9]+_[0-9]+' | sed 's/^job_/application_/' | sort -u || true
+}
+
+# check_no_running_dr_job <dir>: is a DistCp that writes into <dir> (this policy's job name, see dr_job_name)
+# still active on YARN? Such a job can belong to another run of the same policy on another host (the run lock
+# is local to each host) or to a run whose client was killed. Returns 0 if none is active, 1 if one is (its
+# application ids are logged and left in RUNNING_DR_JOB_IDS), 2 if YARN could not be queried.
+RUNNING_DR_JOB_IDS=""
+check_no_running_dr_job() {
+    local d="$1" name out rc=0
+    RUNNING_DR_JOB_IDS=""
+    command -v yarn >/dev/null 2>&1 || return 2
+    name="$(dr_job_name "$d")"
+    out=$(run_yarn_cli application -list -appStates NEW,NEW_SAVING,SUBMITTED,ACCEPTED,RUNNING 2>/dev/null) || rc=$?
+    ((rc == 0)) || return 2
+    RUNNING_DR_JOB_IDS=$(printf '%s\n' "$out" | grep -F -- "$name" | awk '{print $1}' | grep -E '^application_[0-9]+_[0-9]+$' || true)
+    [[ -z "$RUNNING_DR_JOB_IDS" ]] && return 0
+    return 1
+}
+
+# Stop the DistCp client started by run_as_distcp (if one is running) and kill the YARN application it
+# submitted. Killing only the client leaves the MapReduce job running on YARN, still writing into the
+# destination while the next run starts.
+stop_running_distcp() {
+    local pid="${DISTCP_CHILD_PID:-}"
+    [[ -n "$pid" ]] || return 0
+    local apps app i
+    apps="$(_distcp_app_ids_since "$DISTCP_LOG_OFFSET")"
+    if kill -0 "$pid" 2>/dev/null; then
+        log "[ERROR] Stopping the running DistCp client (pid $pid)."
+        kill -TERM "$pid" 2>/dev/null || true
+        for ((i = 0; i < 20; i++)); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+        done
+        kill -KILL "$pid" 2>/dev/null || true
+    fi
+    if [[ -z "$apps" ]]; then
+        log "[WARN] No YARN application id was found in this run's log for the interrupted DistCp. If a job was submitted, find and kill it: yarn application -list | grep '$(dr_job_name_prefix)'"
+        return 0
+    fi
+    for app in $apps; do
+        if run_yarn_cli application -kill "$app" >/dev/null 2>&1; then
+            log "[ERROR] Killed YARN application $app of the interrupted DistCp."
+        else
+            log "[ERROR] Could not kill YARN application $app. Kill it manually before the next run: yarn application -kill $app"
+        fi
+    done
+    return 0
+}
+
+# INT/TERM handler: record the failure, stop any running DistCp (client and YARN job), then exit. The EXIT
+# trap prints the failure summary and removes temp files.
+_on_signal() {
+    local sig="$1" code="$2"
+    trap '' INT TERM PIPE
+    SCRIPT_FAILED="yes"
+    FAILURE_REASON="Interrupted by SIG${sig}${CURRENT_STAGE:+ during ${CURRENT_STAGE}}; the remaining directories were not processed"
+    log "[ERROR] Received SIG${sig}. Stopping this run." || true
+    stop_running_distcp || true
+    exit "$code"
+}
+
+_on_exit() {
+    if [[ "$SCRIPT_FAILED" == "yes" ]]; then
+        print_failure_summary || true
+    fi
+    cleanup_temp_files || true
 }
 
 log_substage() {
@@ -1764,9 +1963,34 @@ strip_update_flag() {
 #                          (The script adds -delete itself to the full copies only.)
 #   -diff / -rdiff       : managed by the script itself.
 # Glob characters are rejected because COPY_OPTS is expanded unquoted at every call site.
+# "-D" options for script-managed job properties are rejected (see reject_reserved_d_opt).
 #
 # COPY_OPTS_NO_UPDATE is COPY_OPTS minus "-update"; call sites append "-update" explicitly so every copy
 # (full, reconcile, incremental) uses update semantics regardless of whether the operator included it.
+
+# Reject a user "-D" option that sets a job property this script manages itself. Hadoop applies "-D"
+# options in order and the last one wins, and user options are placed after the script's own, so any of
+# these would silently override the script's value.
+#   $1 = where the option came from (for the error message)
+#   $2 = the "key=value" part of the option (without "-D")
+reject_reserved_d_opt() {
+    local source="$1" key="${2%%=*}"
+    case "$key" in
+        mapred.job.queue.name|mapreduce.job.queuename)
+            echo "[ERROR] $source must not set '$key'; set the YARN queue with YARN_QUEUE (arg 9)." >&2
+            exit 23
+            ;;
+        mapreduce.job.tags)
+            echo "[ERROR] $source must not set '$key'; the script sets the YARN application tags itself." >&2
+            exit 23
+            ;;
+        mapreduce.job.hdfs-servers.token-renewal.exclude)
+            echo "[ERROR] $source must not set '$key'; the script derives it from REPLICATION_MODE (arg 14)." >&2
+            exit 23
+            ;;
+    esac
+}
+
 COPY_GENERIC_OPTS=""
 COPY_OPTS_NO_UPDATE=""
 parse_copy_opts() {
@@ -1782,12 +2006,16 @@ parse_copy_opts() {
         t="${tokens[i]}"
         case "$t" in
             -D?*)
+                reject_reserved_d_opt "COPY_OPTS (arg 8)" "${t#-D}"
                 generic+=("$t")
                 ;;
             -D|-conf|-fs|-jt|-files|-libjars|-archives|-tokenCacheFile)
                 if ((i + 1 >= ${#tokens[@]})); then
                     echo "[ERROR] COPY_OPTS (arg 8): generic option '$t' is missing its value" >&2
                     exit 23
+                fi
+                if [[ "$t" == "-D" ]]; then
+                    reject_reserved_d_opt "COPY_OPTS (arg 8)" "${tokens[i + 1]}"
                 fi
                 generic+=("$t" "${tokens[i + 1]}")
                 ((i++)) || true
@@ -1837,6 +2065,53 @@ parse_copy_opts() {
     COPY_OPTS_NO_UPDATE=$(strip_update_flag "$COPY_OPTS")
 }
 parse_copy_opts
+
+# Operator-supplied MapReduce job properties for every DistCp job (env var DISTCP_MAPREDUCE_OPTS), e.g.
+# mapper container memory and heap. Kept separate from COPY_OPTS (arg 8) so job tuning does not require
+# restating the DistCp flags. Only "-Dkey=value" / "-D key=value" is accepted; both are normalized to
+# "-Dkey=value". Reserved keys are rejected (see reject_reserved_d_opt). Glob characters are rejected
+# because the value is expanded unquoted at every call site, which also means a value cannot contain
+# spaces.
+#
+# The result goes into DISTCP_FULL_OPTS and DISTCP_ROLLBACK_FULL_OPTS ahead of COPY_GENERIC_OPTS, so a
+# "-D" in COPY_OPTS (arg 8) for the same key wins.
+DISTCP_MAPREDUCE_OPTS="${DISTCP_MAPREDUCE_OPTS:-}"
+parse_distcp_mapreduce_opts() {
+    if [[ "$DISTCP_MAPREDUCE_OPTS" == *[\*\?\[]* ]]; then
+        echo "[ERROR] DISTCP_MAPREDUCE_OPTS must not contain glob characters ('*', '?', '['): '$DISTCP_MAPREDUCE_OPTS'" >&2
+        exit 23
+    fi
+
+    local -a tokens=() out=()
+    read -r -a tokens <<<"$DISTCP_MAPREDUCE_OPTS"
+    local i t prop
+    for ((i = 0; i < ${#tokens[@]}; i++)); do
+        t="${tokens[i]}"
+        case "$t" in
+            -D?*)
+                prop="${t#-D}"
+                ;;
+            -D)
+                prop="${tokens[i + 1]:-}"
+                ((i++)) || true
+                ;;
+            *)
+                echo "[ERROR] DISTCP_MAPREDUCE_OPTS accepts only -Dkey=value options, got '$t'." >&2
+                echo "[ERROR] DistCp flags (-m, -bandwidth, -strategy, ...) belong in COPY_OPTS (arg 8)." >&2
+                exit 23
+                ;;
+        esac
+        if [[ ! "$prop" =~ ^[^=]+=.+$ ]]; then
+            echo "[ERROR] DISTCP_MAPREDUCE_OPTS: expected -Dkey=value, got '-D${prop}'." >&2
+            exit 23
+        fi
+        reject_reserved_d_opt "DISTCP_MAPREDUCE_OPTS" "$prop"
+        out+=("-D${prop}")
+    done
+
+    DISTCP_MAPREDUCE_OPTS="${out[*]+${out[*]}}"
+}
+parse_distcp_mapreduce_opts
 
 # Check if required commands exist
 check_prerequisites() {
@@ -2118,10 +2393,12 @@ _hdfs_mirror_content_is_complete() {
 # ! -f \"$state\" ]]" check on resolve_state_file's return value, because after the HDFS_STATE_DIR patch a
 # directory can have ZERO local presence and still be a real, already-replicating directory (case (c)).
 #
-# Sets the globals IS_BRAND_NEW_DIR ("true"/"false") and RESOLVED_STATE_FILE (the resolved state file path) as
-# side effects (bash has no multi-return without globals/nameref gymnastics; a global is the simplest, most
-# auditable option here given the rest of the script's existing style, e.g. DISTCP_SUCCESS, ALL_OK, etc. are
-# all similarly global).
+# Sets the globals IS_BRAND_NEW_DIR ("true"/"false"/"error") and RESOLVED_STATE_FILE (the resolved state file
+# path) as side effects (bash has no multi-return without globals/nameref gymnastics; a global is the simplest,
+# most auditable option here given the rest of the script's existing style, e.g. DISTCP_SUCCESS, ALL_OK, etc.
+# are all similarly global). "error" means state was found (HDFS mirror or legacy file) but could not be written
+# to the local state file; RESOLVED_STATE_FILE is then empty and the caller must fail this directory only --
+# it must neither baseline it (it has history) nor abort the whole run.
 #
 # IMPORTANT: this function MUST be called as a plain statement, e.g.:
 #     resolve_state_file_and_check_new "$key"
@@ -2138,7 +2415,11 @@ _hdfs_mirror_content_is_complete() {
 resolve_state_file_and_check_new() {
     local key="$1"
     local state_file
-    resolve_state_file "$key"
+    if ! resolve_state_file "$key"; then
+        IS_BRAND_NEW_DIR="error"
+        RESOLVED_STATE_FILE=""
+        return 0
+    fi
     state_file="$RESOLVED_STATE_PATH"
     if [[ -n "$state_file" ]] && [[ -f "$state_file" ]]; then
         IS_BRAND_NEW_DIR="false"
@@ -2456,15 +2737,16 @@ cleanup_old_snapshots() {
     if ((total_snaps > snap_retain)); then
         local count_to_remove=$((total_snaps - snap_retain))
         log "[DEBUG] Removing $count_to_remove old snapshots from $cluster_name for $d"
+        # Deleted straight from the listing above (no re-listing per snapshot); a snapshot that disappeared in
+        # the meantime is reported by HDFS as "does not exist" and logged as already removed.
+        local del_err
         for s in "${snaps[@]:0:count_to_remove}"; do
-            if run_as_hdfs hdfs dfs -fs "hdfs://$cluster" -ls "$d/.snapshot" 2>/dev/null | grep -q "/$(snap_re "$s")\$"; then
-                if run_as_hdfs hdfs dfs -fs "hdfs://$cluster" -deleteSnapshot "$d" "$s" 2>/dev/null; then
-                    log "[CLEAN] Removed old snapshot $s from $cluster_name for $d"
-                else
-                    log "[WARN] Failed to remove snapshot $s from $cluster_name for $d"
-                fi
-            else
+            if del_err=$(run_as_hdfs hdfs dfs -fs "hdfs://$cluster" -deleteSnapshot "$d" "$s" 2>&1 >/dev/null); then
+                log "[CLEAN] Removed old snapshot $s from $cluster_name for $d"
+            elif grep -qi "does not exist" <<<"$del_err"; then
                 log "[CLEAN] Snapshot $s already removed from $cluster_name for $d"
+            else
+                log "[WARN] Failed to remove snapshot $s from $cluster_name for $d: $(tr '\n' ' ' <<<"$del_err")"
             fi
         done
     else
@@ -2813,10 +3095,18 @@ PYEOF
 # only if both signatures were readable AND identical; returns 1 otherwise (mismatch OR unreadable -- both
 # treated as "cannot confirm parity", never as "assume it's fine"). On mismatch, logs an [ERROR] with both
 # signatures so the operator can see exactly what diverged without re-deriving it by hand.
+#
+# Optional $3="quiet" (used by verify_cached_snap_fast_path, where a missing snapshot is a normal outcome): an
+# unreadable/missing snapshot returns 2 without a warning, and a skipped check (exclusion enabled but no
+# python3/perl) returns 3 instead of 0 so the caller can confirm existence another way. A mismatch still
+# returns 1 with its [ERROR].
 verify_snapshot_content_parity() {
     local d="$1"
     local snap="$2"
+    local mode="${3:-}"
     local src_sig dst_sig
+    local unreadable_rc=1
+    [[ "$mode" == "quiet" ]] && unreadable_rc=2
 
     # With DistCp exclusion enabled, compare only the replicated (non-excluded) content -- see
     # snapshot_filtered_signature.
@@ -2828,14 +3118,15 @@ verify_snapshot_content_parity() {
             rc=$?
             if [[ "$rc" -eq 2 ]]; then
                 log "[WARN] [CONTENT-PARITY] DistCp exclusion is enabled but neither python3 nor perl is available to apply the exclude patterns; skipping the content-parity check for '$snap' on $d (a whole-directory comparison would always mismatch)."
+                [[ "$mode" == "quiet" ]] && return 3
                 return 0
             fi
-            log "[WARN] [CONTENT-PARITY] Could not list '$snap' on SOURCE_CLUSTER ($SRC_URI_NS) -- cannot confirm parity for $d."
-            return 1
+            [[ "$mode" == "quiet" ]] || log "[WARN] [CONTENT-PARITY] Could not list '$snap' on SOURCE_CLUSTER ($SRC_URI_NS) -- cannot confirm parity for $d."
+            return "$unreadable_rc"
         fi
         if ! dst_sig=$(snapshot_filtered_signature "hdfs://$DST_URI_NS" "$d/.snapshot/$snap"); then
-            log "[WARN] [CONTENT-PARITY] Could not list '$snap' on DEST_CLUSTER ($DST_URI_NS) -- cannot confirm parity for $d."
-            return 1
+            [[ "$mode" == "quiet" ]] || log "[WARN] [CONTENT-PARITY] Could not list '$snap' on DEST_CLUSTER ($DST_URI_NS) -- cannot confirm parity for $d."
+            return "$unreadable_rc"
         fi
         if [[ "$src_sig" != "$dst_sig" ]]; then
             log "[ERROR] [CONTENT-PARITY] Snapshot '$snap' for $d has the SAME NAME on both clusters but DIFFERENT replicated content, excluding DISTCP_EXCLUDE_PATTERNS matches (DIR_COUNT FILE_COUNT CONTENT_SIZE) -- SOURCE: [$src_sig]  DEST: [$dst_sig]. This snapshot cannot be trusted as a common reference point."
@@ -2845,18 +3136,40 @@ verify_snapshot_content_parity() {
     fi
 
     src_sig=$(snapshot_content_signature "hdfs://$SRC_URI_NS" "$d/.snapshot/$snap") || {
-        log "[WARN] [CONTENT-PARITY] Could not read content signature for '$snap' on SOURCE_CLUSTER ($SRC_URI_NS) -- cannot confirm parity for $d."
-        return 1
+        [[ "$mode" == "quiet" ]] || log "[WARN] [CONTENT-PARITY] Could not read content signature for '$snap' on SOURCE_CLUSTER ($SRC_URI_NS) -- cannot confirm parity for $d."
+        return "$unreadable_rc"
     }
     dst_sig=$(snapshot_content_signature "hdfs://$DST_URI_NS" "$d/.snapshot/$snap") || {
-        log "[WARN] [CONTENT-PARITY] Could not read content signature for '$snap' on DEST_CLUSTER ($DST_URI_NS) -- cannot confirm parity for $d."
-        return 1
+        [[ "$mode" == "quiet" ]] || log "[WARN] [CONTENT-PARITY] Could not read content signature for '$snap' on DEST_CLUSTER ($DST_URI_NS) -- cannot confirm parity for $d."
+        return "$unreadable_rc"
     }
     if [[ "$src_sig" != "$dst_sig" ]]; then
         log "[ERROR] [CONTENT-PARITY] Snapshot '$snap' for $d has the SAME NAME on both clusters but DIFFERENT content (DIR_COUNT FILE_COUNT CONTENT_SIZE) -- SOURCE: [$src_sig]  DEST: [$dst_sig]. This snapshot cannot be trusted as a common reference point."
         return 1
     fi
     return 0
+}
+
+# -----------------------------------------------------------------------------
+# snapshot_diff_is_empty <cluster> <dir> <from> <to>: returns 0 only when "hdfs snapshotDiff" succeeds and
+# reports no change at all -- its output is exactly the "Difference between ..." header line. <to> may be "."
+# (the live directory). A failed call or any other output line returns 1, so callers fall back to DistCp.
+# -----------------------------------------------------------------------------
+snapshot_diff_is_empty() {
+    local cluster="$1" d="$2" from="$3" to="$4" out rc=0 line headers=0 others=0
+    out=$(run_as_hdfs hdfs snapshotDiff -fs "hdfs://$cluster" "$d" "$from" "$to" 2>/dev/null) || rc=$?
+    ((rc == 0)) || return 1
+    while IFS= read -r line; do
+        if [[ -z "${line//[[:space:]]/}" ]]; then
+            continue
+        fi
+        if [[ "$line" == "Difference between "* ]]; then
+            headers=$((headers + 1))
+        else
+            others=$((others + 1))
+        fi
+    done <<<"$out"
+    ((headers == 1 && others == 0))
 }
 
 # -----------------------------------------------------------------------------
@@ -2890,23 +3203,34 @@ verify_cached_snap_fast_path() {
 
     [[ -z "$cached_snap" ]] && return 0
 
-    if ! run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -test -e "$d/.snapshot/$cached_snap" 2>/dev/null; then
-        return 0
-    fi
-    if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -test -e "$d/.snapshot/$cached_snap" 2>/dev/null; then
-        return 0
-    fi
-
     # Name/existence alone does not prove the two clusters' copies of $cached_snap are the same data (see
     # snapshot_content_signature doc comment above -- e.g. Stage 3's non-atomic baseline creation can leave
     # same-named snapshots content-diverged from the very first run). Refuse the fast path on any mismatch
     # or unreadable signature; derive_direction_state's full listing is not itself a content check either,
     # but forcing it at least surfaces the divergence in the main [DIRECTION-DERIVE] log path instead of
     # silently diffing against a cached reference this run has now proven is unsound.
-    if ! verify_snapshot_content_parity "$d" "$cached_snap"; then
-        log "[ERROR] [DIRECTION-DERIVE] Fast-path REFUSED for $d: cached snapshot '$cached_snap' failed content-parity verification (see [CONTENT-PARITY] above). Falling through to full live snapshot listing; if the mismatch persists, this directory needs manual reconciliation (recommend: full DistCp re-baseline)."
-        return 0
-    fi
+    #
+    # Reading the signature on each cluster also proves the snapshot exists there (the read fails for a
+    # missing snapshot), so no separate existence check is made -- except when the parity check is skipped
+    # (exclusion enabled without python3/perl), where existence is tested explicitly.
+    local parity_rc=0
+    verify_snapshot_content_parity "$d" "$cached_snap" quiet || parity_rc=$?
+    case "$parity_rc" in
+        0) ;;
+        2) return 0 ;;
+        3)
+            if ! run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -test -e "$d/.snapshot/$cached_snap" 2>/dev/null; then
+                return 0
+            fi
+            if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -test -e "$d/.snapshot/$cached_snap" 2>/dev/null; then
+                return 0
+            fi
+            ;;
+        *)
+            log "[ERROR] [DIRECTION-DERIVE] Fast-path REFUSED for $d: cached snapshot '$cached_snap' failed content-parity verification (see [CONTENT-PARITY] above). Falling through to full live snapshot listing; if the mismatch persists, this directory needs manual reconciliation (recommend: full DistCp re-baseline)."
+            return 0
+            ;;
+    esac
 
     local idx next_on_dest
     idx="${cached_snap##*_}"
@@ -3289,18 +3613,33 @@ artifact_path() {
     printf '%s/%s_%s_%s.txt' "$dir" "$(date '+%Y%m%d_%H%M%S')" "$kind" "$rest"
 }
 
-# Detect and provide helpful error messages for common failures
+# Detect and provide helpful error messages for common failures.
+#
+# Diagnostic only: always returns 0. Callers invoke it as a plain statement in the main loop, where a non-zero
+# status would end the whole run under `set -e`.
 analyze_error() {
     local error_file="$1"
     local error_type=""
     local suggestion=""
-    
+
     if [[ ! -f "$error_file" ]] || [[ ! -s "$error_file" ]]; then
         return 0
     fi
-    
-    # Check for common error patterns
-    if grep -qi "Connection refused\|Connection timed out\|No route to host" "$error_file" 2>/dev/null; then
+
+    # Check for common error patterns (most specific first)
+    if grep -qi "Mismatch in length of source" "$error_file" 2>/dev/null; then
+        error_type="SOURCE_FILE_CHANGED_DURING_COPY"
+        suggestion="A source file changed length while it was copied, usually a file still open for write inside the snapshot. Set dfs.namenode.snapshot.capture.openfiles=true on the source NameNode so snapshots freeze open files, or exclude paths that are written continuously (DISTCP_EXCLUDE_PATTERNS)."
+    elif grep -qi "InvalidToken\|token.*is expired\|can't be found in cache\|token.*expired" "$error_file" 2>/dev/null; then
+        error_type="DELEGATION_TOKEN"
+        suggestion="A delegation token expired or could not be renewed. The cluster excluded from token renewal (source in pull mode, destination in push mode) is never renewed, so a job running longer than that cluster's dfs.namenode.delegation.token.renew-interval (default 24h) fails. Split very large copies or raise the renew interval on that cluster."
+    elif grep -qi "not allowed to preserve the environment" "$error_file" 2>/dev/null; then
+        error_type="SUDO_SETENV"
+        suggestion="sudo refused 'sudo -E' for ${DISTCP_USER}. Allow SETENV for that command in sudoers, or run with KERBEROS_ENABLED=yes."
+    elif grep -qi "OutOfMemoryError\|GC overhead limit exceeded\|Java heap space" "$error_file" 2>/dev/null; then
+        error_type="OUT_OF_MEMORY"
+        suggestion="Raise the DistCp client heap (export HADOOP_CLIENT_OPTS=\"-Xmx8g\") or, if a map task failed, the mapper memory via DISTCP_MAPREDUCE_OPTS (-Dmapreduce.map.memory.mb / -Dmapreduce.map.java.opts)."
+    elif grep -qi "Connection refused\|Connection timed out\|No route to host" "$error_file" 2>/dev/null; then
         error_type="NETWORK_CONNECTIVITY"
         suggestion="Check network connectivity between clusters. Verify firewall rules and network routing."
     elif grep -qi "Permission denied\|AccessControlException\|not authorized" "$error_file" 2>/dev/null; then
@@ -3325,7 +3664,6 @@ analyze_error() {
         echo ">>> Error Analysis: $error_type"
         echo ">>> Suggestion: $suggestion"
         echo ""
-        return 1
     fi
     return 0
 }
@@ -3408,24 +3746,79 @@ validate_exclude_regex_patterns() {
 # Sets the global DISTCP_EXCLUDE_FILE to the generated path, then validates
 # every pattern compiles as a regex before it is ever handed to DistCp.
 # -----------------------------------------------------------------------------
+
+# Split DISTCP_EXCLUDE_PATTERNS into one pattern per output line. Patterns are separated by newlines and by
+# commas that are part of no regex construct: a comma inside {...} (a quantifier such as {1,3}), inside [...]
+# (a character class such as [a,b]) or escaped as "\," stays in the pattern. Blank patterns are dropped.
+_split_exclude_patterns() {
+    local s="$1" cur="" ch i esc=0 in_class=0 class_start=0 brace=0 body
+    for ((i = 0; i < ${#s}; i++)); do
+        ch="${s:i:1}"
+        if [[ "$ch" == $'\n' ]]; then
+            if [[ -n "$cur" ]]; then printf '%s\n' "$cur"; fi
+            cur="" esc=0 in_class=0 brace=0
+            continue
+        fi
+        if ((esc)); then
+            cur+="$ch"
+            esc=0
+            continue
+        fi
+        if [[ "$ch" == "\\" ]]; then
+            cur+="$ch"
+            esc=1
+            continue
+        fi
+        if ((in_class)); then
+            cur+="$ch"
+            # "]" closes the class unless it is the class's first character ("[]..." or "[^]...").
+            if [[ "$ch" == "]" ]]; then
+                body="${cur:class_start+1}"
+                body="${body%]}"
+                if [[ -n "$body" && "$body" != "^" ]]; then
+                    in_class=0
+                fi
+            fi
+            continue
+        fi
+        case "$ch" in
+            "[")
+                class_start=${#cur}
+                in_class=1
+                cur+="$ch"
+                ;;
+            "{")
+                brace=$((brace + 1))
+                cur+="$ch"
+                ;;
+            "}")
+                if ((brace > 0)); then brace=$((brace - 1)); fi
+                cur+="$ch"
+                ;;
+            ",")
+                if ((brace > 0)); then
+                    cur+="$ch"
+                else
+                    if [[ -n "$cur" ]]; then printf '%s\n' "$cur"; fi
+                    cur=""
+                fi
+                ;;
+            *)
+                cur+="$ch"
+                ;;
+        esac
+    done
+    if [[ -n "$cur" ]]; then printf '%s\n' "$cur"; fi
+    return 0
+}
+
 resolve_distcp_exclude_file() {
     compute_policy_key
     mkdir -p "$DISTCP_EXCLUDE_DIR"
     DISTCP_EXCLUDE_FILE="${DISTCP_EXCLUDE_DIR}/${POLICY_KEY}.filters"
 
-    # Explode comma-separated (and/or newline-separated) patterns into
-    # one-per-line, skipping blank entries -- overwrite, never append.
-    local IFS=','
-    local -a patterns=()
-    read -r -a patterns <<< "$DISTCP_EXCLUDE_PATTERNS"
-    : > "$DISTCP_EXCLUDE_FILE"
-    local p
-    for p in ${patterns[@]+"${patterns[@]}"}; do
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            echo "$line" >> "$DISTCP_EXCLUDE_FILE"
-        done <<< "$p"
-    done
+    # One pattern per line (see _split_exclude_patterns) -- overwrite, never append.
+    _split_exclude_patterns "$DISTCP_EXCLUDE_PATTERNS" > "$DISTCP_EXCLUDE_FILE"
 
     if [[ ! -s "$DISTCP_EXCLUDE_FILE" ]]; then
         echo "[ERROR] DISTCP_EXCLUDE_PATTERNS was set but produced no usable patterns" >&2
@@ -3529,7 +3922,7 @@ DISTCP_DEBUG_OPTS=""
 # Build DistCp options with YARN queue and application tags
 YARN_QUEUE_OPTS="-Dmapred.job.queue.name=${YARN_QUEUE}"
 YARN_APP_TAGS="-Dmapreduce.job.tags=pulse-dr-replication,mode:${REPLICATION_MODE},src:${SOURCE_CLUSTER},dst:${DEST_CLUSTER}"
-DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_DEBUG_OPTS $COPY_GENERIC_OPTS"
+DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS $COPY_GENERIC_OPTS"
 
 
 # -----------------------------------------------------------------------------
@@ -3835,6 +4228,96 @@ check_cluster_health() {
 }
 
 # -----------------------------------------------------------------------------
+# allow_snapshot_on <cluster> <label> <dir>: make <dir> snapshottable on <cluster>. Returns 0 when the directory
+# is snapshottable afterwards, 1 otherwise. Prints the hdfs output.
+#
+# The exit status of "hdfs dfsadmin -allowSnapshot" decides the result (the call is idempotent: an already
+# snapshottable directory succeeds). If it fails but "<dir>/.snapshot" exists, the directory is already
+# snapshottable and the failure is reported as a warning only.
+# -----------------------------------------------------------------------------
+allow_snapshot_on() {
+    local cluster="$1" label="$2" d="$3"
+    local out rc=0
+    out=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$cluster" -allowSnapshot "$d" 2>&1) || rc=$?
+    out=$(printf '%s\n' "$out" | grep -v "^SLF4J:" || true)
+    if [[ -n "$out" ]]; then
+        echo "$out"
+    fi
+    if [[ $rc -eq 0 ]] || grep -qi "already.*snapshottable" <<<"$out"; then
+        return 0
+    fi
+    if run_as_hdfs hdfs dfs -fs "hdfs://$cluster" -test -e "$d/.snapshot" 2>/dev/null; then
+        log "[WARN] allowSnapshot exited $rc on $label for $d, but $d/.snapshot exists, so the directory is already snapshottable. Continuing."
+        return 0
+    fi
+    return 1
+}
+
+# -----------------------------------------------------------------------------
+# list_snapshottable_dirs <cluster>: print every snapshottable directory on <cluster>, one per line, from a
+# single "hdfs lsSnapshottableDir" call. Returns 1 (and prints nothing usable) if the command fails or any line
+# is not in the expected format, e.g. a Hadoop version whose lsSnapshottableDir does not accept -fs; Stage 2 then
+# checks each directory with allowSnapshot as before.
+#
+# Expected line format (Hadoop SnapshottableDirectoryStatus):
+#   drwxr-xr-x 0 hdfs supergroup 0 2026-09-28 10:00 3 65536 /data/a
+# The path is everything after the numeric snapshot count/quota columns, so paths with spaces are kept whole.
+# -----------------------------------------------------------------------------
+list_snapshottable_dirs() {
+    local cluster="$1" out rc=0 line n_lines=0 n_parsed=0
+    local re='^d[^ ]*[ ]+[^ ]+[ ]+[^ ]+[ ]+[^ ]+[ ]+[0-9]+[ ]+[0-9]{4}-[0-9]{2}-[0-9]{2}[ ]+[0-9]{2}:[0-9]{2}([ ]+[0-9]+)+[ ]+(/.*)$'
+    out=$(run_as_hdfs hdfs lsSnapshottableDir -fs "hdfs://$cluster" 2>/dev/null) || rc=$?
+    ((rc == 0)) || return 1
+    while IFS= read -r line; do
+        if [[ -z "$line" || "$line" == SLF4J:* ]]; then
+            continue
+        fi
+        n_lines=$((n_lines + 1))
+        if [[ "$line" =~ $re ]]; then
+            printf '%s\n' "${BASH_REMATCH[2]}"
+            n_parsed=$((n_parsed + 1))
+        fi
+    done <<<"$out"
+    ((n_lines == n_parsed))
+}
+
+# -----------------------------------------------------------------------------
+# print_resync_guidance <dir> <snap>: print the manual procedure that brings a directory back to incremental
+# replication when it cannot recover by itself: the destination live data no longer matches its copy of <snap>
+# (a copy failed part-way, the destination snapshot could not be cut after a copy, or the content-parity check
+# failed). <snap> must exist on both clusters.
+#
+# The procedure makes the destination an exact copy of the SOURCE snapshot <snap> (not the live source, which
+# would leave the destination ahead of its snapshot), then re-cuts <snap> on the destination so that DistCp's
+# "target unchanged since <snap>" precondition holds again. The next run continues with <snap> -> <snap+1>.
+# Commands are printed with shell-quoted paths so they can be run as shown.
+# -----------------------------------------------------------------------------
+print_resync_guidance() {
+    local d="$1" snap="$2" ha q_d q_src q_dst
+    ha="$(render_nameservice_ha_args_for_display)"
+    q_d="$(printf '%q' "$d")"
+    q_src="$(printf '%q' "hdfs://$SRC_URI_NS${d}/.snapshot/$snap")"
+    q_dst="$(printf '%q' "hdfs://$DST_URI_NS${d}")"
+    echo ""
+    echo "  --- Recovery: re-sync $d to snapshot '$snap' (present on both clusters) ---"
+    echo ""
+    echo "    This makes the destination an exact copy of the source snapshot '$snap' and re-creates"
+    echo "    '$snap' on the destination, so the next run continues incrementally from it. Changes made"
+    echo "    directly on the destination under $d since '$snap' are overwritten, and files that exist"
+    echo "    only on the destination are deleted (-delete). To see those changes first:"
+    echo "      hdfs ${ha}snapshotDiff -fs hdfs://$DST_URI_NS $q_d $snap ."
+    echo ""
+    echo "    Pause anything that writes to $d on $DEST_CLUSTER, then run these in order, each only"
+    echo "    after the previous one succeeded:"
+    echo "      hadoop distcp ${ha}$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -delete $q_src $q_dst"
+    echo "      hdfs ${ha}dfs -fs hdfs://$DST_URI_NS -deleteSnapshot $q_d $snap"
+    echo "      hdfs ${ha}dfs -fs hdfs://$DST_URI_NS -createSnapshot $q_d $snap"
+    echo ""
+    echo "    Then re-run this script. (If '$snap' is missing on the destination, skip the -deleteSnapshot.)"
+    echo ""
+}
+
+# -----------------------------------------------------------------------------
 # rollback_once_for_failure: attempt single automatic rollback for a specific DistCp failure identified by
 # directory + fromSnapshot + toSnapshot. Creates a per-failure marker in $ROLLBACK_MARKER_DIR to ensure this
 # exact failure (same dir + same snapshot pair) isn't auto-rolled back again.
@@ -3854,6 +4337,23 @@ rollback_once_for_failure() {
     key=$(sanitize "$d")
     mkdir -p "$ROLLBACK_MARKER_DIR"
     local marker_file="${ROLLBACK_MARKER_DIR}/${key}__from_${from_snap}__to_${to_snap}.marker"
+
+    # Never roll the destination back underneath another DistCp that is still writing into it (another run of
+    # this policy on a different host, or the YARN job of a run whose client was killed): that copy's writes
+    # are exactly what made this DistCp report "target has been modified". Checked before the marker, so a
+    # refused rollback does not use up this failure's one-time rollback. If YARN cannot be queried, the
+    # rollback proceeds as configured.
+    local job_check_rc=0
+    check_no_running_dr_job "$d" || job_check_rc=$?
+    if ((job_check_rc == 1)); then
+        local job_ids_flat
+        job_ids_flat="$(echo "$RUNNING_DR_JOB_IDS" | tr '\n' ' ')"
+        log "[ERROR] [ROLLBACK] A DistCp into $d is still running on YARN (job name $(dr_job_name "$d"): ${job_ids_flat}). Refusing to roll back the destination underneath it."
+        log "[ERROR] [ROLLBACK] Let it finish, or stop it (yarn application -kill <id>), then re-run this script. If it is another host running this same policy, schedule the policy on one host only."
+        return 1
+    elif ((job_check_rc == 2)); then
+        log "[WARN] [ROLLBACK] Could not query YARN to confirm that no other DistCp is writing into $d (yarn CLI missing or ResourceManager unreachable). Proceeding with the rollback as configured."
+    fi
 
     # If marker exists, skip automatic rollback for this exact failure -- UNLESS
     # the marker is older than ROLLBACK_MARKER_MAX_AGE_SECS, in which case it is
@@ -3995,7 +4495,7 @@ rollback_once_for_failure() {
 
     # IMPORTANT: use YARN_QUEUE_OPTS/YARN_APP_TAGS/DISTCP_DEBUG_OPTS directly
     # here, NOT the full $DISTCP_FULL_OPTS -- DISTCP_FULL_OPTS also bundles
-    # DISTCP_MAPREDUCE_OPTS, a "-Dmapreduce.job.hdfs-servers.token-renewal.exclude=<other-cluster>"
+    # DISTCP_TOKEN_RENEWAL_OPTS, a "-Dmapreduce.job.hdfs-servers.token-renewal.exclude=<other-cluster>"
     # flag computed once for the FORWARD pull/push distcp between TWO
     # DIFFERENT clusters (SOURCE_CLUSTER and DEST_CLUSTER). Rollback is a
     # same-cluster operation: both src_snap_path and dst_live_path point at
@@ -4016,7 +4516,8 @@ rollback_once_for_failure() {
     if [[ "${REPLICATION_MODE,,}" == "push" ]]; then
         rollback_token_opts="-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${DST_NAMESERVICE}"
     fi
-    local DISTCP_ROLLBACK_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $rollback_token_opts $DISTCP_DEBUG_OPTS $COPY_GENERIC_OPTS"
+    # Operator job tuning (DISTCP_MAPREDUCE_OPTS) applies to the rollback job too.
+    local DISTCP_ROLLBACK_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $rollback_token_opts $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS $COPY_GENERIC_OPTS"
 
     log_substage "Rollback Step 3: Running DistCp rollback to restore snapshot state"
     log_cmd "DistCp Rollback Command"
@@ -4026,7 +4527,7 @@ rollback_once_for_failure() {
     # Rollback DistCp stderr goes through global redirection (exec 2>&1), no need to tee to LOG again
     local rollback_distcp_success=false
     # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
-    if run_as_distcp hadoop distcp $DISTCP_ROLLBACK_FULL_OPTS $DISTCP_ROLLBACK_OPTS "$src_snap_path" "$dst_live_path"; then
+    if run_as_distcp hadoop distcp $DISTCP_ROLLBACK_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_ROLLBACK_OPTS "$src_snap_path" "$dst_live_path"; then
         rollback_distcp_success=true
     fi
     
@@ -4168,7 +4669,7 @@ reconcile_and_rebaseline_dest() {
     echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -delete $src_base_uri $dst_uri"
     echo ""
     # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
-    if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -delete "$src_base_uri" "$dst_uri" 2> >(tee "$reconcile_err" >&2); then
+    if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -delete "$src_base_uri" "$dst_uri" 2> >(tee "$reconcile_err" >&2); then
         log "[INFO] Baseline reconcile DistCp succeeded for $d"
     else
         echo "[ERROR] Baseline reconcile DistCp FAILED for $d (see $reconcile_err)"
@@ -4239,7 +4740,10 @@ reconcile_reverse_diff_bootstrap() {
     local last_snap="$2"
     local key state
     key=$(sanitize "$d")
-    resolve_state_file "$key"
+    if ! resolve_state_file "$key" || [[ -z "$RESOLVED_STATE_PATH" ]]; then
+        log "[ERROR] [REVERSE-BOOTSTRAP] Could not resolve the local state file for $d (see [STATE] above). Not starting the reverse diff."
+        return 1
+    fi
     state="$RESOLVED_STATE_PATH"
     # See the matching variable in Stage 4's per-directory loop for the full rationale: prefixes every
     # "hdfs"/"hadoop" command PRINTED below as manual operator recovery guidance so it is runnable standalone
@@ -4295,7 +4799,7 @@ reconcile_reverse_diff_bootstrap() {
     echo ""
     local bootstrap_distcp_success
     # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
-    if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$reverse_next_snap" "$src_uri" "$dst_uri" 2> >(tee "$bootstrap_err" >&2); then
+    if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$reverse_next_snap" "$src_uri" "$dst_uri" 2> >(tee "$bootstrap_err" >&2); then
         bootstrap_distcp_success=true
     else
         bootstrap_distcp_success=false
@@ -4639,8 +5143,11 @@ main() {
             ;;
     esac
 
-    # Trap for failure summary on exit and temporary file cleanup
-    trap '[[ "$SCRIPT_FAILED" == "yes" ]] && print_failure_summary; cleanup_temp_files' EXIT INT TERM
+    # EXIT: failure summary and temp file cleanup. INT/TERM: stop the running DistCp (client and YARN job) and
+    # exit non-zero (130/143) instead of continuing with the next directory.
+    trap _on_exit EXIT
+    trap '_on_signal INT 130' INT
+    trap '_on_signal TERM 143' TERM
 
     # Check prerequisites (required commands) - must be after log setup
     check_prerequisites
@@ -4697,6 +5204,7 @@ main() {
     echo "  Arg 7  (DISTCP_USER)         : $DISTCP_USER"
     echo "  Arg 8  (COPY_OPTS)           : $COPY_OPTS"
     echo "         (generic, from arg 8) : ${COPY_GENERIC_OPTS:-<none>}"
+    echo "  DISTCP_MAPREDUCE_OPTS (env)  : ${DISTCP_MAPREDUCE_OPTS:-<none>}"
     echo "  Arg 9  (YARN_QUEUE)          : $YARN_QUEUE"
     echo "  Arg 10 (AUTO_FULL_DISTCP)    : $AUTO_FULL_DISTCP"
     echo "  Arg 11 (ROLLBACK_ON_FAILURE) : $ROLLBACK_ON_FAILURE"
@@ -4743,9 +5251,9 @@ main() {
         log "[INFO] DESTINATION cluster appears to be HA-enabled (NameService: $DEST_CLUSTER)"
     fi
     
-    # Configure DistCp MapReduce options based on replication mode The cluster where YARN does NOT run must be
+    # Configure the DistCp token-renewal exclusion based on replication mode. The cluster where YARN does NOT run must be
     # excluded from token renewal, because the local ResourceManager cannot renew remote delegation tokens.
-    DISTCP_MAPREDUCE_OPTS=""
+    DISTCP_TOKEN_RENEWAL_OPTS=""
     # Keyed by SRC_URI_NS/DST_URI_NS (the alias-aware names -- see main()'s doc comment), not raw
     # SOURCE_CLUSTER/DEST_CLUSTER, so the token-renewal-exclude property below always names whatever
     # dfs.nameservices/dfs.ha.namenodes.* (or, in the same-nameservice-collision case, the bare resolved
@@ -4771,12 +5279,12 @@ main() {
         ""|pull)
             # PULL MODE (default): YARN runs on target/destination cluster. Exclude SOURCE from token renewal.
             REPLICATION_MODE="pull"
-            DISTCP_MAPREDUCE_OPTS="-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${SRC_NAMESERVICE}"
+            DISTCP_TOKEN_RENEWAL_OPTS="-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${SRC_NAMESERVICE}"
             log "[INFO] Pull mode: Excluding source ($SRC_NAMESERVICE) from token renewal (YARN runs on target)"
             ;;
         push)
             # PUSH MODE: YARN runs on source/production cluster. Exclude DESTINATION from token renewal.
-            DISTCP_MAPREDUCE_OPTS="-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${DST_NAMESERVICE}"
+            DISTCP_TOKEN_RENEWAL_OPTS="-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${DST_NAMESERVICE}"
             log "[INFO] Push mode: Excluding destination ($DST_NAMESERVICE) from token renewal (YARN runs on source)"
             ;;
         *)
@@ -4785,10 +5293,11 @@ main() {
             exit 16
             ;;
     esac
-    log "[INFO] Token renewal exclusion: $DISTCP_MAPREDUCE_OPTS"
+    log "[INFO] Token renewal exclusion: $DISTCP_TOKEN_RENEWAL_OPTS"
+    log "[INFO] Operator MapReduce options (DISTCP_MAPREDUCE_OPTS): ${DISTCP_MAPREDUCE_OPTS:-<none>}"
     
-    # Update DISTCP_FULL_OPTS with MapReduce options
-    DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS $COPY_GENERIC_OPTS"
+    # Update DISTCP_FULL_OPTS with the token-renewal exclusion and operator MapReduce options
+    DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_TOKEN_RENEWAL_OPTS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS $COPY_GENERIC_OPTS"
     log "[INFO] Updated DistCp options: $DISTCP_FULL_OPTS"
     
     # -----------------------------------------------------------------------------
@@ -4969,92 +5478,140 @@ main() {
     ensure_hdfs_state_dir "$SRC_URI_NS" "SOURCE"
     ensure_hdfs_state_dir "$DST_URI_NS" "DEST"
 
+    # Directories that cannot be replicated this run, with the reason. Filled by Stage 2 (source directory
+    # missing, snapshots cannot be enabled, destination directory cannot be created) and Stage 3 (state cannot
+    # be written locally). Stage 3 skips them and Stage 4 counts them as failed; every other directory
+    # continues normally.
+    declare -A DIR_PRECHECK_FAILED=()
+
+    # Snapshottable directories on each cluster, from one "hdfs lsSnapshottableDir" per cluster. A directory
+    # listed there is already snapshottable (and exists), so its allowSnapshot and existence checks are
+    # skipped. This is still re-verified every run: the listing is live. When the listing is unavailable the
+    # per-directory allowSnapshot path below is used for every directory.
+    declare -A SRC_SNAPSHOTTABLE=() DST_SNAPSHOTTABLE=()
+    local snapshottable_list snapshottable_dir
+    if snapshottable_list="$(list_snapshottable_dirs "$SRC_URI_NS")"; then
+        while IFS= read -r snapshottable_dir; do
+            if [[ -n "$snapshottable_dir" ]]; then
+                SRC_SNAPSHOTTABLE["$snapshottable_dir"]=1
+            fi
+        done <<<"$snapshottable_list"
+        log "[DEBUG] lsSnapshottableDir on SOURCE ($SRC_URI_NS): ${#SRC_SNAPSHOTTABLE[@]} snapshottable directories"
+    else
+        log "[INFO] lsSnapshottableDir not usable on SOURCE ($SRC_URI_NS); checking each directory with allowSnapshot."
+    fi
+    if snapshottable_list="$(list_snapshottable_dirs "$DST_URI_NS")"; then
+        while IFS= read -r snapshottable_dir; do
+            if [[ -n "$snapshottable_dir" ]]; then
+                DST_SNAPSHOTTABLE["$snapshottable_dir"]=1
+            fi
+        done <<<"$snapshottable_list"
+        log "[DEBUG] lsSnapshottableDir on DEST ($DST_URI_NS): ${#DST_SNAPSHOTTABLE[@]} snapshottable directories"
+    else
+        log "[INFO] lsSnapshottableDir not usable on DEST ($DST_URI_NS); checking each directory with allowSnapshot."
+    fi
+
     log "[DEBUG] Enabling snapshots on source and destination directories"
     for d in "${SOURCE_DIRS[@]}"; do
         dir_start_ts=$(date +%s)
         key=$(sanitize "$d")
         dir_lock="${SNAP_LOCK_DIR}/${key}.lock"
 
-        # NOTE: allowSnapshot is called EVERY run, regardless of whether $dir_lock already
-        # exists. It is idempotent server-side ("already snapshottable" is treated as
-        # success below), so this is safe and cheap. The lock file is kept only as an
-        # informational marker of "has this directory ever completed Stage 2 successfully"
-        # (used by nothing safety-critical) -- NOT as a gate that skips re-verification.
-        # Trusting a stale lock forever previously let a destination directory that lost
-        # its snapshottable flag out-of-band (recreated dir, disallowSnapshot, restore from
-        # a non-snapshottable backup, etc.) silently stay broken run after run, since Stage 2
-        # would skip straight past it while Stage 3/4 kept failing with "Directory is not a
-        # snapshottable directory".
+        # Snapshot capability is re-verified every run (from the live lsSnapshottableDir listing, or by calling
+        # allowSnapshot, which is idempotent). $dir_lock is only an informational marker of the last result;
+        # it never skips the check, so a destination directory that lost its snapshottable flag out-of-band
+        # (recreated, disallowSnapshot, restored from a backup) is re-enabled on the next run.
         log "[DEBUG] Enabling snapshots for directory: $d"
         log_substage "Enabling on SOURCE ($SRC_URI_NS): $d"
-        log "[DEBUG] Allowing snapshot on source dir: $d"
-        allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$SRC_URI_NS" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
-        allow_snap_rc=$?
-        if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
-            [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
+        if [[ -n "${SRC_SNAPSHOTTABLE["$d"]:-}" ]]; then
+            log "[INFO] Source directory $d is already snapshottable"
+            src_snap_ok=true
+        elif allow_snapshot_on "$SRC_URI_NS" "SOURCE" "$d"; then
             log "[INFO] Snapshot enabled on source directory $d"
             src_snap_ok=true
         else
-            [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
             echo "[ERROR] FAILED to enable snapshot on SOURCE directory $d"
             log "[ERROR] Failed to enable snapshot on source directory $d"
-            log "[ERROR] This may indicate permission issues or the directory doesn't exist on source cluster."
+            log "[ERROR] Usual causes: the directory does not exist on the source cluster (check the directory list, arg 3), missing permission, or a parent/child of $d is already snapshottable (nested snapshottable directories are not allowed)."
             src_snap_ok=false
         fi
 
-        # Check if destination dir exists
+        # Nothing is created or changed on the destination for a source directory that cannot be replicated
+        # (e.g. a typo in the directory list would otherwise create an empty directory on DR).
+        if [[ "$src_snap_ok" != "true" ]]; then
+            DIR_PRECHECK_FAILED["$d"]="snapshots could not be enabled on SOURCE_CLUSTER ($SOURCE_CLUSTER) -- see the Stage 2 [ERROR] for this directory"
+            rm -f "$dir_lock" 2>/dev/null || true
+            continue
+        fi
+
         log_substage "Enabling on DESTINATION ($DST_URI_NS): $d"
-        if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -test -d "$d"; then
-            # auto mode: create dummy dir with source perms/ownership
-            if [[ "$DIR_BOOTSTRAP_MODE" == "yes" ]]; then
-                log "[INIT] Destination dir $d missing. Creating with same owner/permissions as source."
-                # Capture output and filter out log lines (lines starting with timestamps like
-                # "2026-01-03") Get only the actual stat output (should be in format "owner:group
-                # permissions")
-                prod_meta=$(run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -stat "%u:%g %a" "$d" 2>/dev/null | grep -v "^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}" | tail -1 || true)
-                owner_group=$(echo "$prod_meta" | awk '{print $1}' || echo "")
-                perms=$(echo "$prod_meta" | awk '{print $2}' || echo "")
-                # Validate that we got valid owner:group format
-                if [[ ! "$owner_group" =~ ^[^:]+:[^:]+$ ]]; then
-                    log "[ERROR] Failed to get valid owner:group from source directory. Got: '$owner_group'"
-                    log "[ERROR] Raw output: '$prod_meta'"
-                    log "[WARN] Skipping chown, will use default permissions"
-                    owner_group=""
+        if [[ -n "${DST_SNAPSHOTTABLE["$d"]:-}" ]]; then
+            log "[INFO] Destination directory $d is already snapshottable"
+            dst_snap_ok=true
+        else
+            # Check if destination dir exists
+            if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -test -d "$d"; then
+                # auto mode: create dummy dir with source perms/ownership
+                if [[ "$DIR_BOOTSTRAP_MODE" == "yes" ]]; then
+                    log "[INIT] Destination dir $d missing. Creating with same owner/permissions as source."
+                    # Capture output and filter out log lines (lines starting with timestamps like
+                    # "2026-01-03") Get only the actual stat output (should be in format "owner:group
+                    # permissions")
+                    prod_meta=$(run_as_hdfs hdfs dfs -fs "hdfs://$SRC_URI_NS" -stat "%u:%g %a" "$d" 2>/dev/null | grep -v "^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}" | tail -1 || true)
+                    owner_group=$(echo "$prod_meta" | awk '{print $1}' || echo "")
+                    perms=$(echo "$prod_meta" | awk '{print $2}' || echo "")
+                    # Validate that we got valid owner:group format
+                    if [[ ! "$owner_group" =~ ^[^:]+:[^:]+$ ]]; then
+                        log "[ERROR] Failed to get valid owner:group from source directory. Got: '$owner_group'"
+                        log "[ERROR] Raw output: '$prod_meta'"
+                        log "[WARN] Skipping chown, will use default permissions"
+                        owner_group=""
+                    fi
+                    if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -mkdir -p "$d"; then
+                        echo "[ERROR] FAILED to create destination directory $d on DEST_CLUSTER ($DEST_CLUSTER)"
+                        log "[ERROR] Could not create destination directory $d on DEST_CLUSTER ($DEST_CLUSTER). Check permissions and quota on its parent directory."
+                        DIR_PRECHECK_FAILED["$d"]="destination directory could not be created on DEST_CLUSTER ($DEST_CLUSTER) -- see the Stage 2 [ERROR] for this directory"
+                        rm -f "$dir_lock" 2>/dev/null || true
+                        continue
+                    fi
+                    # Ownership and mode are cosmetic for replication: a failure is reported, not fatal.
+                    if [[ -n "$owner_group" ]]; then
+                        if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -chown "$owner_group" "$d"; then
+                            log "[WARN] Could not set owner $owner_group on destination directory $d; set it manually: hdfs dfs -fs hdfs://$DST_URI_NS -chown $owner_group $d"
+                        fi
+                    fi
+                    if [[ -n "$perms" ]]; then
+                        if ! run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -chmod "$perms" "$d"; then
+                            log "[WARN] Could not set mode $perms on destination directory $d; set it manually: hdfs dfs -fs hdfs://$DST_URI_NS -chmod $perms $d"
+                        fi
+                    fi
+                else
+                    log "[INIT] Destination dir $d missing in manual mode. It will be created by full DistCp."
                 fi
-                run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -mkdir -p "$d"
-                if [[ -n "$owner_group" ]]; then
-                    run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -chown "$owner_group" "$d"
-                fi
-                if [[ -n "$perms" ]]; then
-                    run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -chmod "$perms" "$d"
-                fi
+            fi
+
+            # Now allowSnapshot on destination (whether just created or already exists)
+            log "[DEBUG] Allowing snapshot on destination dir: $d"
+            if allow_snapshot_on "$DST_URI_NS" "DEST" "$d"; then
+                log "[INFO] Snapshot enabled on destination directory $d"
+                dst_snap_ok=true
             else
-                log "[INIT] Destination dir $d missing in manual mode. It will be created by full DistCp."
+                echo "[ERROR] FAILED to enable snapshot on DESTINATION directory $d"
+                log "[ERROR] Failed to enable snapshot on destination directory $d"
+                log "[ERROR] Usual causes: missing permission, or a parent/child of $d is already snapshottable on the destination (nested snapshottable directories are not allowed)."
+                dst_snap_ok=false
             fi
         fi
 
-        # Now allowSnapshot on destination (whether just created or already exists)
-        log "[DEBUG] Allowing snapshot on destination dir: $d"
-        allow_snap_output=$(run_as_hdfs hdfs dfsadmin -fs "hdfs://$DST_URI_NS" -allowSnapshot "$d" 2>&1 | grep -v "^SLF4J:" || true)
-        allow_snap_rc=$?
-        if [[ $allow_snap_rc -eq 0 ]] || echo "$allow_snap_output" | grep -qi "already.*snapshottable"; then
-            [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
-            log "[INFO] Snapshot enabled on destination directory $d"
-            dst_snap_ok=true
-        else
-            [[ -n "$allow_snap_output" ]] && echo "$allow_snap_output"
-            echo "[ERROR] FAILED to enable snapshot on DESTINATION directory $d"
-            log "[ERROR] Failed to enable snapshot on destination directory $d"
-            log "[ERROR] This may indicate permission issues or the directory doesn't exist on destination cluster."
-            dst_snap_ok=false
-        fi
-
-        if [[ "$src_snap_ok" == "true" ]] && [[ "$dst_snap_ok" == "true" ]]; then
-            : >"$dir_lock"
+        if [[ "$dst_snap_ok" == "true" ]]; then
+            if ! : >"$dir_lock" 2>/dev/null; then
+                log "[WARN] Could not write informational marker $dir_lock (harmless)."
+            fi
             log "[DEBUG] Snapshot capability confirmed for directory $d (marker: $dir_lock)"
         else
             rm -f "$dir_lock" 2>/dev/null || true
-            log "[WARN] allowSnapshot failed on one or both clusters for $d (will retry every run until it succeeds)"
+            DIR_PRECHECK_FAILED["$d"]="snapshots could not be enabled on DEST_CLUSTER ($DEST_CLUSTER) -- see the Stage 2 [ERROR] for this directory"
+            log "[WARN] allowSnapshot failed on the destination for $d (will retry every run until it succeeds)"
         fi
     done
     log "[DEBUG] Per-directory snapshot capability check complete for all directories"
@@ -5085,10 +5642,19 @@ main() {
     declare -A STAGE4_SKIP_REASON=()
     declare -A STAGE4_SKIP_FAILED=()
     for d in "${SOURCE_DIRS[@]}"; do
+        if [[ -n "${DIR_PRECHECK_FAILED["$d"]:-}" ]]; then
+            log "[ERROR] [Stage 3] Skipping $d: ${DIR_PRECHECK_FAILED["$d"]}."
+            continue
+        fi
         log "[DEBUG] Checking baseline snapshot for directory: $d"
         key=$(sanitize "$d")
         resolve_state_file_and_check_new "$key"
         state="$RESOLVED_STATE_FILE"
+        if [[ "$IS_BRAND_NEW_DIR" == "error" ]]; then
+            DIR_PRECHECK_FAILED["$d"]="its replication state exists (HDFS mirror) but could not be written to the local state file under /var/tmp -- check free space and permissions there"
+            log "[ERROR] [Stage 3] $d: ${DIR_PRECHECK_FAILED["$d"]}. Skipping this directory; the other directories continue."
+            continue
+        fi
 
         # Stale state: a state file (local or HDFS mirror) exists, but the snapshot it records is gone from
         # BOTH clusters. If a live listing then shows no ${SNAP_PREFIX}_<N> snapshot on either cluster, the
@@ -5338,7 +5904,7 @@ main() {
                 DISTCP_STDERR_FILE="/tmp/full_distcp_err_$(sanitize "$d")_$$.log"
                 TEMP_FILES+=("$DISTCP_STDERR_FILE")
                 # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
-                if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -delete "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
+                if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -delete "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
                     echo ""
                     echo "------------------------------------------------------------------------------------------------------------------------------------------"
                     echo "[SUCCESS] Full DistCp completed successfully for $d"
@@ -5380,7 +5946,7 @@ main() {
                 echo "2. Fix any issues (network, permissions, cluster health, etc.)"
                 echo "   - If this was an OutOfMemory error, the DistCp client heap is likely too small."
                 echo "     Raise it before re-running, e.g.:  export HADOOP_CLIENT_OPTS=\"-Xmx4g\""
-                echo "     (Mapper-side memory can be tuned via -Dmapreduce.map.memory.mb in COPY_OPTS.)"
+                echo "     (Mapper-side memory can be tuned via -Dmapreduce.map.memory.mb in DISTCP_MAPREDUCE_OPTS.)"
                 echo "3. Re-run this script (recommended), OR run the failed full DistCp commands manually."
                 echo ""
                 echo "   IMPORTANT: The destination baseline snapshot ${SNAP_PREFIX}_0 was NOT refreshed for a"
@@ -5615,6 +6181,13 @@ main() {
         dir_start_ts=$(date +%s)
         echo ""
         log_cmd "Processing Directory: $d"
+        # Directories that Stage 2 or Stage 3 could not prepare (see DIR_PRECHECK_FAILED): failed, not synced.
+        if [[ -n "${DIR_PRECHECK_FAILED["$d"]:-}" ]]; then
+            log "[ERROR] [Stage 4] Skipping $d this run: ${DIR_PRECHECK_FAILED["$d"]}. Counted as failed."
+            METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
+            ALL_OK=false
+            continue
+        fi
         # Directories bootstrapped by Stage 3 in THIS run (see STAGE4_SKIP_REASON) start incremental sync on
         # the next run.
         if [[ -n "${STAGE4_SKIP_REASON["$d"]:-}" ]]; then
@@ -5642,6 +6215,12 @@ main() {
         nameservice_ha_display_args="$(render_nameservice_ha_args_for_display)"
         resolve_state_file_and_check_new "$key"
         state="$RESOLVED_STATE_FILE"
+        if [[ "$IS_BRAND_NEW_DIR" == "error" ]]; then
+            log "[ERROR] [Stage 4] $d: its replication state exists (HDFS mirror) but could not be written to the local state file under /var/tmp -- check free space and permissions there. Failing this directory; the other directories continue."
+            METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
+            ALL_OK=false
+            continue
+        fi
 
         # --- Direction / bootstrap decision ------------------------------------- (a) No state file at all
         # (local OR HDFS-mirrored) -> Stage 3 did not establish state for this
@@ -5937,26 +6516,11 @@ main() {
 
         log "[SYNC] $d: $last_snap -> $next_snap"
 
-        # 4a) Ensure last_snap exists on destination (create if missing)
-        log "[DEBUG] Ensuring last snapshot $last_snap exists on destination directory $d"
-        out_dr_last=$(run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -ls "$d/.snapshot" 2>/dev/null | grep "/$(snap_re "$last_snap")\$" || true)
-        if [[ -z "$out_dr_last" ]]; then
-            log "[INFO] Last snapshot $last_snap missing on destination, creating..."
-            if run_as_hdfs hdfs dfs -fs "hdfs://$DST_URI_NS" -createSnapshot "$d" "$last_snap"; then
-                log "[INFO] Created last snapshot $last_snap on destination"
-            else
-                log_error "FAILED to create last snapshot '$last_snap' on DESTINATION: $d"
-                log "[ERROR] [Stage 4] Failed to create last snapshot $last_snap on destination"
-                log "[ERROR] This prevents incremental sync. Check cluster health and permissions."
-                METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
-                dir_end_ts=$(date +%s)
-                log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
-                ALL_OK=false
-                continue
-            fi
-        else
-            log "[DEBUG] Last snapshot $last_snap already exists on destination"
-        fi
+        # 4a) last_snap is present on the destination: it is LAST_COMMON_SNAP_NAME, which the fast path read on
+        #     both clusters or derive_direction_state found in both live listings, earlier in this iteration.
+        #     (It is never created here: a snapshot cut now would capture the destination's current state, not
+        #     the state that matched the source's $last_snap.)
+        log "[DEBUG] Last snapshot $last_snap is present on both clusters (confirmed by the direction check above)"
 
         # 4b) Create next_snap snapshot on source before distcp
         log "[DEBUG] Creating next snapshot $next_snap on source directory $d"
@@ -6017,26 +6581,44 @@ main() {
         #            real-time through the global tee process without buffering delays.
         src_uri="hdfs://$SRC_URI_NS${d}"
         dst_uri="hdfs://$DST_URI_NS${d}"
-        log_cmd "Syncing directory: $d ($last_snap -> $next_snap)"
-        log "[DEBUG] Running distcp diff sync for $d"
-        echo ""
-        echo "=== DistCp Command ==="
-        # COPY_OPTS_NO_UPDATE (see parse_copy_opts) with -update placed before -diff (required by DistCp). All other options must
-        # come before -diff to avoid being treated as source paths
-        echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
-        echo "======================"
-        echo ""
-        echo "[DEBUG MARKER] Starting DistCp execution for $d"
         DISTCP_STDERR_FILE="/tmp/distcp_err_${key}_$$.log"
         TEMP_FILES+=("$DISTCP_STDERR_FILE")
-        # Use tee to write distcp stderr to temp file AND to stderr (which goes through global redirection to
-        # LOG and console). Since stderr is redirected to stdout via exec 2>&1, this ensures real-time output
-        # without buffering delays.
-        # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
-        if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
+
+        # No-change shortcut (EMPTY_DIFF_SHORTCUT, default yes): when the source has no changes between
+        # $last_snap and $next_snap AND the destination has none since its $last_snap, DistCp would copy nothing,
+        # so its YARN job is skipped. Both conditions are exactly what "distcp -diff" itself requires and
+        # applies; if either snapshotDiff fails or reports anything, DistCp runs as usual. The destination
+        # snapshot and the content-parity check below still run.
+        skip_distcp=false
+        if [[ "${EMPTY_DIFF_SHORTCUT,,}" != "no" ]] &&
+            snapshot_diff_is_empty "$SRC_URI_NS" "$d" "$last_snap" "$next_snap" &&
+            snapshot_diff_is_empty "$DST_URI_NS" "$d" "$last_snap" "."; then
+            skip_distcp=true
+        fi
+
+        if [[ "$skip_distcp" == "true" ]]; then
+            log "[SYNC] $d: no changes on SOURCE between $last_snap and $next_snap and none on DEST since $last_snap -- skipping DistCp (no YARN job)."
             DISTCP_SUCCESS=true
         else
-            DISTCP_SUCCESS=false
+            log_cmd "Syncing directory: $d ($last_snap -> $next_snap)"
+            log "[DEBUG] Running distcp diff sync for $d"
+            echo ""
+            echo "=== DistCp Command ==="
+            # COPY_OPTS_NO_UPDATE (see parse_copy_opts) with -update placed before -diff (required by DistCp). All other options must
+            # come before -diff to avoid being treated as source paths
+            echo "  hadoop distcp $(render_nameservice_ha_args_for_display)$DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff $last_snap $next_snap $src_uri $dst_uri"
+            echo "======================"
+            echo ""
+            echo "[DEBUG MARKER] Starting DistCp execution for $d"
+            # Use tee to write distcp stderr to temp file AND to stderr (which goes through global redirection to
+            # LOG and console). Since stderr is redirected to stdout via exec 2>&1, this ensures real-time output
+            # without buffering delays.
+            # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
+            if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_STDERR_FILE" >&2); then
+                DISTCP_SUCCESS=true
+            else
+                DISTCP_SUCCESS=false
+            fi
         fi
         
         if [[ "$DISTCP_SUCCESS" == "true" ]]; then
@@ -6109,7 +6691,7 @@ main() {
                         echo "======================"
                         echo ""
                         # shellcheck disable=SC2086 # Intentional word splitting for distcp option flags
-                        if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_RETRY_STDERR" >&2); then
+                        if run_as_distcp hadoop distcp $DISTCP_FULL_OPTS "-Dmapreduce.job.name=$(dr_job_name "$d")" $DISTCP_EXCLUDE_OPTS $COPY_OPTS_NO_UPDATE -update -diff "$last_snap" "$next_snap" "$src_uri" "$dst_uri" 2> >(tee "$DISTCP_RETRY_STDERR" >&2); then
                             DISTCP_RETRY_SUCCESS=true
                         else
                             DISTCP_RETRY_SUCCESS=false
@@ -6189,7 +6771,13 @@ main() {
                         echo "============================================"
                         echo ">>> [ERROR] [STAGE 4] Rollback NOT performed for: $d <<<"
                         echo "============================================"
-                        log "[WARN] [Stage 4] Rollback not performed (marker existed or failure during rollback). Manual intervention required for $d"
+                        log "[WARN] [Stage 4] Rollback not performed (marker existed, a DistCp for this directory is still running, or the rollback failed -- see [ROLLBACK] above). Manual intervention required for $d"
+                        if [[ -n "$RUNNING_DR_JOB_IDS" ]]; then
+                            # The destination is still being written by that job; re-syncing now would race it.
+                            log "[WARN] [Stage 4] Wait for YARN application(s) $(echo "$RUNNING_DR_JOB_IDS" | tr '\n' ' ')to finish (or kill them), then re-run this script before any manual re-sync."
+                        else
+                            print_resync_guidance "$d" "$last_snap"
+                        fi
                         METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
                         dir_end_ts=$(date +%s)
                         log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
@@ -6201,7 +6789,9 @@ main() {
                     echo ">>> [ERROR] [STAGE 4] Automatic Rollback DISABLED for: $d <<<"
                     echo "============================================"
                     log "[WARN] [Stage 4] Detected snapshot-modified error but automatic rollback is disabled (ROLLBACK_ON_FAILURE=${ROLLBACK_ON_FAILURE}). Failing this directory."
-                    log "[INFO] To enable automatic rollback, pass \"yes\" as arg 11 or export ROLLBACK_ON_FAILURE=yes."
+                    log "[WARN] This directory fails the same way on every run until it is recovered. The destination changed after '$last_snap' was taken, usually because an earlier copy failed part-way (network, NameNode, killed run) or its destination snapshot could not be created."
+                    log "[INFO] Recover either way: pass \"yes\" as arg 11 (or export ROLLBACK_ON_FAILURE=yes) so the script rolls the destination back to '$last_snap' and retries, or run the commands below."
+                    print_resync_guidance "$d" "$last_snap"
                     METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
                     dir_end_ts=$(date +%s)
                     log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds"
@@ -6253,7 +6843,8 @@ main() {
             echo ">>> [ERROR] [STAGE 4] Destination snapshot creation FAILED for: $d <<<"
             echo "=========================================================================================================================================="
             log "[ERROR] [Stage 4] DistCp succeeded for $d but the destination snapshot '$next_snap' could not be created. Refusing to advance state -- last_snap remains '$last_snap' for this directory."
-            log "[ERROR] The DistCp-copied data on the destination is real, but not yet captured in a snapshot. Re-run this script; the next run's baseline/diff logic will retry from '$last_snap'."
+            log "[ERROR] The copied data is on the destination but not captured in a snapshot, so the destination no longer matches its '$last_snap'. The next run's DistCp will fail with 'target has been modified since snapshot $last_snap' unless ROLLBACK_ON_FAILURE=yes (which rolls back to '$last_snap' and re-copies). Otherwise recover with the commands below."
+            print_resync_guidance "$d" "$last_snap"
             METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
             dir_end_ts=$(date +%s)
             log "[METRIC] [STAGE 4] Directory '$d' failed after $((dir_end_ts - dir_start_ts)) seconds (destination snapshot creation failed)"
@@ -6279,12 +6870,19 @@ main() {
             echo ""
             echo "  Refusing to advance state past this snapshot -- last_snap remains '$last_snap'."
             echo ""
-            echo "  --- To recover ---"
-            echo "    1. Compare source and destination directly to see what's missing/extra:"
-            echo "         hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -ls -R $d"
-            echo "         hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -ls -R $d"
-            echo "    2. If destination is missing real data, run a manual full DistCp (not -diff) to"
-            echo "       reconcile, then re-run this script."
+            echo "  The next run continues from '$next_snap' (it exists on both clusters), so this mismatch is"
+            echo "  reported again on every run until the destination is re-synced to '$next_snap'."
+            echo "  Do NOT copy from the live source directory: that leaves the destination ahead of its"
+            echo "  snapshot, and the next run then fails with 'target has been modified since snapshot'."
+            echo ""
+            echo "  Common causes: files still open for write on the source (set"
+            echo "  dfs.namenode.snapshot.capture.openfiles=true on the source NameNode), or writes made directly"
+            echo "  on the destination during the copy."
+            echo ""
+            echo "  To see what differs:"
+            echo "         hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$SRC_URI_NS -ls -R $d/.snapshot/$next_snap"
+            echo "         hdfs ${nameservice_ha_display_args}dfs -fs hdfs://$DST_URI_NS   -ls -R $d/.snapshot/$next_snap"
+            print_resync_guidance "$d" "$next_snap"
             echo "=========================================================================================================================================="
             log "[ERROR] [Stage 4] DistCp and destination snapshot creation both reported success for $d, but '$next_snap' fails content-parity verification between SOURCE_CLUSTER and DEST_CLUSTER. Refusing to advance state -- last_snap remains '$last_snap' for this directory. Manual reconciliation required (see guidance above)."
             METRICS_FAILED_DIRECTORIES=$((METRICS_FAILED_DIRECTORIES + 1))
