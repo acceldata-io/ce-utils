@@ -2026,18 +2026,17 @@ _print_table() {
     '
 }
 
-# print_distcp_summary: the DistCp section of the run summary -- one table row per DistCp job of this run with
-# a totals row, then notes for failed jobs and for files DistCp skipped or failed to copy.
+# print_distcp_summary: the DistCp section of the run summary -- one table row per DistCp job of this run, then
+# notes for failed jobs and for files DistCp skipped or failed to copy.
 #
 # Throughput is Bytes Copied divided by the job's wall-clock time, so it includes YARN scheduling and job
 # setup; it is the rate to plan replication windows with. Bandwidth is DistCp's "Bandwidth in Bytes" counter:
-# each map task adds its bytes copied divided by its own run time in whole seconds (at least 1), so it is the
-# aggregate transfer rate while maps were copying. A map that runs under 2 seconds reports its whole byte count
-# as its rate, which makes the counter equal to or larger than Bytes Copied and meaningless as a rate; the
-# column shows n/a in that case.
+# each map task adds its bytes copied divided by its own copy time in whole seconds (at least 1), so it is the
+# combined rate of all map tasks while they were copying, without YARN and job overhead. Maps that copy for only
+# a second or two make it approximate (whole-second rounding). Shown as DistCp reports it; n/a when the counter
+# is missing.
 print_distcp_summary() {
-    local n=${#DISTCP_JOB_DIRS[@]} i ran=0 ok=0 failed=0 skipped=0 total_secs=0
-    local total_bytes=0 total_files=0 total_dirs=0 c result phase
+    local n=${#DISTCP_JOB_DIRS[@]} i ran=0 ok=0 failed=0 skipped=0 c result phase
     local secs bytes files dirs fskip bskip ffail bfail bw bw_col
     local -a rows=() notes=()
 
@@ -2064,7 +2063,6 @@ print_distcp_summary() {
             notes+=("[$((i + 1))] ${DISTCP_JOB_DIRS[i]}: ${result}; see the DistCp output for this job in the log")
         fi
         secs="${DISTCP_JOB_SECS[i]}"
-        total_secs=$((total_secs + secs))
         c="${DISTCP_JOB_COUNTERS[i]}"
         if [[ -z "$c" ]]; then
             rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t-\t-\t-\t-\t-' "$((i + 1))" "${DISTCP_JOB_DIRS[i]}" "$phase" "${result%% *}" "$(format_duration "$secs")")")
@@ -2081,10 +2079,7 @@ print_distcp_summary() {
         ffail="$(_distcp_counter "$c" "Files Failed")"
         bfail="$(_distcp_counter "$c" "Bytes Failed")"
         bw="$(_distcp_counter "$c" "Bandwidth in Bytes" "Bandwidth in Btyes")"
-        total_bytes=$((total_bytes + bytes))
-        total_files=$((total_files + files))
-        total_dirs=$((total_dirs + dirs))
-        if [[ -n "$bw" ]] && ((bytes > 0 && bw < bytes)); then
+        if [[ -n "$bw" ]]; then
             bw_col="$(format_bytes "$bw")/s"
         else
             bw_col="n/a"
@@ -2098,17 +2093,10 @@ print_distcp_summary() {
             notes+=("[$((i + 1))] ${DISTCP_JOB_DIRS[i]}: ${fskip:-0} file(s), $(format_bytes "${bskip:-0}") skipped (already identical on the destination)")
         fi
     done
-    rows+=("-")
-    rows+=("$(printf '\tTotal\t\t\t%s\t%s\t%s\t%s\t%s\t' "$(format_duration "$total_secs")" "$(format_bytes "$total_bytes")" \
-        "$total_files" "$total_dirs" "$(format_rate "$total_bytes" "$total_secs")")")
 
     echo "   Jobs              : $ran run ($ok succeeded, $failed failed), $skipped skipped (no changes)"
     echo ""
     printf '%s\n' "${rows[@]}" | _print_table "1,5,6,7,8,9,10"
-    echo ""
-    echo "   Job        : _N is snapshot ${SNAP_PREFIX}_N"
-    echo "   Throughput : data copied / job duration, including YARN job startup"
-    echo "   Bandwidth  : DistCp bandwidth counter, all map tasks combined (n/a when maps ran under 2 s)"
     if ((${#notes[@]} > 0)); then
         echo ""
         echo "   Notes"
