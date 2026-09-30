@@ -57,6 +57,29 @@ get_host_for_component() {
       | grep -o '"host_name" : "[^"]*' | sed 's/"host_name" : "//' | head -n 1
 }
 
+cluster_has_service() {
+    local svc code
+    for svc in "$@"; do
+        [ -n "$svc" ] || continue
+        code=$(curl -s -k -u "$USER:$PASSWORD" -o /dev/null -w "%{http_code}" \
+          "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/$CLUSTER/services/$svc")
+        if [ "$code" = "200" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+skip_jdk17_if_service_absent() {
+    local label="$1"
+    shift
+    if cluster_has_service "$@"; then
+        return 1
+    fi
+    echo "[INFO] ${label} is not set up on this cluster. Skipping this JDK 17 config update."
+    return 0
+}
+
 #---------------------------------------------------------
 # Retrieve Ambari Cluster and Host Information
 #---------------------------------------------------------
@@ -112,7 +135,7 @@ detect_source_jdk() {
 set_config() {
     local config_file=$1 key=$2 value=$3
 
-    python /var/lib/ambari-server/resources/scripts/configs.py \
+    ambari-python-wrap /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$USER" \
         -p "$PASSWORD" \
         -s "$PROTOCOL" \
@@ -139,7 +162,7 @@ set_config_from_file() {
         return 1
     fi
 
-    python /var/lib/ambari-server/resources/scripts/configs.py \
+    ambari-python-wrap /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$USER" \
         -p "$PASSWORD" \
         -s "$PROTOCOL" \
@@ -157,7 +180,7 @@ set_config_from_file() {
 delete_config() {
     local config_file=$1 key=$2
 
-    python /var/lib/ambari-server/resources/scripts/configs.py \
+    ambari-python-wrap /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$USER" \
         -p "$PASSWORD" \
         -s "$PROTOCOL" \
@@ -177,7 +200,7 @@ resolve_stack_java_home() {
     local java_home=""
     local candidate=""
 
-    for candidate in /usr/lib/jvm/java-17-openjdk /usr/lib/jvm/java-17; do
+    for candidate in /usr/lib/jvm/java-17-openjdk /usr/lib/jvm/java-17-openjdk-amd64 /usr/lib/jvm/java-17; do
         if [[ -d "$candidate" && -x "$candidate/bin/java" ]]; then
             java_home="$candidate"
             break
@@ -206,7 +229,7 @@ get_config_property() {
     local property_key=$2
     local value=""
 
-    value=$(python /var/lib/ambari-server/resources/scripts/configs.py \
+    value=$(ambari-python-wrap /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$USER" \
         -p "$PASSWORD" \
         -s "$PROTOCOL" \
@@ -225,7 +248,7 @@ config_type_present() {
     local config_type=$1
     local count=""
 
-    count=$(python /var/lib/ambari-server/resources/scripts/configs.py \
+    count=$(ambari-python-wrap /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$USER" \
         -p "$PASSWORD" \
         -s "$PROTOCOL" \
@@ -255,31 +278,47 @@ JVM_FLAGS_KMS="--add-exports java.xml.crypto/com.sun.org.apache.xml.internal.sec
 #---------------------------------------------------------
 
 update_hdfs_configuration_for_jdk17() {
+    if skip_jdk17_if_service_absent "HDFS/YARN/MapReduce" HDFS YARN MAPREDUCE2; then
+        return 0
+    fi
     echo -e "${YELLOW}Starting to update configurations for HDFS, YARN, and MapReduce...${NC}"
 
-    set_config "hdfs-site" "jvm_flags" "${JVM_FLAGS_HDFS}"
-    set_config "hadoop-env" "content" "$(cat $TEMPLATE_DIR/hdfs-env-template)"
-
-    set_config "yarn-site" "jvm_flags" "${JVM_FLAGS_YARN}"
-    set_config "mapred-env" "content" "$(cat $TEMPLATE_DIR/mapred-env-template)"
-    set_config "mapred-site" "yarn.app.mapreduce.am.admin-command-opts" "$(cat $TEMPLATE_DIR/mapred-site-template)"
-    set_config "yarn-env" "content" "$(cat $TEMPLATE_DIR/yarn-env-template)"
-
-    # Java 8 specific configuration changes
-    if [ "$JAVA_VERSION" -eq "8" ]; then
-      set_config "yarn-site" "yarn.nodemanager.aux-services" "$(cat $MIGRATION_PATH/yarn-nodemanager-aux-services)"
-      # Remove configs
-      delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.class"
-      delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.classpath"
-      delete_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle.classpath"
-      delete_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle.class"
+    if cluster_has_service HDFS; then
+        set_config "hdfs-site" "jvm_flags" "${JVM_FLAGS_HDFS}"
+        set_config "hadoop-env" "content" "$(cat $TEMPLATE_DIR/hdfs-env-template)"
+    else
+        echo "[INFO] HDFS is not set up on this cluster. Skipping hdfs-site/hadoop-env."
     fi
 
-    # Migrate spark3_shuffle to versioned shuffle handlers (EU task
-    # odp_3_3_yarn_spark_shuffle_isolation). Required for JDK 8 -> 3.3.6.5 and
-    # JDK 11 -> 17 before Express/Rolling Upgrade.
-    if [ "$JAVA_VERSION" -eq "8" ] || [ "$JAVA_VERSION" -eq "11" ]; then
-      update_yarn_spark_shuffle_isolation
+    if cluster_has_service YARN; then
+        set_config "yarn-site" "jvm_flags" "${JVM_FLAGS_YARN}"
+        set_config "yarn-env" "content" "$(cat $TEMPLATE_DIR/yarn-env-template)"
+
+        # Java 8 specific configuration changes
+        if [ "$JAVA_VERSION" -eq "8" ]; then
+          set_config "yarn-site" "yarn.nodemanager.aux-services" "$(cat $MIGRATION_PATH/yarn-nodemanager-aux-services)"
+          # Remove configs
+          delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.class"
+          delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.classpath"
+          delete_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle.classpath"
+          delete_config "yarn-site" "yarn.nodemanager.aux-services.spark_shuffle.class"
+        fi
+
+        # Migrate spark3_shuffle to versioned shuffle handlers (EU task
+        # odp_3_3_yarn_spark_shuffle_isolation). Required for JDK 8 -> 3.3.6.5 and
+        # JDK 11 -> 17 before Express/Rolling Upgrade.
+        if [ "$JAVA_VERSION" -eq "8" ] || [ "$JAVA_VERSION" -eq "11" ]; then
+          update_yarn_spark_shuffle_isolation
+        fi
+    else
+        echo "[INFO] YARN is not set up on this cluster. Skipping yarn-site/yarn-env."
+    fi
+
+    if cluster_has_service MAPREDUCE2; then
+        set_config "mapred-env" "content" "$(cat $TEMPLATE_DIR/mapred-env-template)"
+        set_config "mapred-site" "yarn.app.mapreduce.am.admin-command-opts" "$(cat $TEMPLATE_DIR/mapred-site-template)"
+    else
+        echo "[INFO] MAPREDUCE2 is not set up on this cluster. Skipping mapred-env/mapred-site."
     fi
 
     echo -e "${GREEN}Successfully updated configurations for HDFS, YARN, and MapReduce.${NC}"
@@ -343,6 +382,9 @@ update_yarn_spark_shuffle_isolation() {
 }
 
 update_infra_configuration_for_jdk17() {
+    if skip_jdk17_if_service_absent "Infra Solr" AMBARI_INFRA_SOLR INFRA_SOLR; then
+        return 0
+    fi
     echo -e "${YELLOW}Starting to update configurations for Infra-Solr...${NC}"
 
     set_config "infra-solr-env" "infra_solr_gc_log_opts" "$(cat $TEMPLATE_DIR/infra-solr-gc-log-opts)"
@@ -357,6 +399,9 @@ update_infra_configuration_for_jdk17() {
 }
 
 update_hive_configuration_for_jdk17() {
+    if skip_jdk17_if_service_absent "Hive/Tez" HIVE TEZ; then
+        return 0
+    fi
     echo -e "${YELLOW}Starting to update configurations for Tez and Hive...${NC}"
 
     set_config "tez-site" "jvm_flags" "${JVM_FLAGS_TEZ}"
@@ -381,6 +426,9 @@ update_hive_configuration_for_jdk17() {
 }
 
 update_hbase_configuration_for_jdk17() {
+    if skip_jdk17_if_service_absent "HBase" HBASE; then
+        return 0
+    fi
     echo -e "${YELLOW}Starting to update configurations for HBase...${NC}"
 
     # Push Log4j2 content as hbase-log4j2 (creates the desired config type if missing).
@@ -401,6 +449,9 @@ update_hbase_configuration_for_jdk17() {
 }
 
 update_oozie_configuration_for_jdk17() {
+    if skip_jdk17_if_service_absent "Oozie" OOZIE; then
+        return 0
+    fi
     echo -e "${YELLOW}Starting to update configurations for Oozie...${NC}"
 
     set_config "oozie-site" "jvm_flags" "${JVM_FLAGS_OOZIE}"
@@ -410,6 +461,9 @@ update_oozie_configuration_for_jdk17() {
 }
 
 update_kms_configuration_for_jdk17() {
+    if skip_jdk17_if_service_absent "Ranger KMS" RANGER_KMS KMS; then
+        return 0
+    fi
     echo -e "${YELLOW}Starting to update configurations for Ranger KMS...${NC}"
 
     set_config "kms-site" "jvm_flags" "${JVM_FLAGS_KMS}"
@@ -419,6 +473,9 @@ update_kms_configuration_for_jdk17() {
 }
 
 update_druid_configuration_for_jdk17() {
+    if skip_jdk17_if_service_absent "Druid" DRUID; then
+        return 0
+    fi
     echo -e "${YELLOW}Starting to update configurations for Druid...${NC}"
 
     local druid_template_dir druid_opts
@@ -449,16 +506,44 @@ update_druid_configuration_for_jdk17() {
     echo -e "${GREEN}Successfully updated configurations for Druid.${NC}"
 }
 
+# Return 0 when the desired zookeeper-logback config already has content.
+zookeeper_logback_already_present() {
+    local desired tag body
+    desired=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' \
+        "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/${CLUSTER}?fields=Clusters/desired_configs/zookeeper-logback")
+    printf '%s' "$desired" | grep -q '"zookeeper-logback"' || return 1
+    tag=$(printf '%s' "$desired" \
+        | grep -o '"tag"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -n 1 \
+        | sed 's/.*"\([^"]*\)"$/\1/')
+    [[ -n "$tag" ]] || return 1
+    body=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' \
+        "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/${CLUSTER}/configurations?type=zookeeper-logback&tag=${tag}")
+    printf '%s' "$body" | grep -Eq '"content"[[:space:]]*:[[:space:]]*"[^"]'
+}
+
 update_zookeeper_configuration_for_jdk17() {
+    if skip_jdk17_if_service_absent "ZooKeeper" ZOOKEEPER; then
+        return 0
+    fi
     echo -e "${YELLOW}Starting to update configurations for ZooKeeper...${NC}"
 
-    # Create the complete desired config when it is missing on upgraded clusters.
+    # Create the desired config only when upgraded clusters do not already have it.
+    if zookeeper_logback_already_present; then
+        echo "[INFO] ZooKeeper already has zookeeper-logback content. Skipping this change."
+        echo -e "${GREEN}Successfully checked configurations for ZooKeeper.${NC}"
+        return 0
+    fi
+
     set_config_from_file "zookeeper-logback" "$TEMPLATE_DIR/zookeeper-logback.xml"
 
     echo -e "${GREEN}Successfully updated configurations for ZooKeeper.${NC}"
 }
 
 update_pinot_configuration_for_jdk17() {
+    if skip_jdk17_if_service_absent "Pinot" PINOT; then
+        return 0
+    fi
     echo -e "${YELLOW}Starting to update configurations for Pinot...${NC}"
 
     local stack_java_home

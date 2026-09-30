@@ -50,6 +50,42 @@ ambari-server restart
 
 4. In Ambari, create a new Express or Rolling upgrade (do not reuse a plan generated before this copy).
 
+## Ambari 3.0 JDK 17 upgrade (after Pause Upgrade)
+
+Applies to **3.2.3.x -> 3.3.6.5** and **3.3.6.x -> 3.3.6.5** when Ambari is still 2.7.x. Follows
+https://docs.acceldata.io/odp/documentation/upgrade-ambari-server1
+Do not Finalize.
+
+Express must be at Pause Upgrade after Stop Components for High-Level Services.
+
+1. Stop Infra Solr from Ambari (`Actions` -> `Stop`). Stop Ambari agents on every node:
+
+```
+ambari-server stop
+ambari-agent stop
+```
+
+2. Backup Ambari conf and the Ambari DB (docs use `/etc/ambari-server/conf`; keep JDK 8 packages):
+
+```
+cp -a /etc/ambari-server/conf /etc/ambari-server/conf_bkp
+mysqldump --databases ambari > /tmp/ambari_mysql_bckp.sql
+```
+
+3. Point yum at Ambari 3.0.0.2-1, erase the 2.7 server, install the 3.0 RPM, then restore `ambari.properties` and `password.dat`. The pack script does that when `AMBARI_REPO_URL` is set:
+
+```
+cd ./odp-upgrade-to-3_3_6_5_1/upgrade_files_336/
+AMBARI_REPO_URL=https://mirror.odp.acceldata.dev/ODP/rhel/Ambari-3.0.0.2-1/ \
+  bash ./setup_ambari3_upgrade.sh
+```
+
+The script also installs JDK 17 (does not remove JDK 8), points `update-alternatives` at JDK 17 so `/usr/bin/java` is 17, installs Python 3.11, `bigtop-jsvc`, and the `distro` module; sets `java.home`, `stack.java.home`, `ambari.java.home`, and `mpacks-v2.staging.path`; creates `registries` / `mpacks`, `stack.mpack_id`, and `upgrade.upgrade_package_stack`; widens `service_name` to VARCHAR(255); patches `--add-opens`; then runs `ambari-server upgrade -s` and starts 8080.
+
+4. Confirm Ambari 3 (HTTP 401/403 without auth is expected). Upgrade Ambari agents (JDK 17 default alternatives, Python 3.11, JSVC on every node). Continue Infra Solr / JDK 17 flags / mpacks / resume. Do not Finalize. Infra Solr 3.0 must start with JDK 17; the harness coerces its `java64_home` when Ambari still sends cluster JDK 8 during Express.
+
+If `ambari-server upgrade` fails with `No module named distro`, run `/usr/bin/python3.11 -m pip install distro` and retry the script.
+
 ## ZooKeeper logback (before resume upgrade)
 
 Bundled upgrade XMLs no longer run `create_and_configure` for `zookeeper-logback` during EU/RU. That avoids the cross-stack failure on rolling upgrades (for example 3.2 to 3.3).

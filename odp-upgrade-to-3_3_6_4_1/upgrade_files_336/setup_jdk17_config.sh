@@ -298,10 +298,32 @@ update_druid_configuration_for_jdk17() {
     echo -e "${GREEN}Successfully updated configurations for Ranger Druid.${NC}"
 }
 
+# Return 0 when the desired zookeeper-logback config already has content.
+zookeeper_logback_already_present() {
+    local desired tag body
+    desired=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' \
+        "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/${CLUSTER}?fields=Clusters/desired_configs/zookeeper-logback")
+    printf '%s' "$desired" | grep -q '"zookeeper-logback"' || return 1
+    tag=$(printf '%s' "$desired" \
+        | grep -o '"tag"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -n 1 \
+        | sed 's/.*"\([^"]*\)"$/\1/')
+    [[ -n "$tag" ]] || return 1
+    body=$(curl -s -k -u "$USER:$PASSWORD" -H 'X-Requested-By: ambari' \
+        "$PROTOCOL://$AMBARISERVER:$PORT/api/v1/clusters/${CLUSTER}/configurations?type=zookeeper-logback&tag=${tag}")
+    printf '%s' "$body" | grep -Eq '"content"[[:space:]]*:[[:space:]]*"[^"]'
+}
+
 update_zookeeper_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for ZooKeeper...${NC}"
 
-    # Create the complete desired config when it is missing on upgraded clusters.
+    # Create the desired config only when upgraded clusters do not already have it.
+    if zookeeper_logback_already_present; then
+        echo "[INFO] ZooKeeper already has zookeeper-logback content. Skipping this change."
+        echo -e "${GREEN}Successfully checked configurations for ZooKeeper.${NC}"
+        return 0
+    fi
+
     set_config_from_file "zookeeper-logback" "$TEMPLATE_DIR/zookeeper-logback.xml"
 
     echo -e "${GREEN}Successfully updated configurations for ZooKeeper.${NC}"
