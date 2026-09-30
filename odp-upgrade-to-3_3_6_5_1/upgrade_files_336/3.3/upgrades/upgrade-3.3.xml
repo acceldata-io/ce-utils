@@ -502,6 +502,116 @@
     </group>
 
 
+    <group name="AIRFLOW" title="AIRFLOW">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="AIRFLOW">
+        <component>AIRFLOW_WEBSERVER</component>
+        <component>AIRFLOW_SCHEDULER</component>
+        <component>AIRFLOW_WORKER</component>
+      </service>
+    </group>
+
+    <group name="FLINK" title="FLINK">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="FLINK">
+        <component>FLINK_JOBHISTORYSERVER</component>
+        <component>FLINK_RESTSERVER</component>
+        <component>FLINK_CLIENT</component>
+      </service>
+    </group>
+
+    <group name="HTTPFS" title="HTTPFS">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="HTTPFS">
+        <component>HTTPFS_GATEWAY</component>
+      </service>
+    </group>
+
+    <group name="HUE" title="HUE">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="HUE">
+        <component>HUE_SERVER</component>
+      </service>
+    </group>
+
+    <group name="JUPYTER" title="JUPYTER">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="JUPYTER">
+        <component>JUPYTERHUB</component>
+      </service>
+    </group>
+
+    <group name="MLFLOW" title="MLFLOW">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="MLFLOW">
+        <component>MLFLOW_SERVER</component>
+      </service>
+    </group>
+
+    <group name="NIFI" title="NIFI">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="NIFI">
+        <component>NIFI_CA</component>
+        <component>NIFI_MASTER</component>
+      </service>
+    </group>
+
+    <group name="NIFI_REGISTRY" title="NIFI REGISTRY">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="NIFI_REGISTRY">
+        <component>NIFI_REGISTRY_MASTER</component>
+      </service>
+    </group>
+
+    <group name="OZONE" title="OZONE">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="OZONE">
+        <component>OZONE_STORAGE_CONTAINER_MANAGER</component>
+        <component>OZONE_MANAGER</component>
+        <component>OZONE_DATANODE</component>
+        <component>OZONE_RECON</component>
+        <component>OZONE_CLIENT</component>
+        <component>OZONE_S3_GATEWAY</component>
+      </service>
+    </group>
+
+    <group name="REGISTRY" title="REGISTRY">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="REGISTRY">
+        <component>REGISTRY_SERVER</component>
+      </service>
+    </group>
+
+    <group name="TRINO" title="TRINO">
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <service-check>false</service-check>
+      <service name="TRINO">
+        <component>TRINO_COORDINATOR</component>
+        <component>TRINO_WORKER</component>
+      </service>
+    </group>
+
     <group name="SERVICE_CHECK_3" title="All Service Checks" xsi:type="service-check">
       <direction>UPGRADE</direction>
       <skippable>true</skippable>
@@ -691,6 +801,12 @@
     </service>
     <service name="KAFKA3">
       <component name="KAFKA3_BROKER">
+                <pre-upgrade>
+          <task xsi:type="configure" id="odp_3365_kafka3_kafka3_broker"/>
+          <task xsi:type="configure" id="odp_3365_kafka3_kafka3_env"/>
+          <task xsi:type="create_and_configure" id="odp_3365_kafka3_kafka3_mirrormaker2_log4j"/>
+        </pre-upgrade>
+        <pre-downgrade />
         <upgrade>
           <task xsi:type="restart-task" />
         </upgrade>
@@ -991,6 +1107,11 @@
           <task xsi:type="server_action" class="org.apache.ambari.server.serveraction.upgrades.FixSparkYarnIdentity">
             <summary>Adding spark.yarn.keytab/principal properties</summary>
           </task>
+        
+          <task xsi:type="configure" id="odp_3365_spark3_livy3_conf"/>
+          <task xsi:type="create_and_configure" id="odp_3365_spark3_spark3_connect"/>
+          <task xsi:type="configure" id="odp_3365_spark3_spark3_defaults"/>
+          <task xsi:type="configure" id="odp_3365_spark3_spark3_thrift_sparkconf"/>
         </pre-upgrade>
         <pre-downgrade />
         <upgrade>
@@ -1021,6 +1142,10 @@
 
     <service name="IMPALA">
       <component name="IMPALA_CATALOG_SERVICE">
+                <pre-upgrade>
+          <task xsi:type="configure" id="odp_3365_impala_impala_env"/>
+        </pre-upgrade>
+        <pre-downgrade />
         <upgrade>
           <task xsi:type="restart-task" />
         </upgrade>
@@ -1182,6 +1307,12 @@
     </service>
     <service name="PINOT">
       <component name="PINOT_CONTROLLER">
+                <pre-upgrade>
+          <task xsi:type="configure" id="odp_3_3_pinot_controller_local_temp_dir"/>
+          <task xsi:type="configure" id="odp_3365_pinot_pinot_env"/>
+          <task xsi:type="configure" id="odp_3365_pinot_pinot_server_conf"/>
+        </pre-upgrade>
+        <pre-downgrade />
         <upgrade>
           <task xsi:type="restart-task"/>
         </upgrade>
@@ -1197,6 +1328,204 @@
         </upgrade>
       </component>
       <component name="PINOT_MINION">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+
+    <service name="AIRFLOW">
+      <component name="AIRFLOW_WEBSERVER">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3365_airflow_airflow_celery_site"/>
+          <task xsi:type="configure" id="odp_3365_airflow_airflow_database_site"/>
+          <task xsi:type="configure" id="odp_3365_airflow_airflow_kubernetes_site"/>
+          <task xsi:type="configure" id="odp_3365_airflow_airflow_ldap_site"/>
+          <task xsi:type="configure" id="odp_3365_airflow_airflow_scheduler_site"/>
+          <task xsi:type="configure" id="odp_3365_airflow_airflow_smtp_site"/>
+          <task xsi:type="configure" id="odp_3365_airflow_airflow_webserver_site"/>
+        </pre-upgrade>
+        <pre-downgrade />
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+      <component name="AIRFLOW_SCHEDULER">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+      <component name="AIRFLOW_WORKER">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+    <service name="FLINK">
+      <component name="FLINK_JOBHISTORYSERVER">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3365_flink_flink_conf"/>
+        </pre-upgrade>
+        <pre-downgrade />
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+      <component name="FLINK_RESTSERVER">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+      <component name="FLINK_CLIENT">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+    <service name="HTTPFS">
+      <component name="HTTPFS_GATEWAY">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3365_httpfs_httpfs"/>
+        </pre-upgrade>
+        <pre-downgrade />
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+    <service name="HUE">
+      <component name="HUE_SERVER">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3365_hue_hue_desktop_site"/>
+          <task xsi:type="configure" id="odp_3365_hue_hue_env"/>
+          <task xsi:type="create_and_configure" id="odp_3365_hue_hue_ldap"/>
+          <task xsi:type="configure" id="odp_3365_hue_services"/>
+        </pre-upgrade>
+        <pre-downgrade />
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+    <service name="JUPYTER">
+      <component name="JUPYTERHUB">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3365_jupyter_jupyterhub_conf"/>
+          <task xsi:type="create_and_configure" id="odp_3365_jupyter_jupyterhub_env"/>
+        </pre-upgrade>
+        <pre-downgrade />
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+    <service name="MLFLOW">
+      <component name="MLFLOW_SERVER">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3365_mlflow_mlflow_conf"/>
+          <task xsi:type="create_and_configure" id="odp_3365_mlflow_mlflow_env"/>
+        </pre-upgrade>
+        <pre-downgrade />
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+    <service name="NIFI">
+      <component name="NIFI_CA">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3365_nifi_nifi_ambari_ssl_config"/>
+        </pre-upgrade>
+        <pre-downgrade />
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+      <component name="NIFI_MASTER">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+    <service name="NIFI_REGISTRY">
+      <component name="NIFI_REGISTRY_MASTER">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3365_nifi_registry_nifi_registry_ambari_config"/>
+          <task xsi:type="configure" id="odp_3365_nifi_registry_nifi_registry_ambari_ssl_config"/>
+          <task xsi:type="configure" id="odp_3365_nifi_registry_nifi_registry_properties"/>
+        </pre-upgrade>
+        <pre-downgrade />
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+    <service name="OZONE">
+      <component name="OZONE_STORAGE_CONTAINER_MANAGER">
+        <pre-upgrade>
+          <task xsi:type="create_and_configure" id="odp_3365_ozone_ozone_log4j2_dn_audit"/>
+          <task xsi:type="create_and_configure" id="odp_3365_ozone_ozone_log4j2_dn_container"/>
+          <task xsi:type="create_and_configure" id="odp_3365_ozone_ozone_log4j2_om_audit"/>
+          <task xsi:type="create_and_configure" id="odp_3365_ozone_ozone_log4j2_s3g_audit"/>
+          <task xsi:type="create_and_configure" id="odp_3365_ozone_ozone_log4j2_scm_audit"/>
+        </pre-upgrade>
+        <pre-downgrade />
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+      <component name="OZONE_MANAGER">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+      <component name="OZONE_DATANODE">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+      <component name="OZONE_RECON">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+      <component name="OZONE_CLIENT">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+      <component name="OZONE_S3_GATEWAY">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+    <service name="REGISTRY">
+      <component name="REGISTRY_SERVER">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3365_registry_registry_env"/>
+        </pre-upgrade>
+        <pre-downgrade />
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+    <service name="TRINO">
+      <component name="TRINO_COORDINATOR">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3365_trino_jvm_config"/>
+          <task xsi:type="configure" id="odp_3365_trino_trino_env"/>
+          <task xsi:type="configure" id="odp_3365_trino_trino_hive"/>
+          <task xsi:type="create_and_configure" id="odp_3365_trino_trino_oracle"/>
+          <task xsi:type="create_and_configure" id="odp_3365_trino_trino_testing"/>
+        </pre-upgrade>
+        <pre-downgrade />
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+      <component name="TRINO_WORKER">
         <upgrade>
           <task xsi:type="restart-task"/>
         </upgrade>

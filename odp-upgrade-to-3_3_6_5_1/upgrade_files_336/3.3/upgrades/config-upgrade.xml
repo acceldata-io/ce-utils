@@ -255,9 +255,343 @@
             <set key="controller.local.temp.dir" value="/data/hdp/controller"
                  if-type="pinot-controller-conf" if-key="controller.local.temp.dir" if-key-state="absent"/>
           </definition>
+          <definition xsi:type="configure" id="odp_3365_pinot_pinot_env" summary="Add pinot-env properties introduced after 3.3.6.2-1">
+            <type>pinot-env</type>
+            <set key="audit.broker.capture.request.payload.enabled" value="true" if-type="pinot-env" if-key="audit.broker.capture.request.payload.enabled" if-key-state="absent"/>
+            <set key="audit.broker.capture.response.enabled" value="true" if-type="pinot-env" if-key="audit.broker.capture.response.enabled" if-key-state="absent"/>
+            <set key="audit.broker.url.filter.include.patterns" value="/query/**" if-type="pinot-env" if-key="audit.broker.url.filter.include.patterns" if-key-state="absent"/>
+            <set key="audit.broker.userid.header" value="" if-type="pinot-env" if-key="audit.broker.userid.header" if-key-state="absent"/>
+            <set key="audit.controller.capture.request.headers" value="Content-Type,X-Request-ID" if-type="pinot-env" if-key="audit.controller.capture.request.headers" if-key-state="absent"/>
+            <set key="audit.controller.capture.request.payload.enabled" value="true" if-type="pinot-env" if-key="audit.controller.capture.request.payload.enabled" if-key-state="absent"/>
+            <set key="audit.controller.capture.response.enabled" value="true" if-type="pinot-env" if-key="audit.controller.capture.response.enabled" if-key-state="absent"/>
+            <set key="audit.controller.request.payload.size.max.bytes" value="16384" if-type="pinot-env" if-key="audit.controller.request.payload.size.max.bytes" if-key-state="absent"/>
+            <set key="audit.controller.url.filter.exclude.patterns" value="/health,/metrics" if-type="pinot-env" if-key="audit.controller.url.filter.exclude.patterns" if-key-state="absent"/>
+            <set key="audit.controller.url.filter.include.patterns" value="/tables/**,/schemas/**,/segments/**,/tenants/**" if-type="pinot-env" if-key="audit.controller.url.filter.include.patterns" if-key-state="absent"/>
+            <set key="audit.controller.userid.header" value="" if-type="pinot-env" if-key="audit.controller.userid.header" if-key-state="absent"/>
+            <set key="enable_audit" value="false" if-type="pinot-env" if-key="enable_audit" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_pinot_pinot_server_conf" summary="Add pinot-server-conf properties introduced after 3.3.6.2-1">
+            <type>pinot-server-conf</type>
+            <set key="pinot.server.consumption.rate.limit" value="0" if-type="pinot-server-conf" if-key="pinot.server.consumption.rate.limit" if-key-state="absent"/>
+            <set key="pinot.server.consumption.rate.limit.bytes" value="0" if-type="pinot-server-conf" if-key="pinot.server.consumption.rate.limit.bytes" if-key-state="absent"/>
+            <set key="pinot.server.grpc.port" value="8092" if-type="pinot-server-conf" if-key="pinot.server.grpc.port" if-key-state="absent"/>
+            <set key="pinot.server.instance.realtime.alloc.offheap" value="true" if-type="pinot-server-conf" if-key="pinot.server.instance.realtime.alloc.offheap" if-key-state="absent"/>
+            <set key="pinot.server.instance.segment.store.uri" value="hdfs://{nn}/pinot/controller" if-type="pinot-server-conf" if-key="pinot.server.instance.segment.store.uri" if-key-state="absent"/>
+          </definition>
         </changes>
       </component>
     </service>
 
+
+
+    <service name="AIRFLOW">
+      <component name="AIRFLOW_WEBSERVER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_airflow_airflow_celery_site" summary="Add airflow-celery-site properties introduced after 3.3.6.2-1">
+            <type>airflow-celery-site</type>
+            <set key="flower_basic_auth_enabled" value="false" if-type="airflow-celery-site" if-key="flower_basic_auth_enabled" if-key-state="absent"/>
+            <set key="flower_basic_auth_password" value="" if-type="airflow-celery-site" if-key="flower_basic_auth_password" if-key-state="absent"/>
+            <set key="flower_basic_auth_user" value="admin" if-type="airflow-celery-site" if-key="flower_basic_auth_user" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_airflow_airflow_database_site" summary="Add airflow-database-site properties introduced after 3.3.6.2-1">
+            <type>airflow-database-site</type>
+            <set key="database_port" value="" if-type="airflow-database-site" if-key="database_port" if-key-state="absent"/>
+            <set key="rabbitmq_host" value="" if-type="airflow-database-site" if-key="rabbitmq_host" if-key-state="absent"/>
+            <set key="rabbitmq_port" value="5672" if-type="airflow-database-site" if-key="rabbitmq_port" if-key-state="absent"/>
+            <set key="redis.db_broker" value="0" if-type="airflow-database-site" if-key="redis.db_broker" if-key-state="absent"/>
+            <set key="redis.db_result" value="1" if-type="airflow-database-site" if-key="redis.db_result" if-key-state="absent"/>
+            <set key="redis.host" value="" if-type="airflow-database-site" if-key="redis.host" if-key-state="absent"/>
+            <set key="redis.password" value="" if-type="airflow-database-site" if-key="redis.password" if-key-state="absent"/>
+            <set key="redis.port" value="6379" if-type="airflow-database-site" if-key="redis.port" if-key-state="absent"/>
+            <set key="redis.ssl_enabled" value="false" if-type="airflow-database-site" if-key="redis.ssl_enabled" if-key-state="absent"/>
+            <set key="z_override_broker_url" value="" if-type="airflow-database-site" if-key="z_override_broker_url" if-key-state="absent"/>
+            <set key="z_override_result_backend_url" value="" if-type="airflow-database-site" if-key="z_override_result_backend_url" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_airflow_airflow_kubernetes_site" summary="Add airflow-kubernetes-site properties introduced after 3.3.6.2-1">
+            <type>airflow-kubernetes-site</type>
+            <set key="git_password_cmd" value="sh -c '{{ambari_java_home}}/bin/java -cp &quot;/var/lib/ambari-agent/cred/lib/*&quot; org.apache.ambari.server.credentialapi.CredentialUtil -provider &quot;jceks://file/etc/security/credential/airflow.jceks&quot; get airflow.kubernetes.git_password | tr -d &quot;\r\n&quot;'" if-type="airflow-kubernetes-site" if-key="git_password_cmd" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_airflow_airflow_ldap_site" summary="Add airflow-ldap-site properties introduced after 3.3.6.2-1">
+            <type>airflow-ldap-site</type>
+            <set key="bind_password_cmd" value="sh -c '{{ambari_java_home}}/bin/java -cp &quot;/var/lib/ambari-agent/cred/lib/*&quot; org.apache.ambari.server.credentialapi.CredentialUtil -provider &quot;jceks://file/etc/security/credential/airflow.jceks&quot; get airflow.ldap.bind_password | tr -d &quot;\r\n&quot;'" if-type="airflow-ldap-site" if-key="bind_password_cmd" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_airflow_airflow_scheduler_site" summary="Add airflow-scheduler-site properties introduced after 3.3.6.2-1">
+            <type>airflow-scheduler-site</type>
+            <set key="deactivate_unknown_dags" value="False" if-type="airflow-scheduler-site" if-key="deactivate_unknown_dags" if-key-state="absent"/>
+            <set key="parsing_processes" value="4" if-type="airflow-scheduler-site" if-key="parsing_processes" if-key-state="absent"/>
+            <set key="scheduler_health_check_threshold" value="90" if-type="airflow-scheduler-site" if-key="scheduler_health_check_threshold" if-key-state="absent"/>
+            <set key="use_job_schedule" value="False" if-type="airflow-scheduler-site" if-key="use_job_schedule" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_airflow_airflow_smtp_site" summary="Add airflow-smtp-site properties introduced after 3.3.6.2-1">
+            <type>airflow-smtp-site</type>
+            <set key="smtp_password_cmd" value="sh -c '{{ambari_java_home}}/bin/java -cp &quot;/var/lib/ambari-agent/cred/lib/*&quot; org.apache.ambari.server.credentialapi.CredentialUtil -provider &quot;jceks://file/etc/security/credential/airflow.jceks&quot; get airflow.smtp.password | tr -d &quot;\r\n&quot;'" if-type="airflow-smtp-site" if-key="smtp_password_cmd" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_airflow_airflow_webserver_site" summary="Add airflow-webserver-site properties introduced after 3.3.6.2-1">
+            <type>airflow-webserver-site</type>
+            <set key="enable_proxy_fix" value="False" if-type="airflow-webserver-site" if-key="enable_proxy_fix" if-key-state="absent"/>
+            <set key="hide_sensitive_variable_fields" value="True" if-type="airflow-webserver-site" if-key="hide_sensitive_variable_fields" if-key-state="absent"/>
+            <set key="session_backend" value="database" if-type="airflow-webserver-site" if-key="session_backend" if-key-state="absent"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="FLINK">
+      <component name="FLINK_RESTSERVER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_flink_flink_conf" summary="Add flink-conf properties introduced after 3.3.6.2-1">
+            <type>flink-conf</type>
+            <set key="security.delegation.token.provider.hbase.enabled" value="false" if-type="flink-conf" if-key="security.delegation.token.provider.hbase.enabled" if-key-state="absent"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="HTTPFS">
+      <component name="HTTPFS_GATEWAY">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_httpfs_httpfs" summary="Add httpfs properties introduced after 3.3.6.2-1">
+            <type>httpfs</type>
+            <set key="httpfs_pid_dir" value="/var/run/hadoop/httpfs" if-type="httpfs" if-key="httpfs_pid_dir" if-key-state="absent"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="HUE">
+      <component name="HUE_SERVER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_hue_hue_desktop_site" summary="Add hue-desktop-site properties introduced after 3.3.6.2-1">
+            <type>hue-desktop-site</type>
+            <set key="DB_FLAVOUR" value="sqlite3" if-type="hue-desktop-site" if-key="DB_FLAVOUR" if-key-state="absent"/>
+            <set key="enable_new_storage_browser" value="false" if-type="hue-desktop-site" if-key="enable_new_storage_browser" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_hue_hue_env" summary="Add hue-env properties introduced after 3.3.6.2-1">
+            <type>hue-env</type>
+            <set key="additional_path_folders" value="/usr/local/bin" if-type="hue-env" if-key="additional_path_folders" if-key-state="absent"/>
+            <set key="enable_blacklist" value="false" if-type="hue-env" if-key="enable_blacklist" if-key-state="absent"/>
+            <set key="hue-trino-module-enabled" value="No" if-type="hue-env" if-key="hue-trino-module-enabled" if-key-state="absent"/>
+            <set key="hue_install_dir" value="/usr/lib" if-type="hue-env" if-key="hue_install_dir" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_hue_hue_ldap" summary="Create hue-ldap added after 3.3.6.2-1">
+            <type>hue-ldap</type>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_hue_services" summary="Add services properties introduced after 3.3.6.2-1">
+            <type>services</type>
+            <set key="trino-config" value="&#xA;[notebook]&#xA;[[interpreters]]&#xA;[[[trino]]]&#xA;name=Trino&#xA;interface=trino&#xA;options='{{trino_connection_string}}'&#xA;    " if-type="services" if-key="trino-config" if-key-state="absent"/>
+            <set key="trino_password" value="" if-type="services" if-key="trino_password" if-key-state="absent"/>
+            <set key="trino_ssl_validate" value="true" if-type="services" if-key="trino_ssl_validate" if-key-state="absent"/>
+            <set key="trino_username" value="" if-type="services" if-key="trino_username" if-key-state="absent"/>
+            <set key="zookeeper-config" value="&#xA;[zookeeper]&#xA;[[clusters]]&#xA;[[[default]]]&#xA;host_ports={{zookeeper_hosts_with_ports}}&#xA;    " if-type="services" if-key="zookeeper-config" if-key-state="absent"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="IMPALA">
+      <component name="IMPALA_CATALOG_SERVICE">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_impala_impala_env" summary="Add impala-env properties introduced after 3.3.6.2-1">
+            <type>impala-env</type>
+            <set key="allow_custom_ldap_filters_with_kerberos_auth" value="false" if-type="impala-env" if-key="allow_custom_ldap_filters_with_kerberos_auth" if-key-state="absent"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="JUPYTER">
+      <component name="JUPYTERHUB">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_jupyter_jupyterhub_conf" summary="Add jupyterhub-conf properties introduced after 3.3.6.2-1">
+            <type>jupyterhub-conf</type>
+            <set key="configurable_proxy_command" value="/usr/local/bin/configurable-http-proxy" if-type="jupyterhub-conf" if-key="configurable_proxy_command" if-key-state="absent"/>
+            <set key="spark_default_version" value="3.5.5" if-type="jupyterhub-conf" if-key="spark_default_version" if-key-state="absent"/>
+            <set key="spark_version_selection_enabled" value="true" if-type="jupyterhub-conf" if-key="spark_version_selection_enabled" if-key-state="absent"/>
+            <set key="yarnspawner_cpu_limit" value="2" if-type="jupyterhub-conf" if-key="yarnspawner_cpu_limit" if-key-state="absent"/>
+            <set key="yarnspawner_mem_limit" value="2" if-type="jupyterhub-conf" if-key="yarnspawner_mem_limit" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_jupyter_jupyterhub_env" summary="Create jupyterhub-env added after 3.3.6.2-1">
+            <type>jupyterhub-env</type>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="KAFKA3">
+      <component name="KAFKA3_BROKER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_kafka3_kafka3_broker" summary="Add kafka3-broker properties introduced after 3.3.6.2-1">
+            <type>kafka3-broker</type>
+            <set key="remote.log.metadata.manager.bootstrap.servers" value="" if-type="kafka3-broker" if-key="remote.log.metadata.manager.bootstrap.servers" if-key-state="absent"/>
+            <set key="remote.log.metadata.manager.class.name" value="org.apache.kafka.server.log.remote.metadata.storage.TopicBasedRemoteLogMetadataManager" if-type="kafka3-broker" if-key="remote.log.metadata.manager.class.name" if-key-state="absent"/>
+            <set key="remote.log.metadata.manager.listener.name" value="PLAINTEXT" if-type="kafka3-broker" if-key="remote.log.metadata.manager.listener.name" if-key-state="absent"/>
+            <set key="remote.log.metadata.manager.security.protocol" value="PLAINTEXT" if-type="kafka3-broker" if-key="remote.log.metadata.manager.security.protocol" if-key-state="absent"/>
+            <set key="remote.log.storage.manager.class.name" value="io.aiven.kafka.tieredstorage.RemoteStorageManager" if-type="kafka3-broker" if-key="remote.log.storage.manager.class.name" if-key-state="absent"/>
+            <set key="remote.log.storage.manager.class.path" value="" if-type="kafka3-broker" if-key="remote.log.storage.manager.class.path" if-key-state="absent"/>
+            <set key="remote.log.storage.manager.impl.prefix" value="rsm.config." if-type="kafka3-broker" if-key="remote.log.storage.manager.impl.prefix" if-key-state="absent"/>
+            <set key="remote.log.storage.system.enable" value="false" if-type="kafka3-broker" if-key="remote.log.storage.system.enable" if-key-state="absent"/>
+            <set key="rlmm.config.remote.log.metadata.common.client.bootstrap.servers" value="" if-type="kafka3-broker" if-key="rlmm.config.remote.log.metadata.common.client.bootstrap.servers" if-key-state="absent"/>
+            <set key="rlmm.config.remote.log.metadata.common.client.sasl.kerberos.service.name" value="kafka" if-type="kafka3-broker" if-key="rlmm.config.remote.log.metadata.common.client.sasl.kerberos.service.name" if-key-state="absent"/>
+            <set key="rlmm.config.remote.log.metadata.common.client.sasl.mechanism" value="GSSAPI" if-type="kafka3-broker" if-key="rlmm.config.remote.log.metadata.common.client.sasl.mechanism" if-key-state="absent"/>
+            <set key="rlmm.config.remote.log.metadata.common.client.security.protocol" value="PLAINTEXT" if-type="kafka3-broker" if-key="rlmm.config.remote.log.metadata.common.client.security.protocol" if-key-state="absent"/>
+            <set key="rlmm.config.remote.log.metadata.topic.replication.factor" value="3" if-type="kafka3-broker" if-key="rlmm.config.remote.log.metadata.topic.replication.factor" if-key-state="absent"/>
+            <set key="rsm.config.chunk.size" value="4194304" if-type="kafka3-broker" if-key="rsm.config.chunk.size" if-key-state="absent"/>
+            <set key="rsm.config.key.prefix" value="" if-type="kafka3-broker" if-key="rsm.config.key.prefix" if-key-state="absent"/>
+            <set key="rsm.config.storage.backend.class" value="io.aiven.kafka.tieredstorage.storage.s3.S3Storage" if-type="kafka3-broker" if-key="rsm.config.storage.backend.class" if-key-state="absent"/>
+            <set key="rsm.config.storage.s3.bucket.name" value="" if-type="kafka3-broker" if-key="rsm.config.storage.s3.bucket.name" if-key-state="absent"/>
+            <set key="rsm.config.storage.s3.endpoint.url" value="" if-type="kafka3-broker" if-key="rsm.config.storage.s3.endpoint.url" if-key-state="absent"/>
+            <set key="rsm.config.storage.s3.force_http" value="true" if-type="kafka3-broker" if-key="rsm.config.storage.s3.force_http" if-key-state="absent"/>
+            <set key="rsm.config.storage.s3.path.style.access.enabled" value="true" if-type="kafka3-broker" if-key="rsm.config.storage.s3.path.style.access.enabled" if-key-state="absent"/>
+            <set key="rsm.config.storage.s3.protocol" value="http" if-type="kafka3-broker" if-key="rsm.config.storage.s3.protocol" if-key-state="absent"/>
+            <set key="rsm.config.storage.s3.region" value="us-east-1" if-type="kafka3-broker" if-key="rsm.config.storage.s3.region" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_kafka3_kafka3_env" summary="Add kafka3-env properties introduced after 3.3.6.2-1">
+            <type>kafka3-env</type>
+            <set key="kafka_broker_heapsize" value="1024m" if-type="kafka3-env" if-key="kafka_broker_heapsize" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_kafka3_kafka3_mirrormaker2_log4j" summary="Create kafka3-mirrormaker2-log4j added after 3.3.6.2-1">
+            <type>kafka3-mirrormaker2-log4j</type>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="MLFLOW">
+      <component name="MLFLOW_SERVER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_mlflow_mlflow_conf" summary="Add mlflow-conf properties introduced after 3.3.6.2-1">
+            <type>mlflow-conf</type>
+            <set key="krb5cc_path" value="/run/mlflow/krb5cc" if-type="mlflow-conf" if-key="krb5cc_path" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_mlflow_mlflow_env" summary="Create mlflow-env added after 3.3.6.2-1">
+            <type>mlflow-env</type>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="NIFI">
+      <component name="NIFI_MASTER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_nifi_nifi_ambari_ssl_config" summary="Add nifi-ambari-ssl-config properties introduced after 3.3.6.2-1">
+            <type>nifi-ambari-ssl-config</type>
+            <set key="nifi.ldap.manager.password" value="" if-type="nifi-ambari-ssl-config" if-key="nifi.ldap.manager.password" if-key-state="absent"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="NIFI_REGISTRY">
+      <component name="NIFI_REGISTRY_MASTER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_nifi_registry_nifi_registry_ambari_config" summary="Add nifi-registry-ambari-config properties introduced after 3.3.6.2-1">
+            <type>nifi-registry-ambari-config</type>
+            <set key="nifi.registry.management.endpoint.mode" value="disabled" if-type="nifi-registry-ambari-config" if-key="nifi.registry.management.endpoint.mode" if-key-state="absent"/>
+            <set key="nifi.registry.management.port" value="61090" if-type="nifi-registry-ambari-config" if-key="nifi.registry.management.port" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_nifi_registry_nifi_registry_ambari_ssl_config" summary="Add nifi-registry-ambari-ssl-config properties introduced after 3.3.6.2-1">
+            <type>nifi-registry-ambari-ssl-config</type>
+            <set key="nifi.registry.ldap.manager.password" value="" if-type="nifi-registry-ambari-ssl-config" if-key="nifi.registry.ldap.manager.password" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_nifi_registry_nifi_registry_properties" summary="Add nifi-registry-properties properties introduced after 3.3.6.2-1">
+            <type>nifi-registry-properties</type>
+            <set key="nifi.registry.cluster.allowed.origins" value="" if-type="nifi-registry-properties" if-key="nifi.registry.cluster.allowed.origins" if-key-state="absent"/>
+            <set key="nifi.registry.cluster.cache.refresh.interval.ms" value="15000" if-type="nifi-registry-properties" if-key="nifi.registry.cluster.cache.refresh.interval.ms" if-key-state="absent"/>
+            <set key="nifi.registry.cluster.coordination" value="database" if-type="nifi-registry-properties" if-key="nifi.registry.cluster.coordination" if-key-state="absent"/>
+            <set key="nifi.registry.cluster.enabled" value="false" if-type="nifi-registry-properties" if-key="nifi.registry.cluster.enabled" if-key-state="absent"/>
+            <set key="nifi.registry.cluster.node.internal.auth.token" value="" if-type="nifi-registry-properties" if-key="nifi.registry.cluster.node.internal.auth.token" if-key-state="absent"/>
+            <set key="nifi.registry.zookeeper.connect.string" value="localhost:2181" if-type="nifi-registry-properties" if-key="nifi.registry.zookeeper.connect.string" if-key-state="absent"/>
+            <set key="nifi.registry.zookeeper.root.node" value="/nifi-registry" if-type="nifi-registry-properties" if-key="nifi.registry.zookeeper.root.node" if-key-state="absent"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="OZONE">
+      <component name="OZONE_MANAGER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_ozone_ozone_log4j2_dn_audit" summary="Create ozone-log4j2-dn-audit added after 3.3.6.2-1">
+            <type>ozone-log4j2-dn-audit</type>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_ozone_ozone_log4j2_dn_container" summary="Create ozone-log4j2-dn-container added after 3.3.6.2-1">
+            <type>ozone-log4j2-dn-container</type>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_ozone_ozone_log4j2_om_audit" summary="Create ozone-log4j2-om-audit added after 3.3.6.2-1">
+            <type>ozone-log4j2-om-audit</type>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_ozone_ozone_log4j2_s3g_audit" summary="Create ozone-log4j2-s3g-audit added after 3.3.6.2-1">
+            <type>ozone-log4j2-s3g-audit</type>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_ozone_ozone_log4j2_scm_audit" summary="Create ozone-log4j2-scm-audit added after 3.3.6.2-1">
+            <type>ozone-log4j2-scm-audit</type>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="REGISTRY">
+      <component name="REGISTRY_SERVER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_registry_registry_env" summary="Add registry-env properties introduced after 3.3.6.2-1">
+            <type>registry-env</type>
+            <set key="registry_ui_keytab" value="/etc/security/keytabs/spnego.service.keytab" if-type="registry-env" if-key="registry_ui_keytab" if-key-state="absent"/>
+            <set key="registry_ui_keytab_override" value="" if-type="registry-env" if-key="registry_ui_keytab_override" if-key-state="absent"/>
+            <set key="registry_ui_principal_name" value="HTTP/_HOST@{{realm}}" if-type="registry-env" if-key="registry_ui_principal_name" if-key-state="absent"/>
+            <set key="registry_ui_principal_override" value="" if-type="registry-env" if-key="registry_ui_principal_override" if-key-state="absent"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="SPARK3">
+      <component name="SPARK3_JOBHISTORYSERVER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_spark3_livy3_conf" summary="Add livy3-conf properties introduced after 3.3.6.2-1">
+            <type>livy3-conf</type>
+            <set key="livy.rsc.jvm.opts" value="--add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED" if-type="livy3-conf" if-key="livy.rsc.jvm.opts" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_spark3_spark3_connect" summary="Create spark3-connect added after 3.3.6.2-1">
+            <type>spark3-connect</type>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_spark3_spark3_defaults" summary="Add spark3-defaults properties introduced after 3.3.6.2-1">
+            <type>spark3-defaults</type>
+            <set key="spark.ui.port" value="4040" if-type="spark3-defaults" if-key="spark.ui.port" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_spark3_spark3_thrift_sparkconf" summary="Add spark3-thrift-sparkconf properties introduced after 3.3.6.2-1">
+            <type>spark3-thrift-sparkconf</type>
+            <set key="spark.ui.port" value="4040" if-type="spark3-thrift-sparkconf" if-key="spark.ui.port" if-key-state="absent"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="TRINO">
+      <component name="TRINO_COORDINATOR">
+        <changes>
+          <definition xsi:type="configure" id="odp_3365_trino_jvm_config" summary="Add jvm-config properties introduced after 3.3.6.2-1">
+            <type>jvm-config</type>
+            <set key="coordinator_max_heap_size" value="4" if-type="jvm-config" if-key="coordinator_max_heap_size" if-key-state="absent"/>
+            <set key="jmx_port" value="9981" if-type="jvm-config" if-key="jmx_port" if-key-state="absent"/>
+            <set key="jmx_registry_port" value="9980" if-type="jvm-config" if-key="jmx_registry_port" if-key-state="absent"/>
+            <set key="worker_max_heap_size" value="2" if-type="jvm-config" if-key="worker_max_heap_size" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_trino_trino_env" summary="Add trino-env properties introduced after 3.3.6.2-1">
+            <type>trino-env</type>
+            <set key="trino_group" value="trino" if-type="trino-env" if-key="trino_group" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_trino_trino_hive" summary="Add trino-hive properties introduced after 3.3.6.2-1">
+            <type>trino-hive</type>
+            <set key="enable_hive" value="true" if-type="trino-hive" if-key="enable_hive" if-key-state="absent"/>
+            <set key="enable_write_nonmanaged" value="true" if-type="trino-hive" if-key="enable_write_nonmanaged" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_trino_trino_oracle" summary="Create trino-oracle added after 3.3.6.2-1">
+            <type>trino-oracle</type>
+          </definition>
+          <definition xsi:type="configure" id="odp_3365_trino_trino_testing" summary="Create trino-testing added after 3.3.6.2-1">
+            <type>trino-testing</type>
+          </definition>
+        </changes>
+      </component>
+    </service>
   </services>
 </upgrade-config-changes>

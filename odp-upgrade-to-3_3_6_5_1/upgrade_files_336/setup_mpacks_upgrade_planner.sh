@@ -7,6 +7,11 @@
 # included in the Ambari upgrade planner. Also installs config-upgrade.xml so
 # EU configure tasks (e.g. odp_3_3_yarn_spark_shuffle_isolation) resolve.
 #
+# ODP-8115: the 3.3 packs also add Hue, Trino, and other configs introduced
+# after 3.3.6.2-1. Run this script and restart Ambari before creating the
+# upgrade. Ambari saves the full plan at creation time, which is before the
+# Ambari 3.0.0.2-1 install and the mpack upgrade. Resume runs that saved plan.
+#
 # ZooKeeper logback: bundled upgrade XMLs do not run create_and_configure during
 # EU/RU (avoids cross-stack failure on 3.2->3.3). Apply zookeeper-logback with
 # setup_jdk17_config.sh (option 8 or A) before resuming the upgrade.
