@@ -99,6 +99,11 @@
           <definition xsi:type="configure" id="odp_3_0_x_zookeeper_logback_configuration" summary="Add missing ZooKeeper logback configuration after upgrade">
             <type>zookeeper-logback</type>
           </definition>
+          <definition xsi:type="configure" id="odp_3_3_0_zookeeper_env_heap_flags" summary="Quote SERVER_JVMFLAGS in the zookeeper-env template so multiple heap flags can be exported">
+            <type>zookeeper-env</type>
+            <replace key="content" find="export SERVER_JVMFLAGS={{zk_server_heapsize}}&#xA;" replace-with="export SERVER_JVMFLAGS=&quot;{{zk_server_jvm_heap_flags}}&quot;&#xA;"/>
+            <replace key="content" find="export SERVER_JVMFLAGS=&quot;{{zk_server_heapsize}}&quot;&#xA;" replace-with="export SERVER_JVMFLAGS=&quot;{{zk_server_jvm_heap_flags}}&quot;&#xA;"/>
+          </definition>
         </changes>
       </component>
     </service>
