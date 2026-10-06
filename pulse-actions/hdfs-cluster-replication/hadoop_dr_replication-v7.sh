@@ -446,6 +446,20 @@
 #     Example: export DISTCP_MB_PER_MAPPER=4096
 #   - DISTCP_FILES_PER_MAPPER - Files per mapper (default: 10000); decides for many small files.
 #   - DISTCP_MIN_MAPPERS    - Fewest mappers a job gets (default: 1).
+#   - DISTCP_LATENCY_FILES_PER_MAPPER - Files per mapper for an incremental's latency floor
+#     (default: 50), DISTCP_LATENCY_MAX_MAPPERS - cap for that floor (default: 8). An incremental
+#     sized from its snapshot diff (not just its directory's growth) with more than
+#     DISTCP_LATENCY_FILES_PER_MAPPER changed files gets at least
+#     ceil(files / DISTCP_LATENCY_FILES_PER_MAPPER) mappers, up to DISTCP_LATENCY_MAX_MAPPERS, even
+#     when EST_BYTES/EST_FILES alone would round down to "-m 1". This only matters for small
+#     incrementals: a copy with few changed files but little data (many 1 KB files, the common
+#     shape of a frequent DR sync) spends most of its time on per-file NameNode round trips
+#     (create, close, checksum, -pugptx attribute sets) rather than moving bytes, so one mapper
+#     runs those round trips one file at a time instead of overlapping them. Does nothing for a
+#     full copy, or an incremental sized only from its directory's growth (that case already gets
+#     at least 20 mappers on its own); does nothing when DISTCP_MAX_MAPPERS is unset (mapper
+#     tuning off).
+#     Example: export DISTCP_LATENCY_FILES_PER_MAPPER=25 DISTCP_LATENCY_MAX_MAPPERS=12
 #   - DISTCP_MAX_LISTING_THREADS - Most threads the DistCp client lists the source with (default: 40,
 #     DistCp's own maximum; 1 to 40). The script passes "-numListstatusThreads <n>", n = directories
 #     to list / DISTCP_DIRS_PER_LISTING_THREAD, up to this limit. A full copy lists every directory
@@ -1156,11 +1170,13 @@ DISTCP_MAX_MAPPERS="${DISTCP_MAX_MAPPERS:-}"
 DISTCP_MIN_MAPPERS="${DISTCP_MIN_MAPPERS:-1}"
 DISTCP_MB_PER_MAPPER="${DISTCP_MB_PER_MAPPER:-10240}"
 DISTCP_FILES_PER_MAPPER="${DISTCP_FILES_PER_MAPPER:-10000}"
+DISTCP_LATENCY_FILES_PER_MAPPER="${DISTCP_LATENCY_FILES_PER_MAPPER:-50}"
+DISTCP_LATENCY_MAX_MAPPERS="${DISTCP_LATENCY_MAX_MAPPERS:-8}"
 if [[ -n "$DISTCP_MAX_MAPPERS" && ! "$DISTCP_MAX_MAPPERS" =~ ^[1-9][0-9]{0,4}$ ]]; then
     echo "[ERROR] DISTCP_MAX_MAPPERS must be a positive whole number (the most map tasks one DistCp job may use, up to 99999), or unset: '$DISTCP_MAX_MAPPERS'" >&2
     exit 36
 fi
-for _mapper_var in DISTCP_MIN_MAPPERS DISTCP_MB_PER_MAPPER DISTCP_FILES_PER_MAPPER; do
+for _mapper_var in DISTCP_MIN_MAPPERS DISTCP_MB_PER_MAPPER DISTCP_FILES_PER_MAPPER DISTCP_LATENCY_FILES_PER_MAPPER DISTCP_LATENCY_MAX_MAPPERS; do
     if [[ ! "${!_mapper_var}" =~ ^[1-9][0-9]{0,8}$ ]]; then
         echo "[ERROR] $_mapper_var must be a positive whole number: '${!_mapper_var}'" >&2
         exit 36
@@ -5909,6 +5925,11 @@ estimate_incremental_copy() {
 # An incremental ("diff") is sized from the files its snapshot diff lists (EST_SIZED_BY_DIFF), like a full
 # copy. When only the growth of the directory is known, which leaves out files that were rewritten or
 # replaced, it gets at least DISTCP_DEFAULT_MAPPERS, the "-m" DistCp uses on its own, within the limit.
+# When it is sized from its diff and has more than DISTCP_LATENCY_FILES_PER_MAPPER changed files, it
+# gets at least ceil(files / DISTCP_LATENCY_FILES_PER_MAPPER) mappers (up to DISTCP_LATENCY_MAX_MAPPERS)
+# even if EST_BYTES/EST_FILES alone would round down to 1: many small changed files (little data, lots
+# of per-file NameNode round trips) otherwise run one mapper's round trips one file at a time instead
+# of overlapping them.
 # DistCp starts at most one map task per file in its copy list either way.
 DISTCP_DEFAULT_MAPPERS=20
 tune_distcp_mappers() {
@@ -5931,6 +5952,16 @@ tune_distcp_mappers() {
     decided_by="by size $by_bytes ($(format_bytes "$EST_BYTES") at $(format_bytes "$per_mapper_bytes") per mapper), by files $by_files ($files at $DISTCP_FILES_PER_MAPPER per mapper)"
     if [[ "$kind" == "diff" && "$EST_SIZED_BY_DIFF" == "yes" ]]; then
         decided_by="incremental, from the files it copies: $decided_by"
+        if ((files > DISTCP_LATENCY_FILES_PER_MAPPER)); then
+            local latency_floor=$(((files + DISTCP_LATENCY_FILES_PER_MAPPER - 1) / DISTCP_LATENCY_FILES_PER_MAPPER))
+            if ((latency_floor > DISTCP_LATENCY_MAX_MAPPERS)); then
+                latency_floor="$DISTCP_LATENCY_MAX_MAPPERS"
+            fi
+            if ((latency_floor > maps)); then
+                maps="$latency_floor"
+                decided_by+="; raised to $maps so $files changed files don't serialize one mapper's cross-cluster round trips (DISTCP_LATENCY_FILES_PER_MAPPER/DISTCP_LATENCY_MAX_MAPPERS)"
+            fi
+        fi
     elif [[ "$kind" == "diff" ]]; then
         decided_by="incremental, from its growth: $decided_by"
         if ((maps < DISTCP_DEFAULT_MAPPERS)); then
