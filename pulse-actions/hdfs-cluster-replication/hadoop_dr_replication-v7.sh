@@ -486,9 +486,19 @@
 #     Values cannot contain spaces (e.g. several JVM flags in one mapreduce.map.java.opts).
 #     Rejected (script exits): anything other than -D, glob characters (* ? [), and the
 #     script-managed keys mapred.job.queue.name / mapreduce.job.queuename (use YARN_QUEUE, arg 9),
-#     mapreduce.job.tags, and mapreduce.job.hdfs-servers.token-renewal.exclude (derived from
-#     REPLICATION_MODE). The same keys are rejected in COPY_OPTS (arg 8).
+#     mapreduce.job.tags, mapreduce.job.hdfs-servers.token-renewal.exclude (derived from
+#     REPLICATION_MODE), and mapreduce.task.timeout (use DISTCP_TASK_TIMEOUT_MS, below). The same
+#     keys are rejected in COPY_OPTS (arg 8).
 #     A -D in COPY_OPTS (arg 8) for the same key takes precedence over this variable.
+#   - DISTCP_TASK_TIMEOUT_MS - Mapper task timeout in milliseconds for every DistCp job (default:
+#     1800000 = 30 minutes; Hadoop's own default is 600000 = 10 minutes). A mapper that reports no
+#     progress for this long is killed and retried on another node. 10 minutes is tight for a large
+#     file's checksum comparison (-update) or a NameNode HA failover's retry backoff, either of
+#     which can run several minutes without the client reporting progress; 30 minutes gives both
+#     room to finish while still killing a genuinely hung mapper. Set to 0 to disable the timeout
+#     (not recommended: a truly hung mapper then runs forever). This is a script-managed "-D" key:
+#     setting mapreduce.task.timeout directly in COPY_OPTS or DISTCP_MAPREDUCE_OPTS is rejected.
+#     Example: export DISTCP_TASK_TIMEOUT_MS=2400000
 #   - SOURCE_HTTP_SCHEME    - HTTP scheme for source cluster JMX access (default: http)
 #     Example: export SOURCE_HTTP_SCHEME=https
 #   - SOURCE_NN_WEB_PORT    - NameNode web UI port for source cluster (default: 50070)
@@ -1161,6 +1171,17 @@ if [[ -n "$DISTCP_MAX_MAPPERS" ]] && ((DISTCP_MIN_MAPPERS > DISTCP_MAX_MAPPERS))
     echo "[ERROR] DISTCP_MIN_MAPPERS ($DISTCP_MIN_MAPPERS) must not be greater than DISTCP_MAX_MAPPERS ($DISTCP_MAX_MAPPERS)." >&2
     exit 36
 fi
+# DISTCP_TASK_TIMEOUT_MS (env var, default 1800000 = 30 minutes): mapreduce.task.timeout for every
+# DistCp job, applied as a script-managed "-D" (see reject_reserved_d_opt). Hadoop's own default is
+# 600000 (10 minutes); that's tight for a large file's checksum comparison under -update or a
+# NameNode HA failover's retry backoff, either of which can go several minutes without the client
+# reporting progress. 0 disables the timeout (not recommended).
+DISTCP_TASK_TIMEOUT_MS="${DISTCP_TASK_TIMEOUT_MS:-1800000}"
+if [[ ! "$DISTCP_TASK_TIMEOUT_MS" =~ ^[0-9]{1,9}$ ]]; then
+    echo "[ERROR] DISTCP_TASK_TIMEOUT_MS must be a whole number of milliseconds (0 disables the timeout): '$DISTCP_TASK_TIMEOUT_MS'" >&2
+    exit 36
+fi
+DISTCP_TASK_TIMEOUT_OPTS="-Dmapreduce.task.timeout=$DISTCP_TASK_TIMEOUT_MS"
 # DISTCP_MAX_LISTING_THREADS (env var, default 40) and DISTCP_DIRS_PER_LISTING_THREAD (env var, default
 # 2500): the "-numListstatusThreads" of each copy, see tune_distcp_listing_threads. 40 is the most DistCp
 # accepts: it lowers a higher value to 40.
@@ -2733,6 +2754,10 @@ reject_reserved_d_opt() {
             ;;
         mapreduce.job.hdfs-servers.token-renewal.exclude)
             echo "[ERROR] $source must not set '$key'; the script derives it from REPLICATION_MODE (arg 14)." >&2
+            exit 23
+            ;;
+        mapreduce.task.timeout)
+            echo "[ERROR] $source must not set '$key'; set it with DISTCP_TASK_TIMEOUT_MS (env var)." >&2
             exit 23
             ;;
     esac
@@ -4799,7 +4824,7 @@ DISTCP_DEBUG_OPTS=""
 # Build DistCp options with YARN queue and application tags
 YARN_QUEUE_OPTS="-Dmapred.job.queue.name=${YARN_QUEUE}"
 YARN_APP_TAGS="-Dmapreduce.job.tags=pulse-dr-replication,mode:${REPLICATION_MODE},src:${SOURCE_CLUSTER},dst:${DEST_CLUSTER}"
-DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_DYNAMIC_CHUNK_OPTS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS $COPY_GENERIC_OPTS"
+DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_TASK_TIMEOUT_OPTS $DISTCP_DYNAMIC_CHUNK_OPTS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS $COPY_GENERIC_OPTS"
 
 
 # -----------------------------------------------------------------------------
@@ -6517,7 +6542,7 @@ rollback_once_for_failure() {
         rollback_token_opts="-Dmapreduce.job.hdfs-servers.token-renewal.exclude=${DST_NAMESERVICE}"
     fi
     # Operator job tuning (DISTCP_MAPREDUCE_OPTS) applies to the rollback job too.
-    local DISTCP_ROLLBACK_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $rollback_token_opts $DISTCP_DYNAMIC_CHUNK_OPTS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS $COPY_GENERIC_OPTS"
+    local DISTCP_ROLLBACK_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $rollback_token_opts $DISTCP_TASK_TIMEOUT_OPTS $DISTCP_DYNAMIC_CHUNK_OPTS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS $COPY_GENERIC_OPTS"
 
     log_substage "Rollback Step 3: Running DistCp rollback to restore snapshot state"
     log_cmd "DistCp Rollback Command"
@@ -7384,7 +7409,7 @@ main() {
     log "[INFO] Operator MapReduce options (DISTCP_MAPREDUCE_OPTS): ${DISTCP_MAPREDUCE_OPTS:-<none>}"
     
     # Update DISTCP_FULL_OPTS with the token-renewal exclusion and operator MapReduce options
-    DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_TOKEN_RENEWAL_OPTS $DISTCP_DYNAMIC_CHUNK_OPTS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS $COPY_GENERIC_OPTS"
+    DISTCP_FULL_OPTS="$YARN_QUEUE_OPTS $YARN_APP_TAGS $DISTCP_TOKEN_RENEWAL_OPTS $DISTCP_TASK_TIMEOUT_OPTS $DISTCP_DYNAMIC_CHUNK_OPTS $DISTCP_MAPREDUCE_OPTS $DISTCP_DEBUG_OPTS $COPY_GENERIC_OPTS"
     log "[INFO] Updated DistCp options: $DISTCP_FULL_OPTS"
     
     # -----------------------------------------------------------------------------
