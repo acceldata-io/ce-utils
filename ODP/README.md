@@ -11,6 +11,7 @@ Here is a set of Bash scripts created to streamline various tasks within your OD
 7. [Impala SSL](https://github.com/acceldata-io/ce-utils/blob/main/ODP/README.md#7-impala-configuration-for-ssl)
 8. [Disable SSL for Hadoop Services](https://github.com/acceldata-io/ce-utils/tree/main/ODP#8-disable-ssl-for-hadoop-services)
 9. [Knox LDAP Configuration and Ambari Integration](https://github.com/acceldata-io/ce-utils/tree/main/ODP#9-knox-ldap-configuration-and-ambari-integration)
+10. [Ambari MPACK Service Removal](https://github.com/acceldata-io/ce-utils/tree/main/ODP#10-ambari-mpack-service-removal)
 
 ## Detailed Information
 
@@ -231,4 +232,55 @@ The script sets up essential variables for Knox and Ambari integration:
 ```
 <img width="800" alt="image" src="https://github.com/user-attachments/assets/9af15383-3005-4eb4-b006-282bfc22d9db" />
 
+### 10. Ambari MPACK Service Removal
+- **Script:** [ambari_delete_mpack_service.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/ambari_delete_mpack_service.sh)
+- Based on `ambari_delete_or_add_service_atsv2.sh` and `config_backup_restore.sh`, this script lists the services installed in the cluster, flags the ones installed through an Ambari Management Pack (mpack), and lets you pick one or more services. For each selected service it runs **STOP → BACKUP configs → DELETE** via the Ambari REST API.
+- Config backups use the same layout and JSON format as `config_backup_restore.sh` / `configs.py` (`upgrade_backup/<type>/<type>.json`), so they can be restored with either tool after the service is re-added. Config types are discovered dynamically from the service's current config version, so no hardcoded list is needed.
+- Run it on the Ambari Server node: mpack detection reads `mpack.json` files under `/var/lib/ambari-server/resources/mpacks/` and the stack/common-services symlinks that point into that directory. If it is run elsewhere, every installed service is listed but none can be flagged as MPACK.
 
+#### Usage
+```bash
+bash ambari_delete_mpack_service.sh                 # interactive: lists mpack services, select by number
+bash ambari_delete_mpack_service.sh --list          # only print the table and exit
+bash ambari_delete_mpack_service.sh --all           # list every installed service (mpack services are tagged)
+bash ambari_delete_mpack_service.sh --yes SPARK3 LIVY3   # non-interactive, no prompts
+bash ambari_delete_mpack_service.sh --skip-backup   # stop and delete without backing up configs
+```
+
+#### Variables (override via environment)
+| Variable           | Default                             | Description |
+|--------------------|-------------------------------------|-------------|
+| `AMBARISERVER`     | `hostname -f`                       | Ambari Server FQDN |
+| `AMBARI_USER`      | `admin`                             | Ambari admin user |
+| `AMBARI_PASSWORD`  | `admin`                             | Ambari admin password |
+| `PORT`             | `8080`                              | Ambari port (8443 for HTTPS) |
+| `PROTOCOL`         | `http`                              | `http` or `https` |
+| `AMBARI_RESOURCES` | `/var/lib/ambari-server/resources`  | Used for mpack detection |
+| `BACKUP_DIR`       | `./upgrade_backup`                  | Where config backups are written (same default as `config_backup_restore.sh`) |
+| `PYTHON_BIN`       | first of `python3`/`python`/`python2` | Used to write the backup JSON files |
+| `STOP_TIMEOUT`     | `900`                               | Seconds to wait for the stop request |
+
+#### What it does
+1. Detects the cluster name and stack version from Ambari.
+2. Lists installed services with their state and source (`MPACK (<mpack-name>)` or `stack`).
+3. Asks you to select one or more services. Deleting a non-mpack service requires an extra confirmation.
+4. **Stops** each selected service and polls the Ambari request until it completes.
+5. **Backs up** every config type of the service (Default config group) to `BACKUP_DIR/<type>/<type>.json`, plus the raw `service_config_versions` response and the component-to-host layout under `BACKUP_DIR/_services/<SERVICE>_<timestamp>/`. If the backup is incomplete, the delete is skipped unless you explicitly confirm (never in `--yes` mode).
+6. **Deletes** the service. Ambari API errors (for example a dependency from another service) are printed as-is.
+7. Prints the `configs.py -a set` command to restore a config type and the matching `ambari-server uninstall-mpack` command for each removed mpack service.
+
+#### Backup layout
+```
+upgrade_backup/
+├── spark3-defaults/spark3-defaults.json        # {"properties": ..., "properties_attributes": ...}
+├── spark3-env/spark3-env.json
+├── livy3-conf/livy3-conf.json
+└── _services/SPARK3_20250101_120000/
+    ├── SPARK3_service_config_versions.json     # raw API response (all config groups)
+    ├── SPARK3_host_components.json             # which component ran on which host
+    └── <type>.raw.json                         # raw per-type API responses
+```
+
+> **Note:** Deleting a service removes its components and configuration history from Ambari. Packages on the hosts are not uninstalled, and the mpack stays registered on the Ambari Server until you run `ambari-server uninstall-mpack`.
+
+> **Passwords:** Ambari returns password properties as `SECRET:<type>:<version>:<key>` references. Those references point at config versions that are deleted together with the service, so passwords cannot be recovered from the backup. The script lists every such property and asks you to confirm you have recorded them before it deletes the service.
