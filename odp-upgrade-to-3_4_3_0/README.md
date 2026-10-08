@@ -2,7 +2,7 @@ These steps copy the ODP 3.4 Express and Rolling upgrade packs onto the Ambari S
 
 Source: odp-ambari branch rel/ODP-AMBARI-3.0.1.0-1 (facc6918eb).
 
-The Express upgrade to ODP-3.4.3.0 uses `3.3/upgrades/nonrolling-upgrade-3.4.xml` when the source stack is ODP 3.3. That pack includes Kafka3, Pinot, HttpFS, Ozone, Spark3, Impala, Hue, Airflow, and JupyterHub. Ambari skips a group when that service is not installed.
+Ambari loads the upgrade pack from the source stack. A 3.2.3 cluster (ODP-8211) only sees packs under `stacks/ODP/3.2/upgrades/`. `3.2/upgrades/nonrolling-upgrade-3.4.xml` and `3.2/upgrades/upgrade-3.4.xml` are the ODP 3.3 target-3.4 packs, so Express and Rolling from 3.2.3 to 3.4.3.0 include Kafka3, Pinot, HttpFS, Ozone, Spark3, Impala, Hue, Airflow, and JupyterHub. A 3.3 source uses the same packs from `3.3/upgrades/`. Ambari skips a group when that service is not installed.
 
 ## MPACK upgrade planner (ODP-8228)
 

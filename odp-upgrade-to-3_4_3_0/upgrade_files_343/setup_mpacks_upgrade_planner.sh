@@ -5,7 +5,13 @@
 # ODP-8228: copy Ambari Express/Rolling upgrade-pack XMLs so MPACK services
 # (Spark3 / Spark3 3.3.3 / Spark3 3.5.1, Livy3, Impala, Pinot, Kafka3,
 # HttpFS, Ozone, Hue, Airflow, JupyterHub) are included in the Ambari
-# upgrade planner. Also installs config-upgrade.xml so EU configure tasks
+# upgrade planner.
+#
+# ODP-8211: a 3.2.3 source only scans stacks/ODP/3.2/upgrades. The 3.2
+# nonrolling-upgrade-3.4.xml and upgrade-3.4.xml files are the 3.3
+# target-3.4 packs copied into that directory.
+#
+# Also installs config-upgrade.xml so EU configure tasks
 # (for example odp_3_4_0_hdfs_log4j_remove_event_counter) resolve.
 #
 # Source: odp-ambari rel/ODP-AMBARI-3.0.1.0-1
@@ -74,8 +80,10 @@ copy_xml 3.1/upgrades/upgrade-3.1.xml           "$AMBARI_STACKS/3.1/upgrades/upg
 echo "3.################# ODP 3.2 #################"
 copy_xml 3.2/upgrades/nonrolling-upgrade-3.2.xml "$AMBARI_STACKS/3.2/upgrades/nonrolling-upgrade-3.2.xml"
 copy_xml 3.2/upgrades/nonrolling-upgrade-3.3.xml "$AMBARI_STACKS/3.2/upgrades/nonrolling-upgrade-3.3.xml"
+copy_xml 3.2/upgrades/nonrolling-upgrade-3.4.xml "$AMBARI_STACKS/3.2/upgrades/nonrolling-upgrade-3.4.xml"
 copy_xml 3.2/upgrades/upgrade-3.2.xml           "$AMBARI_STACKS/3.2/upgrades/upgrade-3.2.xml"
 copy_xml 3.2/upgrades/upgrade-3.3.xml           "$AMBARI_STACKS/3.2/upgrades/upgrade-3.3.xml"
+copy_xml 3.2/upgrades/upgrade-3.4.xml           "$AMBARI_STACKS/3.2/upgrades/upgrade-3.4.xml"
 
 echo "4.################# ODP 3.3 #################"
 copy_xml 3.3/upgrades/config-upgrade.xml "$AMBARI_STACKS/3.3/upgrades/config-upgrade.xml"
