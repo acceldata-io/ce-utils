@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<!--
+   Licensed to the Apache Software Foundation (ASF) under one or more
+   contributor license agreements.  See the NOTICE file distributed with
+   this work for additional information regarding copyright ownership.
+   The ASF licenses this file to You under the Apache License, Version 2.0
+   (the "License"); you may not use this file except in compliance with
+   the License.  You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+
+<!-- Config changes applied by the ODP 3.4 -> 3.4 (maintenance) upgrade packs. Ambari resolves
+     "configure" task ids against the SOURCE stack's config-upgrade.xml, so definitions needed by
+     the packs under 3.4/upgrades must live here (3.3/upgrades/config-upgrade.xml serves 3.3 -> 3.4). -->
+<upgrade-config-changes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="upgrade-config.xsd">
+  <services>
+
+    <service name="RANGER_KMS">
+      <component name="RANGER_KMS_SERVER">
+        <changes>
+          <!-- RANGER-4993 (Ranger 2.9) moved the /kms prefix from the Tomcat context path into the servlet
+               mapping (/kms/*). With ranger.contextName=/kms the REST API ends up at /kms/kms/v1/... and
+               every KMS client gets a 404, so the context path must become "/". -->
+          <definition xsi:type="configure" id="odp_3_4_0_ranger_kms_context_name" summary="Setting Ranger KMS context path to / (RANGER-4993)">
+            <type>ranger-kms-site</type>
+            <set key="ranger.contextName" value="/"
+                 if-type="ranger-kms-site" if-key="ranger.contextName" if-value="/kms"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+  </services>
+</upgrade-config-changes>
