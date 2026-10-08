@@ -1,0 +1,138 @@
+<?xml version="1.0"?>
+<!--
+   Licensed to the Apache Software Foundation (ASF) under one or more
+   contributor license agreements.  See the NOTICE file distributed with
+   this work for additional information regarding copyright ownership.
+   The ASF licenses this file to You under the Apache License, Version 2.0
+   (the "License"); you may not use this file except in compliance with
+   the License.  You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+
+<upgrade-config-changes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="upgrade-config.xsd">
+  <services>
+
+    <service name="HDFS">
+      <component name="NAMENODE">
+        <changes>
+          <!-- org.apache.hadoop.log.metrics.EventCounter was removed in Hadoop 3.4.0 (HADOOP-17524);
+               leaving it in log4j.properties causes ClassNotFoundException on daemon startup. -->
+          <definition xsi:type="configure" id="odp_3_4_0_hdfs_log4j_remove_event_counter" summary="Removing EventCounter appender from hdfs-log4j">
+            <type>hdfs-log4j</type>
+            <replace key="content"
+                     find="log4j.rootLogger=${hadoop.root.logger}, EventCounter"
+                     replace-with="log4j.rootLogger=${hadoop.root.logger}"/>
+            <replace key="content"
+                     find="log4j.appender.EventCounter=org.apache.hadoop.log.metrics.EventCounter"
+                     replace-with=""/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="RANGER_KMS">
+      <component name="RANGER_KMS_SERVER">
+        <changes>
+          <!-- RANGER-4993 (Ranger 2.9) moved the /kms prefix from the Tomcat context path into the servlet
+               mapping (/kms/*). With ranger.contextName=/kms the REST API ends up at /kms/kms/v1/... and
+               every KMS client gets a 404, so the context path must become "/". -->
+          <definition xsi:type="configure" id="odp_3_4_0_ranger_kms_context_name" summary="Setting Ranger KMS context path to / (RANGER-4993)">
+            <type>ranger-kms-site</type>
+            <set key="ranger.contextName" value="/"
+                 if-type="ranger-kms-site" if-key="ranger.contextName" if-value="/kms"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="TEZ">
+      <component name="TEZ_CLIENT">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_3_x_tez_am_launch_opts_fix" summary="Move GC/Zing flags into tez-site cluster-default cmd-opts and remove phantom tez.am.java.opts">
+            <type>tez-site</type>
+            <set key="tez.am.launch.cluster-default.cmd-opts"
+                 value="-server -Djava.net.preferIPv4Stack=true -Dodp.version=${odp.version} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}}{% if java_version|int == 8 %} -XX:+UseG1GC -XX:+PrintGCDetails -verbose:gc -XX:+PrintGCTimeStamps{% elif jvm_tuning_profile == 'azul_prime' %} -Xlog:gc*:file=&lt;LOG_DIR&gt;/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans{% else %} -Xlog:gc*:file=&lt;LOG_DIR&gt;/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC{% endif %}{% if java_version|int &gt; 11 %} {{jvm_flags}}{% endif %}"
+                 if-type="tez-site" if-key="tez.am.launch.cluster-default.cmd-opts" if-value="-server -Djava.net.preferIPv4Stack=true -Dodp.version=${odp.version}{% if java_version|int &gt; 11 %} {{jvm_flags}}{% endif %}"/>
+            <set key="tez.task.launch.cluster-default.cmd-opts"
+                 value="-server -Djava.net.preferIPv4Stack=true -Dodp.version=${odp.version} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}}{% if java_version|int == 8 %} -XX:+UseG1GC -XX:+PrintGCDetails -verbose:gc -XX:+PrintGCTimeStamps{% elif jvm_tuning_profile == 'azul_prime' %} -Xlog:gc*:file=&lt;LOG_DIR&gt;/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans{% else %} -Xlog:gc*:file=&lt;LOG_DIR&gt;/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC{% endif %}{% if java_version|int &gt; 11 %} {{jvm_flags}}{% endif %}"
+                 if-type="tez-site" if-key="tez.task.launch.cluster-default.cmd-opts" if-value="-server -Djava.net.preferIPv4Stack=true -Dodp.version=${odp.version}{% if java_version|int &gt; 11 %} {{jvm_flags}}{% endif %}"/>
+            <transfer operation="delete" delete-key="tez.am.java.opts" if-type="tez-site" if-key="tez.am.java.opts" if-key-state="present"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3_3_x_tez_env_remove_dead_exports" summary="Remove dead export block from tez-env template (bash rejects dots in variable names)">
+            <type>tez-env</type>
+            <replace key="content"
+                     find="&#xA;{% if java_version == 8 %}&#xA;# Java 8 JVM options&#xA;export tez.am.launch.cmd-opts=&quot;-XX:+PrintGCDetails -verbose:gc -XX:+PrintGCTimeStamps -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}}&quot;&#xA;export tez.task.launch.cmd-opts=&quot;-XX:+PrintGCDetails -verbose:gc -XX:+PrintGCTimeStamps -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}}&quot;&#xA;{% elif java_version == 11 %}&#xA;{% if jvm_tuning_profile == 'azul_prime' %}&#xA;export TEZ_AM_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans&quot;&#xA;export TEZ_TASK_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans&quot;&#xA;{% else %}&#xA;export TEZ_AM_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC&quot;&#xA;export TEZ_TASK_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC&quot;&#xA;{% endif %}&#xA;export tez.am.launch.cmd-opts=&quot;${TEZ_AM_JVM_TUNING_OPTS} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}}&quot;&#xA;export tez.task.launch.cmd-opts=&quot;${TEZ_TASK_JVM_TUNING_OPTS} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}}&quot;&#xA;{% else %}&#xA;# For Java 11+&#xA;{% if jvm_tuning_profile == 'azul_prime' %}&#xA;export TEZ_AM_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans&quot;&#xA;export TEZ_TASK_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans&quot;&#xA;{% else %}&#xA;export TEZ_AM_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC&quot;&#xA;export TEZ_TASK_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC&quot;&#xA;{% endif %}&#xA;export tez.am.launch.cmd-opts=&quot;${TEZ_AM_JVM_TUNING_OPTS} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}} {{jvm_flags}}&quot;&#xA;export tez.task.launch.cmd-opts=&quot;${TEZ_TASK_JVM_TUNING_OPTS} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}} {{jvm_flags}}&quot;&#xA;{% endif %}&#xA;"
+                     replace-with="&#xA;"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+
+    <service name="YARN">
+      <component name="NODEMANAGER">
+        <changes>
+          <!-- ODP 3.4+ only supports Spark 3.5.8 - migrate all older Spark shuffle services to 3.5.8 -->
+          <definition xsi:type="configure" id="odp_3_4_0_yarn_spark_358_only" summary="Migrate to Spark 3.5.8 shuffle service only (remove 3.5.5, 4.1.1, 3.3.3, 3.5.1)">
+            <type>yarn-site</type>
+
+            <!-- Replace any existing spark_shuffle_* references with spark_shuffle_358 in aux-services -->
+            <replace key="yarn.nodemanager.aux-services" find="spark_shuffle_355" replace-with="spark_shuffle_358"
+                     if-type="yarn-site" if-key="yarn.nodemanager.aux-services" if-value="spark_shuffle_355" if-value-match-type="partial"/>
+            <replace key="yarn.nodemanager.aux-services" find=",spark_shuffle_411" replace-with=""
+                     if-type="yarn-site" if-key="yarn.nodemanager.aux-services" if-value="spark_shuffle_411" if-value-match-type="partial"/>
+            <replace key="yarn.nodemanager.aux-services" find=",spark_shuffle_333" replace-with=""
+                     if-type="yarn-site" if-key="yarn.nodemanager.aux-services" if-value="spark_shuffle_333" if-value-match-type="partial"/>
+            <replace key="yarn.nodemanager.aux-services" find=",spark_shuffle_351" replace-with=""
+                     if-type="yarn-site" if-key="yarn.nodemanager.aux-services" if-value="spark_shuffle_351" if-value-match-type="partial"/>
+
+            <!-- Set Spark 3.5.8 properties -->
+            <set key="yarn.nodemanager.aux-services.spark_shuffle_358.class" value="org.apache.spark.network.yarn.v358.YarnShuffleService"/>
+            <set key="yarn.nodemanager.aux-services.spark_shuffle_358.classpath" value="{{stack_root}}/{{version}}/spark3/aux/*"/>
+            <set key="spark.shuffle.service.v358.port" value="7358"/>
+
+            <!-- Delete old Spark 3.5.5 properties -->
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_355.class"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_355.class" if-key-state="present"/>
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_355.classpath"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_355.classpath" if-key-state="present"/>
+            <transfer operation="delete" delete-key="spark.shuffle.service.v355.port"
+                      if-type="yarn-site" if-key="spark.shuffle.service.v355.port" if-key-state="present"/>
+
+            <!-- Delete old Spark 4.1.1 properties -->
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_411.class"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_411.class" if-key-state="present"/>
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_411.classpath"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_411.classpath" if-key-state="present"/>
+            <transfer operation="delete" delete-key="spark.shuffle.service.v411.port"
+                      if-type="yarn-site" if-key="spark.shuffle.service.v411.port" if-key-state="present"/>
+
+            <!-- Delete old Spark 3.3.3 properties -->
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_333.class"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_333.class" if-key-state="present"/>
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_333.classpath"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_333.classpath" if-key-state="present"/>
+            <transfer operation="delete" delete-key="spark.shuffle.service.v333.port"
+                      if-type="yarn-site" if-key="spark.shuffle.service.v333.port" if-key-state="present"/>
+
+            <!-- Delete old Spark 3.5.1 properties -->
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_351.class"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_351.class" if-key-state="present"/>
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_351.classpath"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_351.classpath" if-key-state="present"/>
+            <transfer operation="delete" delete-key="spark.shuffle.service.v351.port"
+                      if-type="yarn-site" if-key="spark.shuffle.service.v351.port" if-key-state="present"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+  </services>
+</upgrade-config-changes>
