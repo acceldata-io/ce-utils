@@ -32,6 +32,15 @@
 #     PREFLIGHT_PRIMARY_CHECK     false
 #     RECONCILE_ON_DIRECTION_CHANGE   true
 #     METADATA_ONLY               false
+#     INCLUDE_ATLAS_METADATA      no
+#     SRC_ATLAS_ENDPOINT / DST_ATLAS_ENDPOINT   (required if INCLUDE_ATLAS_METADATA=yes)
+#     SRC_ATLAS_CLUSTER_NAME / DST_ATLAS_CLUSTER_NAME   default / default
+#     ATLAS_CLIENT_READ_TIMEOUT   (unset - Hive's own default, 7200s)
+#     ATLAS_HEALTH_CHECK          yes
+#     ATLAS_HEALTH_CHECK_TIMEOUT_SECONDS   15
+#     ATLAS_CURL_BIN              curl
+#     ATLAS_CURL_INSECURE         yes
+#     ATLAS_CURL_OPTS             (unset)
 #     DISTCP_OPTS                 -strategy dynamic -direct -update -pugptx -skipcrccheck
 #     HIVE_REPL_SNAPSHOT_COPY      false
 #     HIVE_REPL_INCLUDE_MATERIALIZED_VIEWS   false
@@ -104,14 +113,13 @@
 #          Regex db (multi-prefix): "'(sales|analytics)_.*'"
 #          Regex db (numeric shard): "'sales_shard[0-9]+'"
 #          Regex db (env suffix)  : "'.*_(dev|test)'"
-#          Regex db (case variant): "'[Ss]ales_.*'"
 #          Regex db (everything)  : "'.*'"
 #          Regex db + table    : "'sales_.*'.'(orders|customers)'"
 #          Regex db + exclude  : "'sales_.*'.'(?!orders$).*'"
 #          Two regex db groups : "'sales_.*'|'analytics_.*'"
 #          Regex db + literal  : "hr|'sales_.*'"
 #        Note: a "|" written inside single quotes (i.e. inside a table pattern) is treated as part of the pattern, not as a database separator.
-#        A database portion wrapped in single quotes (e.g. 'sales_.*') is treated as a regex instead of a literal database name, and is expanded to every real database matching it before REPL DUMP is ever issued (REPL DUMP itself only ever accepts one literal database name - it has no database-pattern grammar). This expansion match is a POSIX ERE (bash/grep -E) against SHOW DATABASES on the dump source - NOT Hive's own Java regex dialect used for HIVE_TABLE_PATTERN above, so a Java-only construct like the "(?!...)" negative lookahead shown above works for a table pattern (evaluated by Hive server-side) but will NOT work for a database pattern (evaluated by this script, client-side, via grep -E). The pattern is always implicitly anchored at both ends (matched as "^pattern$"), so "sales_.*" matches "sales_us" but not "old_sales_us" - do not add your own "^"/"$". There is no direct way to write "every database except X" as a single database regex (POSIX ERE has no negative lookahead) - list the databases you do want instead, e.g. via an exact-set alternation like the example above.
+#        A database portion wrapped in single quotes (e.g. 'sales_.*') is treated as a regex instead of a literal database name, and is expanded to every real database matching it before REPL DUMP is ever issued (REPL DUMP itself only ever accepts one literal database name - it has no database-pattern grammar). This expansion match is a POSIX ERE (bash/grep -E) against SHOW DATABASES on the dump source - NOT Hive's own Java regex dialect used for HIVE_TABLE_PATTERN above, so a Java-only construct like the "(?!...)" negative lookahead shown above works for a table pattern (evaluated by Hive server-side) but will NOT work for a database pattern (evaluated by this script, client-side, via grep -E). The pattern is always matched against the whole database name, case-insensitively (as "^(pattern)$"), so "sales_.*" matches "sales_us" but not "old_sales_us", and an alternation such as "sales|hr" matches exactly those two names - do not add your own "^"/"$". There is no direct way to write "every database except X" as a single database regex (POSIX ERE has no negative lookahead) - list the databases you do want instead, e.g. via an exact-set alternation like the example above.
 #
 #   2. SRC_NAMESERVICE     (required)
 #        The source cluster's HDFS nameservice (or "host:port" for a non-HA NameNode). This is a fixed label for this cluster and does not change when the replication direction is reversed - see "FAILOVER AND FAILBACK" below.
@@ -227,20 +235,19 @@
 #       per-table `hadoop distcp` used by normal cycles runs once.
 #     - "false": no data is copied by either mechanism.
 #
-#   Why this is not simply skipped, as it once was: the round-2 REPL LOAD ends
-#   with an inner BOOTSTRAP of the TABLE DIFF - the tables that had diverged
-#   between the two clusters - and its "numTables" says how many. On a clean
-#   flip that is 0, nothing diverged, and the reconcile finds nothing to move
-#   (the distcp "-update" comparison skips unchanged files rather than
-#   re-transferring them). On an UNPLANNED failover, where the old primary took
-#   writes that never replicated, it is greater than 0 - Hive has re-created
-#   those tables from the new primary, and their data does need copying. Forcing
-#   the copy off unconditionally was safe only in the first case, and silently
-#   produced tables with no data underneath in the second.
+#   Why the copy runs by default: the round-2 REPL LOAD ends with an inner
+#   BOOTSTRAP of the TABLE DIFF - the tables that had diverged between the two
+#   clusters - and its "numTables" says how many. On a clean flip that is 0,
+#   nothing diverged, and the reconcile finds nothing to move (the distcp
+#   "-update" comparison skips unchanged files rather than re-transferring
+#   them). On an UNPLANNED failover, where the old primary took writes that
+#   never replicated, it is greater than 0 - Hive has re-created those tables
+#   from the new primary, and their data does need copying; without the copy
+#   they would have metadata with no data underneath.
 #
-#   Set RECONCILE_ON_DIRECTION_CHANGE=false to restore the old skip-everything
-#   behavior for a flip you know is clean, or for a large multi-database
-#   direction change where a listing pass per table is not worth paying.
+#   Set RECONCILE_ON_DIRECTION_CHANGE=false to skip the copy for a flip you
+#   know is clean, or for a large multi-database direction change where a
+#   listing pass per table is not worth paying.
 #
 #   The copy never runs between handshake rounds - only after convergence. Round
 #   1 produces last_repl_id=-1 and an event_ack marker with no metadata and no
@@ -296,10 +303,9 @@
 #   direction could genuinely be wrong - and leave it off for steady-state
 #   cycles. See PREFLIGHT_PRIMARY_CHECK's own doc comment further down.
 #
-#   MIGRATION NOTE for setups created before the staging suffix became
-#   cluster-derived: those staging directories are named after the DIRECTION -
-#   "from_src_to_dst" / "from_dst_to_src" - while the derivation now produces a
-#   cluster name such as "from_odplab001". A database still carrying a
+#   MIGRATION NOTE: a staging directory named after the DIRECTION -
+#   "from_src_to_dst" / "from_dst_to_src" - does not match the cluster-derived
+#   name (such as "from_prod-nn1"). A database still carrying a
 #   direction-named directory needs one of:
 #     - REPL_ROOT_SUFFIX=src_to_dst (or dst_to_src) on every subsequent run, or
 #     - a one-time `hdfs dfs -mv` of that directory to the cluster-derived name, or
@@ -310,7 +316,7 @@
 #
 # RECONCILING PRE-EXISTING EXTERNAL TABLE DATA (RECONCILE_EXTERNAL_DATA)
 # ----------------------------------------------------------------------------
-#   A bootstrap REPL LOAD (Step 4 above) normally sets 'hive.repl.run.data.copy.tasks.on.target'='true', which makes REPL LOAD copy every external table's data itself, as part of the LOAD. That internal copy always re-copies every file listed in the REPL DUMP manifest, with no regard for what may already exist at the destination path - confirmed by testing: files already present on the load target, byte-identical (same size, same checksum) to the source, were still re-copied in full. There is no Hive configuration property that makes this internal copy skip unchanged files.
+#   A bootstrap REPL LOAD (Step 4 above) normally sets 'hive.repl.run.data.copy.tasks.on.target'='true', which makes REPL LOAD copy every external table's data itself, as part of the LOAD. That internal copy always re-copies every file listed in the REPL DUMP manifest, with no regard for what may already exist at the destination path - files already present on the load target, byte-identical (same size, same checksum) to the source, are still re-copied in full. There is no Hive configuration property that makes this internal copy skip unchanged files.
 #
 #   This matters for a specific, real scenario: a load-target database that already has data for the same tables you are about to replicate - for example, an earlier/legacy replication tool (such as Cloudera BDR) has already copied some or all of a database's external table data, or an existing DR database was deliberately renamed aside to a "_backup" database (see the empty-database-prep step you may already be running separately) purely so this script's bootstrap REPL LOAD has an empty database to bootstrap into - Hive's REPL LOAD bootstrap path refuses to run against a non-empty target database, with no override. In that situation the load target's HDFS files are frequently still physically present at their original path (renaming a Hive table does not move its underlying data), so REPL LOAD's normal full re-copy wastes bandwidth and time proportional to the FULL table size, not just the genuinely missing data.
 #
@@ -319,6 +325,8 @@
 #     2. Immediately after that metadata-only LOAD succeeds, this script runs a manual `hadoop distcp ${DISTCP_OPTS}` once per external table, directly between that table's real LOCATION on the dump source and its real LOCATION on the load target (read via DESCRIBE FORMATTED on both sides, so this works correctly even for tables with a custom, non-default LOCATION). Unlike REPL LOAD's own internal copy, a real `hadoop distcp` with -update/-skipcrccheck (the DISTCP_OPTS default) genuinely compares source and destination and skips files that already match - this is the ONLY point in the whole pipeline where that comparison happens.
 #
 #   RECONCILE_EXTERNAL_DATA=true REQUIRES every table in the database (or table pattern) to be EXTERNAL_TABLE. Managed/ACID table data (base and delta directories, valid-txn-lists, and so on) is Hive-owned in a way that is not safe to reconcile with a raw filesystem-level distcp - there is no equivalent manual step for managed tables. This script checks every table on the dump source BEFORE running REPL DUMP/LOAD at all, and fails fast with a clear error if it finds even one non-external table, rather than disabling data copy for the whole database and silently leaving a managed table's data missing.
+#
+#   On this path the script itself has to select the same tables REPL DUMP selected, so a table pattern in HIVE_DB may not contain a backslash and may not use REPL DUMP's separate include/exclude list form (<db>.'<include>'.'<exclude>'). Write "[0-9]" rather than "\d", and exclude tables with a negative lookahead as in the HIVE_DB examples above. Either form stops the run with an error before REPL DUMP/LOAD is issued. Neither restriction applies when REPL LOAD does its own data copy.
 #
 #   RECONCILE_EXTERNAL_DATA is a per-database judgment call, not a setting to leave on for every replication:
 #     - Leave it "false" (the default) for normal bootstraps, for incremental cycles (an incremental cycle only ever copies new events/files, so there is normally no pre-existing-data problem to reconcile there), and for any database that may contain managed/ACID tables. For a FAILOVER run the value is ignored entirely - that direction never copies external table data (see "FAILOVER AND FAILBACK" above).
@@ -332,8 +340,8 @@
 #   therefore excluded - see "FAILOVER AND FAILBACK" above and
 #   EFFECTIVE_RECONCILE_EXTERNAL_DATA's own doc comment.)
 #   See EFFECTIVE_RECONCILE_EXTERNAL_DATA's doc comment (near the
-#   SAME_NAMESERVICE_COLLISION detection code) for the full reason: confirmed
-#   via live testing, Hive's own internal REPL LOAD data copy resolves each
+#   SAME_NAMESERVICE_COLLISION detection code) for the full reason:
+#   Hive's own internal REPL LOAD data copy resolves each
 #   external table's LOCATION using the raw, un-aliased shared nameservice
 #   name exactly as recorded in the dump metadata - which the LOAD-side
 #   session deliberately resolves to ITS OWN native cluster, not the dump
@@ -445,6 +453,18 @@
 #   RECONCILE_EXTERNAL_DATA
 #     Also positional argument 12. See "RECONCILING PRE-EXISTING EXTERNAL TABLE DATA" above for the full explanation.
 #     Default: false
+#
+#   INCLUDE_ATLAS_METADATA
+#     "yes" or "no". Not a positional argument. When "yes", every bootstrap and incremental REPL DUMP/LOAD also replicates the Atlas metadata of the replicated database (or, for a table-level HIVE_DB spec, of the replicated tables): REPL DUMP exports it from the dump side's Atlas and REPL LOAD imports it into the load side's Atlas. Requires Kerberos and both Atlas endpoints:
+#       SRC_ATLAS_ENDPOINT / DST_ATLAS_ENDPOINT - each cluster's Atlas base URL, e.g. "https://prod-atlas.example.com:21443"
+#       SRC_ATLAS_CLUSTER_NAME / DST_ATLAS_CLUSTER_NAME - each cluster's Atlas metadata namespace (atlas.metadata.namespace, or the older atlas.cluster.name), exactly as it appears after the "@" in that cluster's Atlas qualified names (e.g. "sales.orders@default"). Both default to "default", the value a cluster uses unless its Atlas namespace has been changed; set them only for a cluster where it has.
+#     Like the nameservice and JDBC values, these label the two clusters and are mapped to the dump/load roles from REPLICATION_DIRECTION.
+#     Optional: ATLAS_CLIENT_READ_TIMEOUT (e.g. "7200s"; Hive's own default applies when unset), ATLAS_HEALTH_CHECK ("yes"/"no", default yes), ATLAS_HEALTH_CHECK_TIMEOUT_SECONDS (default 15), ATLAS_CURL_BIN (curl executable or its full path, default "curl"), ATLAS_CURL_INSECURE ("yes"/"no", default yes - the health check skips TLS certificate verification with curl -k), ATLAS_CURL_OPTS (extra curl flags for the health check, e.g. "--cacert /path/ca.pem").
+#     - Before any REPL DUMP is issued, the script checks that both Atlas endpoints answer and report ACTIVE, and stops the run if either does not. The check runs from this host, not from HiveServer2; set ATLAS_HEALTH_CHECK=no if this host cannot reach Atlas but HiveServer2 can.
+#     - An Atlas failure during a REPL DUMP or REPL LOAD fails that statement, and with it that database's replication cycle.
+#     - Direction-change runs (failover/failback) never include Atlas metadata; it resumes on the next ongoing cycle.
+#     - Prerequisites: the HiveServer2 service user (normally "hive") needs Ranger Atlas policies - Admin Export plus Read Entity on the dump side, Admin Import plus Create/Read Type for classifications on the load side - and each HiveServer2 must reach and trust its own cluster's Atlas. See the PREREQUISITES note at the INCLUDE_ATLAS_METADATA definition further down for the full list.
+#     Default: no
 #
 #   METADATA_ONLY
 #     "true" or "false". Not a positional argument. When "true", every REPL DUMP/LOAD this script runs (bootstrap, incremental, failover) replicates Hive metastore metadata only - no table data (managed or external) is ever copied:
@@ -591,11 +611,8 @@ exec 3>&1
 #  or otherwise terminated while a child is running, bash does NOT kill
 #  that child for you - it is simply orphaned and keeps running
 #  independently, forever, or until whatever it was doing finishes or hangs
-#  on its own. Confirmed via testing: multiple Ctrl-C'd runs each left
-#  their own orphaned beeline/java process running in the background,
-#  every one of them still holding an open connection (and potentially a
-#  lock) against HiveServer2/the metastore, long after the script itself
-#  had exited and returned control to the terminal.
+#  on its own - still holding an open connection (and potentially a lock)
+#  against HiveServer2/the metastore long after the script itself has exited.
 #
 #  CURRENT_CHILD_PID is set by run_with_heartbeat() for the duration of
 #  whatever child it is currently tracking (empty otherwise). This trap
@@ -804,51 +821,33 @@ esac
 #  a failback), or is it ongoing replication in whatever direction is already
 #  in force?
 #
-#  This used to be inferred from REPLICATION_DIRECTION alone - "dst_to_src"
-#  meant failover, "src_to_dst" meant normal replication - which conflated
-#  the two questions and left two of the four real states unreachable:
+#  The two questions combine into four states, and a full DR lifecycle uses
+#  all of them:
 #
-#    direction    change  meaning                             reachable before
-#    ----------   ------  ---------------------------------   ----------------
-#    src_to_dst   false   ongoing replication SRC -> DST      yes
-#    dst_to_src   true    failover: promote DST to primary    yes
-#    dst_to_src   false   ongoing replication DST -> SRC      NO
-#    src_to_dst   true    failback: promote SRC back          NO
+#    direction    change  meaning
+#    ----------   ------  ---------------------------------
+#    src_to_dst   false   ongoing replication SRC -> DST
+#    dst_to_src   true    failover: promote DST to primary
+#    dst_to_src   false   ongoing replication DST -> SRC
+#    src_to_dst   true    failback: promote SRC back
 #
-#  The two missing states are exactly what a real DR lifecycle needs once a
-#  failover has actually completed: new writes land on the promoted cluster
-#  and must keep flowing back to the demoted one (dst_to_src + false), and
-#  eventually the roles have to be handed back (src_to_dst + true).
+#  FAILOVER_MODE alone can express only the first two. Once a failover has
+#  completed, new writes land on the promoted cluster and must keep flowing
+#  back to the demoted one (dst_to_src + false), and eventually the roles are
+#  handed back (src_to_dst + true); those two states need this flag:
+#    - FAILOVER_MODE=true aborts at preflight_check_direction_change(): after
+#      a converged failover the promoted cluster is a PRIMARY, Hive has
+#      cleared its repl.last.id, and it is not the "caught-up replica" that a
+#      direction change requires.
+#    - FAILOVER_MODE=false dumps from the demoted cluster, which is now the
+#      replica, and the load target rejects the result.
 #
-#  Confirmed via live testing that neither could be faked with the two
-#  settings that did exist:
-#    - FAILOVER_MODE=true aborts at preflight_check_direction_change(), and
-#      correctly so: after a converged failover the promoted cluster is a
-#      PRIMARY, and Hive clears its repl.last.id, so it is no longer the
-#      "caught-up replica" that a direction change requires.
-#    - FAILOVER_MODE=false dumps from the demoted cluster - which is now the
-#      replica - and, because repl_root_suffix is per-direction, points at a
-#      rootdir with no dump history at all. Hive finds no previous dump to
-#      compute an increment against, falls back to a BOOTSTRAP dump, and the
-#      load target rejects it: "Bootstrap REPL LOAD is not allowed on
-#      Database: <db> as it was already done" (ReplLoadTask, return code
-#      40000). NOTE this describes the state of things when the staging suffix
-#      was keyed to the DIRECTION; it is now keyed to the dumping CLUSTER, so
-#      swapping SRC/DST is a supported alternative route to the reversed
-#      direction rather than a trap - see "CHOOSING SOURCE AND DESTINATION" at
-#      the top of this file. What is still true, and is what this flag exists
-#      for, is that FAILOVER_MODE alone cannot express either phase 3 or
-#      phase 4.
-#
-#  BACKWARD COMPATIBILITY: when DIRECTION_CHANGE is not set explicitly it is
-#  derived from FAILOVER_MODE exactly as the old behavior did, so every
-#  existing invocation - positional or environment - behaves identically.
-#  The one case that cannot be derived safely is an explicit
-#  REPLICATION_DIRECTION=dst_to_src with no FAILOVER_MODE and no
-#  DIRECTION_CHANGE: before this flag existed that meant "failover", but
-#  deriving "false" from the FAILOVER_MODE default would now silently turn it
-#  into ongoing reverse replication instead. That combination is rejected
-#  rather than guessed at.
+#  When DIRECTION_CHANGE is not set explicitly it is derived from
+#  FAILOVER_MODE: true -> direction change, false -> ongoing replication. The
+#  one combination that is not derived is an explicit
+#  REPLICATION_DIRECTION=dst_to_src with neither FAILOVER_MODE=true nor
+#  DIRECTION_CHANGE set: it could mean a failover or ongoing reverse
+#  replication, so it is rejected rather than guessed at.
 # ------------------------------------------------------------------------------
 DIRECTION_CHANGE="${DIRECTION_CHANGE:-}"
 if [[ -z "$DIRECTION_CHANGE" ]]; then
@@ -885,6 +884,183 @@ if [[ "$DIRECTION_CHANGE" == true ]]; then
   fi
 else
   DIRECTION_CHANGE_KIND=""
+fi
+
+# ------------------------------------------------------------------------------
+#  INCLUDE_ATLAS_METADATA - "yes" or "no" (default: no). Environment-only.
+#
+#  When "yes", bootstrap and incremental REPL DUMP/LOAD statements carry
+#  'hive.repl.include.atlas.metadata'='true' and Hive replicates Atlas
+#  metadata as part of the same statements: REPL DUMP exports from the dump
+#  side's Atlas, REPL LOAD imports into the load side's. Works for both
+#  database-level and table-level specs - Hive exports the hive_db entity for
+#  the former and the hive_table entities in the dump's table list for the
+#  latter.
+#
+#  SRC_ATLAS_ENDPOINT / DST_ATLAS_ENDPOINT - each cluster's Atlas base URL.
+#  SRC_ATLAS_CLUSTER_NAME / DST_ATLAS_CLUSTER_NAME - each cluster's Atlas
+#  metadata namespace, the part after "@" in its Atlas qualified names (e.g.
+#  "sales.orders@default"). Hive looks the source entities up as
+#  "<db>@<source name>" and renames them to "<db>@<target name>" on import, so
+#  both must match what each cluster's own Hive hook writes. Both default to
+#  "default", the value a cluster uses unless its Atlas namespace has been
+#  changed. These are fixed labels for the two clusters, mapped to the
+#  dump/load roles in derive_db_vars() like the JDBC URLs.
+#
+#  ATLAS_ACTIVE is what the rest of the script reads. It is false on a
+#  direction-change run even when INCLUDE_ATLAS_METADATA=yes: the handshake's
+#  first round is a control-only dump, and an Atlas failure there would block
+#  the failover itself. Atlas metadata resumes on the next ongoing cycle.
+#
+#  PREREQUISITES
+#
+#  Authentication needs no setup here: HiveServer2 calls Atlas as its own
+#  service principal (normally "hive") using Kerberos, whichever user runs
+#  this script. Authorization does - grant that service user, in each
+#  cluster's own Ranger, on the Atlas service:
+#
+#    Dump-side Atlas
+#      atlas-service = *                        Admin Export
+#      entity-type = hive_db, hive_table;       Read Entity
+#        entity-classification = *; entity = *
+#    Load-side Atlas
+#      atlas-service = *                        Admin Import
+#      type-category = classification;          Create Type, Read Type
+#        type = *
+#
+#  Admin Export and Admin Import are the calls Hive makes. The entity and
+#  type grants cover the entity lookup before export and the source-cluster
+#  classification applied on import; after the first run, check the Ranger
+#  Atlas audit for denied requests from the service user and add anything it
+#  shows. Grant both sets on both clusters if replication will ever run in
+#  the reversed direction, since the dump and load roles swap.
+#
+#  Also required:
+#    - Kerberos on both clusters. Hive's Atlas client has no other
+#      authentication mode, and the user running this script needs a valid
+#      ticket for the health check.
+#    - Each HiveServer2 can reach its own cluster's Atlas, and, for an HTTPS
+#      endpoint, its JVM truststore trusts the Atlas certificate. The health
+#      check's ATLAS_CURL_INSECURE does not affect HiveServer2.
+#    - This host can reach both Atlas endpoints, or ATLAS_HEALTH_CHECK=no.
+#    - The Hive hook is enabled on both clusters, so the source entities
+#      exist in Atlas and the target's namespace is established.
+#    - With Atlas HA, the endpoint must reach the ACTIVE instance; Hive
+#      accepts a single URL.
+#
+#  Two equivalent ways to set these - per-run on the command line:
+#
+#    INCLUDE_ATLAS_METADATA=yes \
+#    SRC_ATLAS_ENDPOINT="https://prod-atlas.example.com:21443" \
+#    DST_ATLAS_ENDPOINT="https://dr-atlas.example.com:21443" \
+#    SRC_ATLAS_CLUSTER_NAME="default" \
+#    DST_ATLAS_CLUSTER_NAME="default" \
+#    ./this_script.sh <db> ...
+#
+#  or pinned for every run by editing the value after ":-" on the lines below
+#  (an environment variable of the same name still wins), for example:
+#
+#    INCLUDE_ATLAS_METADATA="${INCLUDE_ATLAS_METADATA:-yes}"
+#    SRC_ATLAS_ENDPOINT="${SRC_ATLAS_ENDPOINT:-https://prod-atlas.example.com:21443}"
+#    DST_ATLAS_ENDPOINT="${DST_ATLAS_ENDPOINT:-https://dr-atlas.example.com:21443}"
+#    SRC_ATLAS_CLUSTER_NAME="${SRC_ATLAS_CLUSTER_NAME:-default}"
+#    DST_ATLAS_CLUSTER_NAME="${DST_ATLAS_CLUSTER_NAME:-default}"
+#
+#  Endpoint: scheme, host and port only, no "/api/atlas" path - 21443 is the
+#  usual HTTPS port, 21000 the usual HTTP port. Cluster name: the value of
+#  atlas.metadata.namespace (atlas.cluster.name on older releases) in that
+#  cluster's atlas-application.properties - "default" unless it was changed.
+# ------------------------------------------------------------------------------
+INCLUDE_ATLAS_METADATA="${INCLUDE_ATLAS_METADATA:-no}"
+SRC_ATLAS_ENDPOINT="${SRC_ATLAS_ENDPOINT:-}"
+DST_ATLAS_ENDPOINT="${DST_ATLAS_ENDPOINT:-}"
+SRC_ATLAS_CLUSTER_NAME="${SRC_ATLAS_CLUSTER_NAME:-default}"
+DST_ATLAS_CLUSTER_NAME="${DST_ATLAS_CLUSTER_NAME:-default}"
+# ATLAS_CLIENT_READ_TIMEOUT - 'hive.repl.atlas.client.read.timeout'. Only sent
+# when set; Hive's own default applies otherwise.
+# Example: ATLAS_CLIENT_READ_TIMEOUT="7200s"
+ATLAS_CLIENT_READ_TIMEOUT="${ATLAS_CLIENT_READ_TIMEOUT:-}"
+# ATLAS_HEALTH_CHECK - "yes" or "no" (default: yes). Check both Atlas
+# endpoints from this host before any REPL DUMP is issued.
+# Example: ATLAS_HEALTH_CHECK=no
+ATLAS_HEALTH_CHECK="${ATLAS_HEALTH_CHECK:-yes}"
+# ATLAS_HEALTH_CHECK_TIMEOUT_SECONDS - connect and total timeout for each
+# endpoint's health check call.
+# Example: ATLAS_HEALTH_CHECK_TIMEOUT_SECONDS=30
+ATLAS_HEALTH_CHECK_TIMEOUT_SECONDS="${ATLAS_HEALTH_CHECK_TIMEOUT_SECONDS:-15}"
+# ATLAS_CURL_BIN - the curl executable used for the health check: a command
+# name found on PATH, or a full path where curl is installed elsewhere.
+# Example: ATLAS_CURL_BIN="/opt/tools/bin/curl"
+ATLAS_CURL_BIN="${ATLAS_CURL_BIN:-curl}"
+# ATLAS_CURL_INSECURE - "yes" or "no" (default: yes). When "yes" the health
+# check runs curl with -k, skipping TLS certificate verification, so it works
+# against an Atlas endpoint whose certificate this host does not trust. This
+# affects only the health check; HiveServer2's own connection to Atlas always
+# verifies against its truststore. Set "no" to verify, with ATLAS_CURL_OPTS
+# naming a CA bundle if the system trust store does not cover it.
+# Example: ATLAS_CURL_INSECURE=no
+ATLAS_CURL_INSECURE="${ATLAS_CURL_INSECURE:-yes}"
+# ATLAS_CURL_OPTS - extra curl flags for the health check, space-separated.
+# Example: ATLAS_CURL_OPTS="--cacert /etc/security/certs/ca-bundle.pem"
+ATLAS_CURL_OPTS="${ATLAS_CURL_OPTS:-}"
+
+case "${INCLUDE_ATLAS_METADATA,,}" in
+  yes|no) INCLUDE_ATLAS_METADATA="${INCLUDE_ATLAS_METADATA,,}" ;;
+  *)
+    echo "[ERROR] INCLUDE_ATLAS_METADATA must be 'yes' or 'no' (got: '${INCLUDE_ATLAS_METADATA}')" >&2
+    exit 1
+    ;;
+esac
+case "${ATLAS_HEALTH_CHECK,,}" in
+  yes|no) ATLAS_HEALTH_CHECK="${ATLAS_HEALTH_CHECK,,}" ;;
+  *)
+    echo "[ERROR] ATLAS_HEALTH_CHECK must be 'yes' or 'no' (got: '${ATLAS_HEALTH_CHECK}')" >&2
+    exit 1
+    ;;
+esac
+case "${ATLAS_CURL_INSECURE,,}" in
+  yes|no) ATLAS_CURL_INSECURE="${ATLAS_CURL_INSECURE,,}" ;;
+  *)
+    echo "[ERROR] ATLAS_CURL_INSECURE must be 'yes' or 'no' (got: '${ATLAS_CURL_INSECURE}')" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$INCLUDE_ATLAS_METADATA" == "yes" ]]; then
+  _atlas_var=""
+  _atlas_url_re="^https?://[^/[:space:]']+(/[^[:space:]']*)?\$"
+  for _atlas_var in SRC_ATLAS_ENDPOINT DST_ATLAS_ENDPOINT; do
+    if ! [[ "${!_atlas_var}" =~ $_atlas_url_re ]]; then
+      echo "[ERROR] INCLUDE_ATLAS_METADATA=yes requires ${_atlas_var} to be an Atlas base URL such as" >&2
+      echo "[ERROR] https://atlas-host.example.com:21443 (got: '${!_atlas_var}')" >&2
+      exit 1
+    fi
+  done
+  # A trailing "/" is dropped so Hive and the health check both get the bare
+  # base URL.
+  SRC_ATLAS_ENDPOINT="${SRC_ATLAS_ENDPOINT%/}"
+  DST_ATLAS_ENDPOINT="${DST_ATLAS_ENDPOINT%/}"
+  for _atlas_var in SRC_ATLAS_CLUSTER_NAME DST_ATLAS_CLUSTER_NAME; do
+    if ! [[ "${!_atlas_var}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+      echo "[ERROR] INCLUDE_ATLAS_METADATA=yes requires ${_atlas_var} to be that cluster's Atlas metadata" >&2
+      echo "[ERROR] namespace - letters, digits, '.', '_' and '-' only (got: '${!_atlas_var}')" >&2
+      exit 1
+    fi
+  done
+  if [[ -n "$ATLAS_CLIENT_READ_TIMEOUT" ]] && ! [[ "$ATLAS_CLIENT_READ_TIMEOUT" =~ ^[0-9]+[A-Za-z]*$ ]]; then
+    echo "[ERROR] ATLAS_CLIENT_READ_TIMEOUT must be a number with an optional time unit, e.g. '7200s' (got: '${ATLAS_CLIENT_READ_TIMEOUT}')" >&2
+    exit 1
+  fi
+  if ! [[ "$ATLAS_HEALTH_CHECK_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[ERROR] ATLAS_HEALTH_CHECK_TIMEOUT_SECONDS must be a positive integer (got: '${ATLAS_HEALTH_CHECK_TIMEOUT_SECONDS}')" >&2
+    exit 1
+  fi
+fi
+
+if [[ "$INCLUDE_ATLAS_METADATA" == "yes" && "$DIRECTION_CHANGE" != true ]]; then
+  ATLAS_ACTIVE=true
+else
+  ATLAS_ACTIVE=false
 fi
 
 # FAILOVER_MAX_ROUNDS - how many DUMP -> LOAD rounds a single direction-change
@@ -1127,7 +1303,7 @@ derive_db_vars() {
     HIVE_TABLE_PATTERN="${spec#*.}"
     # REPL DUMP's table-level grammar takes <db_name>.'<table_pattern>' -
     # dot-joined, with the table pattern as its own quoted StringLiteral.
-    # Confirmed directly against HiveServer2 (Hive 4.0.1) via beeline:
+    # Hive 4.0.1 accepts only the dot-joined form:
     #   REPL DUMP db 'table' WITH(...)   -> ParseException: missing EOF
     #                                        at ''table'' near 'db'
     #   REPL DUMP db.'table' WITH(...)   -> succeeds
@@ -1156,6 +1332,10 @@ derive_db_vars() {
     DUMP_NN_HOSTS="$DST_NN_HOSTS"
     LOAD_NN_HOSTS="$SRC_NN_HOSTS"
     DUMP_ROOT_TOKEN="$DST_ROOT_TOKEN"
+    DUMP_ATLAS_ENDPOINT="$DST_ATLAS_ENDPOINT"
+    LOAD_ATLAS_ENDPOINT="$SRC_ATLAS_ENDPOINT"
+    DUMP_ATLAS_CLUSTER_NAME="$DST_ATLAS_CLUSTER_NAME"
+    LOAD_ATLAS_CLUSTER_NAME="$SRC_ATLAS_CLUSTER_NAME"
   else
     DUMP_NAMESERVICE="$SRC_NAMESERVICE"
     LOAD_NAMESERVICE="$DST_NAMESERVICE"
@@ -1164,6 +1344,10 @@ derive_db_vars() {
     DUMP_NN_HOSTS="$SRC_NN_HOSTS"
     LOAD_NN_HOSTS="$DST_NN_HOSTS"
     DUMP_ROOT_TOKEN="$SRC_ROOT_TOKEN"
+    DUMP_ATLAS_ENDPOINT="$SRC_ATLAS_ENDPOINT"
+    LOAD_ATLAS_ENDPOINT="$DST_ATLAS_ENDPOINT"
+    DUMP_ATLAS_CLUSTER_NAME="$SRC_ATLAS_CLUSTER_NAME"
+    LOAD_ATLAS_CLUSTER_NAME="$DST_ATLAS_CLUSTER_NAME"
   fi
 
   # ----------------------------------------------------------------------------
@@ -1177,8 +1361,7 @@ derive_db_vars() {
   #  properties and the URIs it builds, both of which are process-local and
   #  thrown away when the script exits.
   #
-  #  WHY BOTH SIDES NEED ALIASING HERE (unlike the sibling HDFS script's fix,
-  #  which only aliases ONE side): REPL DUMP and REPL LOAD execute as TWO
+  #  WHY BOTH SIDES NEED ALIASING: REPL DUMP and REPL LOAD execute as TWO
   #  SEPARATE HiveServer2 sessions - one on the dump-side cluster, one on the
   #  load-side cluster - and the IDENTICAL WITH()-clause property text (in
   #  particular 'hive.repl.rootdir' and 'hive.repl.replica.external.table.base.dir')
@@ -1190,7 +1373,7 @@ derive_db_vars() {
   #    - 'hive.repl.rootdir' (DUMP's own staging area) resolves trivially on
   #      the dump-side session (it is that session's own cluster) but is a
   #      genuine cross-cluster reference from the load-side session's point of
-  #      view - the load-side session's own native "ODP-Phoenix" means ITSELF,
+  #      view - the load-side session's own native nameservice name means ITSELF,
   #      not the dump side, so a bare, unaliased name here would make REPL
   #      LOAD read from (or fail to find) its own local filesystem instead of
   #      the real dump side.
@@ -1209,17 +1392,15 @@ derive_db_vars() {
   #  reports using that literal real name) must keep resolving it via that
   #  session's own native, cluster-wide hdfs-site.xml, exactly as they always
   #  have. It is, however, still explicitly RE-LISTED (unaliased) in
-  #  'dfs.nameservices' wherever that property is injected at all - omitting
-  #  it there would silently break resolution of the session's OWN native
-  #  identity, the same class of bug already confirmed (and fixed) in the
-  #  sibling HDFS script: injecting "dfs.nameservices" REPLACES rather than
-  #  merges with whatever the session's own native hdfs-site.xml already
-  #  defines for that property, and Hadoop-internal code that needs to
-  #  resolve the session's own default filesystem consults "dfs.nameservices"
-  #  to decide whether a name is even a registered HA nameservice at all -
-  #  dropping the real name from the list breaks that resolution even though
-  #  the underlying "dfs.ha.namenodes.<real-name>"/rpc-address keys are still
-  #  present (inherited, untouched) from the native config.
+  #  'dfs.nameservices' wherever that property is injected at all: injecting
+  #  "dfs.nameservices" REPLACES rather than merges with whatever the
+  #  session's own native hdfs-site.xml defines for that property, and
+  #  Hadoop-internal code that resolves the session's own default filesystem
+  #  consults "dfs.nameservices" to decide whether a name is a registered HA
+  #  nameservice at all - dropping the real name from the list breaks that
+  #  resolution even though the underlying "dfs.ha.namenodes.<real-name>"/
+  #  rpc-address keys are still present (inherited, untouched) from the
+  #  native config.
   #
   #  DUMP_NN_HOSTS/LOAD_NN_HOSTS (set above) are always the REAL NameNode
   #  addresses for whichever PHYSICAL cluster is currently playing that role -
@@ -1237,9 +1418,8 @@ derive_db_vars() {
   #  URLs alone, half-swaps against this function's role assignment above: the
   #  session that runs REPL DUMP ends up on one cluster while DUMP_NN_HOSTS -
   #  and therefore every alias binding and every "hdfs://" URI built from it -
-  #  points at the other. Confirmed via live testing: that combination wrote a
-  #  dump to one cluster while the load side looked for it on the other, and
-  #  REPL LOAD silently did nothing (0 locks, sub-second, no REPL::START).
+  #  points at the other. The dump is then written to one cluster while the
+  #  load side looks for it on the other, and REPL LOAD silently does nothing.
   # ----------------------------------------------------------------------------
   if [[ "$SAME_NAMESERVICE_COLLISION" == true ]]; then
     DUMP_URI_NS="${DUMP_NAMESERVICE}-DUMPALIAS"
@@ -1249,11 +1429,12 @@ derive_db_vars() {
     LOAD_URI_NS="$LOAD_NAMESERVICE"
   fi
 
-  # HDFS_TOKEN_EXCLUDE_PROP - see the comment at its original computation
-  # site (now removed) near HA_ENABLED, above. Recomputed every time this
-  # function runs (idempotent - always the same value within one invocation,
-  # since REPLICATION_DIRECTION never changes mid-run) so it can reference
-  # DUMP_URI_NS/LOAD_URI_NS, which are only known once derived above.
+  # HDFS_TOKEN_EXCLUDE_PROP - excludes both nameservices from HDFS delegation
+  # token renewal for the MapReduce/DistCp job REPL LOAD launches internally.
+  # Computed here, every time this function runs (idempotent - always the
+  # same value within one invocation, since REPLICATION_DIRECTION never
+  # changes mid-run), so it can reference DUMP_URI_NS/LOAD_URI_NS, which are
+  # only known once derived above.
   # SAME-NAMESERVICE COLLISION CASE: must exclude DUMP_URI_NS/LOAD_URI_NS
   # (the aliases), NOT the raw SRC_NAMESERVICE/DST_NAMESERVICE - those raw
   # names are never the authority in any "hdfs://" URI this script builds
@@ -1283,33 +1464,24 @@ derive_db_vars() {
   # That distinction is what makes the staging path survive an operator
   # swapping SRC/DST between runs, which is a supported way to drive the
   # reversed direction (see "CHOOSING SOURCE AND DESTINATION" at the top of
-  # this file). The non-collision branch below already had this property for
-  # free - DUMP_NAMESERVICE is the dumping cluster's own identity, so
-  # "dr-nameservice dumping" yields "from_dr-nameservice" whether that run
-  # calls itself src_to_dst or dst_to_src.
+  # this file). In the non-collision branch DUMP_NAMESERVICE is the dumping
+  # cluster's own identity, so "dr-nameservice dumping" yields
+  # "from_dr-nameservice" whether that run calls itself src_to_dst or
+  # dst_to_src.
   #
-  # SAME-NAMESERVICE COLLISION CASE: DUMP_NAMESERVICE is useless here - it is
-  # the identical string for both clusters - and DUMP_URI_NS is no better,
-  # since it is a FIXED alias whose role never changes ("...-DUMPALIAS"
-  # regardless of which physical cluster is bound to it). This branch used to
-  # substitute REPLICATION_DIRECTION, which does differ between directions but
-  # is a property of the RUN, not of the CLUSTER - so swapping SRC/DST moved
-  # the staging path even though the same physical cluster was still dumping.
-  # Confirmed via live testing: a swapped run pointed at a brand-new empty
-  # rootdir, Hive found no previous dump to compute an increment against, fell
-  # back to a BOOTSTRAP dump, and the load target rejected it with "Bootstrap
-  # REPL LOAD is not allowed on Database: <db> as it was already done"
-  # (return code 40000).
+  # SAME-NAMESERVICE COLLISION CASE: DUMP_NAMESERVICE cannot be used - it is
+  # the identical string for both clusters - and neither can DUMP_URI_NS, a
+  # FIXED alias whose role never changes ("...-DUMPALIAS" regardless of which
+  # physical cluster is bound to it), nor REPLICATION_DIRECTION, which is a
+  # property of the RUN, not of the CLUSTER. DUMP_ROOT_TOKEN (derived from the
+  # dumping cluster's own NameNode hostnames by nn_hosts_short_token(),
+  # computed once at startup) provides the same cluster-identity property: a
+  # cluster whose NameNodes are prod-nn1/prod-nn2 always dumps to
+  # "from_prod-nn1", in either direction, with or without a swap.
   #
-  # DUMP_ROOT_TOKEN (derived from the dumping cluster's own NameNode hostnames
-  # by nn_hosts_short_token(), computed once at startup) restores the same
-  # cluster-identity property the non-collision branch has: odplab dumping is
-  # always "from_odplab001" and atlasdemo dumping is always "from_atlasdemo-01",
-  # in either direction, with or without a swap.
-  #
-  # REPL_ROOT_SUFFIX overrides all of this when set - the escape hatch for
-  # pointing a run at a pre-existing staging path (notably a legacy
-  # "from_src_to_dst"/"from_dst_to_src" directory created before this change).
+  # REPL_ROOT_SUFFIX overrides all of this when set - for pointing a run at a
+  # pre-existing staging path (notably a direction-named
+  # "from_src_to_dst"/"from_dst_to_src" directory).
   local repl_root_suffix
   if [[ -n "$REPL_ROOT_SUFFIX" ]]; then
     repl_root_suffix="$REPL_ROOT_SUFFIX"
@@ -1333,20 +1505,19 @@ derive_db_vars() {
   # daemon startup. WITH()-clause properties are per-query values on the
   # HiveServer2 CLIENT's Configuration; they are never transmitted to the
   # Metastore server over the Thrift RPC, so the alias is something the
-  # Metastore process can never resolve. Confirmed via live testing: with
-  # the alias baked into LOCATION, the Metastore's own
-  # StorageBasedAuthorizationProvider pre-event listener (which checks
-  # HDFS permissions on the new table's LOCATION as part of CREATE TABLE)
-  # hung indefinitely trying to open a TCP connection to
-  # "ODP-Phoenix-LOADALIAS" as a literal, unresolvable hostname - a name
-  # that exists ONLY inside HiveServer2's per-query Configuration, never in
-  # any daemon's own config. The raw name has no such problem: it is the
+  # Metastore process can never resolve. With the alias baked into LOCATION,
+  # the Metastore's own StorageBasedAuthorizationProvider pre-event listener
+  # (which checks HDFS permissions on the new table's LOCATION as part of
+  # CREATE TABLE) would treat "<name>-LOADALIAS" as a literal, unresolvable
+  # hostname - a name that exists ONLY inside HiveServer2's per-query
+  # Configuration, never in any daemon's own config. The raw name has no
+  # such problem: it is the
   # LOAD side's own genuine nameservice, natively resolvable by the
   # Metastore's own hdfs-site.xml (it is literally running on that
   # cluster) - and by every future query against this table, forever
   # after, not just this one REPL LOAD statement. This is safe precisely
   # because this property is only actually consumed by the LOAD-side
-  # session (confirmed: the "new location" computation happens in the same
+  # session (the "new location" computation happens in the same
   # thread executing REPL LOAD, never REPL DUMP), where the raw name
   # already and unambiguously means "this cluster itself" - no cross-
   # cluster confusion is possible for a value that is only ever read by
@@ -1380,7 +1551,7 @@ AUTO_DERIVE_HA_CLIENT_CONFIG="${AUTO_DERIVE_HA_CLIENT_CONFIG:-no}"
 
 # ------------------------------------------------------------------------------
 #  SAME_NAMESERVICE_COLLISION - true iff SRC_NAMESERVICE and DST_NAMESERVICE
-#  are the literal identical string (e.g. both "ODP-Phoenix", because the DR
+#  are the literal identical string (e.g. both "nameservice1", because the DR
 #  cluster was built from the same Ambari/CM blueprint as production). A
 #  single Hadoop Configuration/HiveServer2 session cannot bind two different
 #  NameNode sets to one nameservice name at the same time, so every "hdfs://"
@@ -1388,18 +1559,13 @@ AUTO_DERIVE_HA_CLIENT_CONFIG="${AUTO_DERIVE_HA_CLIENT_CONFIG:-no}"
 #  disambiguate the two physical clusters whenever this is true - see the
 #  DUMP_URI_NS/LOAD_URI_NS derivation inside derive_db_vars() below, and the
 #  collision-aware branch inside ha_config_props()/build_nameservice_ha_props()
-#  further down, for the actual fix. Mirrors the equivalent
-#  SAME_NAMESERVICE_COLLISION fix already applied to the sibling
-#  hadoop_dr_replication_4.2.0.sh script for its own pull-based HDFS
-#  replication - the underlying ambiguity is the same, but the fix looks
-#  different here because Hive's REPL DUMP/REPL LOAD execute as TWO SEPARATE
+#  further down. Hive's REPL DUMP/REPL LOAD execute as TWO SEPARATE
 #  HiveServer2 sessions (one per physical cluster) that both receive the
-#  IDENTICAL WITH()-clause property text, rather than one single driver JVM
-#  building both sides' URIs itself - see the comments at each fix site for
-#  why BOTH sides need aliasing here, not just one.
+#  IDENTICAL WITH()-clause property text, so BOTH sides are aliased, not just
+#  one - see the comments at each site.
 #
 #  Requires AUTO_DERIVE_HA_CLIENT_CONFIG=yes with SRC_NN_HOSTS/DST_NN_HOSTS set:
-#  aliasing only fixes the ambiguity if this script is ALSO the thing
+#  aliasing only resolves the ambiguity if this script is ALSO the thing
 #  supplying each alias's real NameNode addresses via injected WITH()-clause/
 #  "-D" properties. Without that, an alias would resolve nowhere (no
 #  hdfs-site.xml on earth defines a synthetic alias name), so this fails
@@ -1438,8 +1604,8 @@ fi
 #
 #  This is "true" whenever the user explicitly asked for it
 #  (RECONCILE_EXTERNAL_DATA=true), OR whenever SAME_NAMESERVICE_COLLISION is
-#  true - REGARDLESS of what RECONCILE_EXTERNAL_DATA was passed as. Confirmed
-#  via live testing: in the collision case, Hive's own internal data-copy
+#  true - REGARDLESS of what RECONCILE_EXTERNAL_DATA was passed as. In the
+#  collision case, Hive's own internal data-copy
 #  task resolves each external table's LOCATION using the raw, un-aliased
 #  shared nameservice name exactly as recorded (verbatim) in the dump
 #  metadata - and on the LOAD-side session, that raw name deliberately
@@ -1453,19 +1619,19 @@ fi
 #  silently leaving the destination with no external table data at all.
 #  This is forced on for every NORMAL-DIRECTION external-data-copying call
 #  site (bootstrap, incremental) - each one submits its own REPL LOAD and
-#  would independently hit the identical bug otherwise.
+#  would independently hit the same problem otherwise.
 #
 #  TWO CASES TAKE PRIORITY AND DISABLE THIS ENTIRELY:
 #
 #  1. METADATA_ONLY=true - if the run isn't copying any table data in the
-#     first place, the bug above never triggers, so there is nothing to
+#     first place, the problem above never arises, so there is nothing to
 #     route through the manual path.
 #
 #  2. DIRECTION_CHANGE=true with RECONCILE_ON_DIRECTION_CHANGE=false (with
 #     the default RECONCILE_ON_DIRECTION_CHANGE=true this case does not
 #     apply, and a direction change falls through to the branches below
-#     like any other run - see RECONCILE_ON_DIRECTION_CHANGE's doc comment,
-#     which supersedes the reasoning that follows) - a direction-change
+#     like any other run - see RECONCILE_ON_DIRECTION_CHANGE's doc comment)
+#     - a direction-change
 #     run is a CONTROL operation that flips which side is primary, not a bulk
 #     data movement. By the time one is run, every preceding cycle in the
 #     direction being reversed FROM has already copied the data to the side
@@ -1480,20 +1646,15 @@ fi
 #     comment), so a direction-change REPL LOAD copies no external table data
 #     by either mechanism - deliberately, and it says so in the log.
 #
-#     KEYED ON DIRECTION_CHANGE, NOT ON REPLICATION_DIRECTION. This condition
-#     used to read `REPLICATION_DIRECTION == dst_to_src`, which was correct
-#     only as long as "reversed direction" and "failover" were the same thing.
-#     They are not: ongoing replication in the reversed direction
-#     (dst_to_src + DIRECTION_CHANGE=false, i.e. the cycles that run after a
-#     failover has completed) is genuine bulk data movement and MUST copy
-#     data. Leaving this keyed on direction would have silently replicated
-#     metadata while never moving a byte - repl.last.id advancing on the
-#     replica, tables looking present, no data underneath. That is the worst
-#     possible failure shape for a DR tool, which is why the split exists.
+#     KEYED ON DIRECTION_CHANGE, NOT ON REPLICATION_DIRECTION. Ongoing
+#     replication in the reversed direction (dst_to_src +
+#     DIRECTION_CHANGE=false, i.e. the cycles that run after a failover has
+#     completed) is genuine bulk data movement and MUST copy data; keying this
+#     on direction would replicate metadata while never moving a byte.
 #
 #     This is checked BEFORE the SAME_NAMESERVICE_COLLISION branch below:
 #     the collision only forces the manual path on because Hive's internal
-#     copy is broken in that scenario, which is irrelevant on a run that is
+#     copy cannot work in that scenario, which is irrelevant on a run that is
 #     not copying data by either mechanism to begin with.
 # ------------------------------------------------------------------------------
 # RECONCILE_ON_DIRECTION_CHANGE must be defaulted before the branch just below
@@ -1549,8 +1710,10 @@ fi
 SRC_NN_HOSTS="${SRC_NN_HOSTS:-}"
 DST_NN_HOSTS="${DST_NN_HOSTS:-}"
 
-#SRC_NN_HOSTS="nn1=atlasdemo-01.adsre.com:8020,nn2=atlasdemo-02.adsre.com:8020"
-#DST_NN_HOSTS="nn1=odplab001.adsre.com:8020,nn2=odplab002.adsre.com:8020"
+# To pin them in-file instead, uncomment and edit (an environment variable of
+# the same name still wins):
+#SRC_NN_HOSTS="${SRC_NN_HOSTS:-nn1=prod-nn1.example.com:8020,nn2=prod-nn2.example.com:8020}"
+#DST_NN_HOSTS="${DST_NN_HOSTS:-nn1=dr-nn1.example.com:8020,nn2=dr-nn2.example.com:8020}"
 
 # AUTOMATIC_FAILOVER_ENABLED - only used when AUTO_DERIVE_HA_CLIENT_CONFIG=yes.
 AUTOMATIC_FAILOVER_ENABLED="${AUTOMATIC_FAILOVER_ENABLED:-true}"
@@ -1603,7 +1766,7 @@ fi
 #  cluster itself and never moves.
 #
 #  Each "<nn-id>=<host>:<port>" pair contributes its host's first label
-#  ("odplab001.adsre.com:8020" -> "odplab001"). The results are SORTED and the
+#  ("prod-nn1.example.com:8020" -> "prod-nn1"). The results are SORTED and the
 #  first taken, so the token depends only on WHICH hosts are listed, not on the
 #  order they happen to be written in - reordering SRC_NN_HOSTS must never
 #  silently move a database's staging path and orphan its replication lineage.
@@ -1638,12 +1801,11 @@ nn_hosts_short_token() {
 # an operator swapping SRC/DST.
 #
 # Set it to point a run at a pre-existing staging path that the automatic
-# derivation would not produce. The specific case this exists for: staging
-# directories created before the suffix became cluster-derived are named
+# derivation would not produce - for example a staging directory named
 # "from_src_to_dst"/"from_dst_to_src" after the DIRECTION. A database still
 # carrying such a directory needs either REPL_ROOT_SUFFIX=src_to_dst (or
 # dst_to_src) on every subsequent run, or a one-time HDFS rename of the
-# directory to the new cluster-derived name - otherwise the next run finds an
+# directory to the cluster-derived name - otherwise the next run finds an
 # empty rootdir, falls back to a BOOTSTRAP dump, and the load target rejects
 # it with return code 40000.
 REPL_ROOT_SUFFIX="${REPL_ROOT_SUFFIX:-}"
@@ -1659,14 +1821,10 @@ REPL_ROOT_SUFFIX="${REPL_ROOT_SUFFIX:-}"
 #
 #  DEFAULT OFF BECAUSE OF ITS COST, NOT ITS VALUE. The check is one additional
 #  beeline invocation PER DATABASE PER RUN, and a beeline invocation is not
-#  cheap here - JVM startup plus ZooKeeper HiveServer2 discovery plus connect
-#  measures 10-20s in practice, which is why this script already goes to some
-#  length elsewhere to avoid per-database beeline calls (see
-#  run_with_heartbeat()'s doc comment on the poll-interval floor that once
-#  dominated the entire runtime at thousands of databases). On a 6000-database
-#  invocation this check alone would add on the order of a full day of
-#  wall-clock time to every cycle, to re-confirm something that does not change
-#  between runs.
+#  cheap - JVM startup plus ZooKeeper HiveServer2 discovery plus connect
+#  typically takes 10-20s. Across thousands of databases that adds hours of
+#  wall-clock time to every cycle, to re-confirm something that does not
+#  change between runs.
 #
 #  TURN IT ON for the FIRST run after anything that could have changed which
 #  cluster is primary, where a wrong direction is genuinely possible:
@@ -1699,32 +1857,27 @@ PREFLIGHT_PRIMARY_CHECK="${PREFLIGHT_PRIMARY_CHECK:-false}"
 #  Whether a direction-change run (DIRECTION_CHANGE=true) copies external table
 #  data after it converges.
 #
-#  This script used to force ALL data copy off for a direction change, on the
-#  reasoning that the side about to become the new replica already holds
-#  everything from the cycles that ran before the flip, so there is nothing to
-#  move. Live testing showed that reasoning is CONDITIONAL, not absolute, and
-#  the condition is visible in the round-2 REPL LOAD's own output:
+#  The side about to become the new replica usually already holds everything
+#  from the cycles that ran before the flip, but not always, and the
+#  difference is visible in the round-2 REPL LOAD's own output:
 #
 #    REPL::START: {"loadType":"BOOTSTRAP","numTables":0,...}
 #                                          ^^^^^^^^^^^^
 #
 #  That inner BOOTSTRAP is Hive's optimized bootstrap of the TABLE DIFF - the
 #  tables that had diverged between the two clusters. "numTables":0 means
-#  nothing diverged and the old assumption holds exactly: no data to copy. But
-#  numTables > 0 means Hive has just rolled those tables back and re-created
-#  them from the new primary, and their DATA genuinely does need to move. That
-#  happens on an UNPLANNED failover - one where the old primary took writes
-#  that never replicated before it was lost - which is precisely the scenario a
-#  DR tool exists for. With all copy paths forced off, those tables would arrive
-#  as metadata with no data underneath, and nothing would say so.
+#  nothing diverged and there is no data to copy. But numTables > 0 means Hive
+#  has just rolled those tables back and re-created them from the new primary,
+#  and their DATA genuinely does need to move. That happens on an UNPLANNED
+#  failover - one where the old primary took writes that never replicated
+#  before it was lost. With all copy paths off, those tables would arrive as
+#  metadata with no data underneath.
 #
 #  DEFAULT TRUE because the two failure modes are not comparable: a redundant
 #  copy pass costs time, a skipped one loses data silently. The cost is also
 #  much smaller than a full copy - the manual distcp path uses "-update"
 #  (see DISTCP_OPTS), so unchanged files are skipped after a listing comparison
-#  rather than re-transferred. Confirmed in testing: a reconcile pass over an
-#  already-synced table reported "Files Skipped=2, Bytes Skipped=2598" against
-#  "Files Copied=1" for the one genuinely new file.
+#  rather than re-transferred.
 #
 #  SET IT FALSE for a failover you know is clean - a planned drill, or a
 #  rehearsal where the replica was fully caught up first - and for large
@@ -1841,15 +1994,13 @@ ha_config_props() {
     # that role). Hadoop's FileSystem cache is JVM-global and keyed only by
     # (scheme, authority, user) - NOT by the Configuration properties in
     # effect for a given query - so a long-running HiveServer2 that already
-    # resolved an alias once (e.g. every prior forward-direction run cached
-    # DUMPALIAS -> atlasdemo) keeps handing back that stale FileSystem on a
-    # later query even though this WITH clause now binds the same alias to
-    # a different cluster's addresses. Confirmed via testing: a real
-    # failover silently wrote/read every "hdfs://...DUMPALIAS/..." path
-    # against the WRONG physical cluster because of exactly this. Disabling
-    # the cache forces a fresh FileSystem to be built from THIS query's
-    # properties every time - negligible cost given how infrequent REPL
-    # DUMP/LOAD calls are.
+    # resolved an alias once would keep handing back that cached FileSystem
+    # on a later query even though this WITH clause now binds the same alias
+    # to a different cluster's addresses, and every "hdfs://...DUMPALIAS/..."
+    # path would resolve to the wrong physical cluster. Disabling the cache
+    # forces a fresh FileSystem to be built from THIS query's properties
+    # every time - negligible cost given how infrequent REPL DUMP/LOAD calls
+    # are.
     printf "'fs.hdfs.impl.disable.cache'='true',\n"
     printf "'dfs.nameservices'='%s,%s,%s',\n" "$SRC_NAMESERVICE" "$DUMP_URI_NS" "$LOAD_URI_NS"
     printf "'dfs.ha.automatic-failover.enabled'='%s',\n" "${AUTOMATIC_FAILOVER_ENABLED,,}"
@@ -2046,23 +2197,14 @@ fi
 # schedule and can act (print a message, kill the command) without ever
 # affecting when the main wait below notices completion.
 #
-# This replaces an earlier single-loop design where the SAME loop both
-# waited for completion AND handled heartbeat/timeout - that loop checked
-# "is it still running?" BEFORE sleeping, then unconditionally slept the
-# full poll interval, so completion was only ever noticed at the next
-# poll boundary. Confirmed via testing: with a 60s poll interval (the
-# original code, sleeping the full HEARTBEAT_INTERVAL_SECONDS per
-# iteration), every beeline_exec call was floored to a minimum of ~60s of
-# wall-clock time even for a SHOW DATABASES/SHOW TABLES query that itself
-# completes in a couple of seconds - at 1000s of databases with several
-# beeline calls each, that floor alone dwarfed every other cost in the
-# script. A shorter poll interval shrinks that padding but can't remove
-# it entirely as long as the same loop governs both concerns; decoupling
-# them removes it completely for the thing that actually needs to be
-# exact (how long the command took), while the watchdog's own 10s
-# granularity remains fine for the things that don't need to be exact
-# (roughly-periodic heartbeats, a timeout that doesn't need split-second
-# precision).
+# Waiting and watchdog duties are kept separate deliberately: a single loop
+# that both waits for completion and sleeps a poll interval only notices
+# completion at the next poll boundary, which floors every beeline_exec call
+# at one poll interval even for a query that finishes in a couple of seconds
+# - significant across thousands of databases with several beeline calls
+# each. The watchdog's own 10s granularity is fine for the things that do
+# not need to be exact (roughly-periodic heartbeats, a timeout that does not
+# need split-second precision).
 #
 # TIMEOUT_MARKER is how the watchdog reports "I killed it for exceeding
 # BEELINE_COMMAND_TIMEOUT_SECONDS" back across the process boundary, since
@@ -2086,12 +2228,24 @@ run_with_heartbeat() {
   timeout_marker=$(mktemp -u 2>/dev/null) || timeout_marker="/tmp/.rwh_timeout_$$_${RANDOM}"
   rm -f "$timeout_marker" 2>/dev/null
 
+  # The watchdog runs its poll-interval `sleep` in the background and waits
+  # on it, so the TERM it is sent once the command has finished is handled
+  # at once and takes that sleep down with it. A sleep left running would
+  # keep every descriptor it inherited open for up to one poll interval -
+  # a caller's $(...) capture pipe, the output capture in
+  # beeline_exec_load(), the log pipes - and none of those readers could
+  # finish until it ended.
   (
     local poll_interval_seconds=10
     local elapsed=0
     local last_heartbeat=0
+    local sleep_pid=""
+    trap '[[ -n "$sleep_pid" ]] && kill "$sleep_pid" 2>/dev/null; exit 0' TERM
     while kill -0 "$cmd_pid" 2>/dev/null; do
-      sleep "$poll_interval_seconds"
+      sleep "$poll_interval_seconds" &
+      sleep_pid=$!
+      wait "$sleep_pid" 2>/dev/null || true
+      sleep_pid=""
       elapsed=$(( elapsed + poll_interval_seconds ))
       kill -0 "$cmd_pid" 2>/dev/null || exit 0
 
@@ -2119,12 +2273,9 @@ run_with_heartbeat() {
   local watchdog_pid=$!
 
   # 2>/dev/null suppresses bash's own "[pid] Killed: 9 <command>" job-
-  # control notice for the timeout-kill case (confirmed via testing this
-  # is where it surfaces, even though the watchdog subshell above is what
-  # actually sends the kill) - without it, that notice would print
-  # alongside the already-clear [ERROR] messages the watchdog just wrote,
-  # adding redundant noise to an already-alarming log entry rather than
-  # anything a reader needs.
+  # control notice for the timeout-kill case, which surfaces here even
+  # though the watchdog subshell above is what actually sends the kill -
+  # the watchdog has already written clear [ERROR] messages.
   wait "$cmd_pid" 2>/dev/null
   local rc=$?
   CURRENT_CHILD_PID=""
@@ -2234,8 +2385,11 @@ beeline_exec_load() {
             echo "ERROR: Hive has still loaded the table metadata and advanced REPL STATUS on the load target,"
             echo "ERROR: so the files that job was copying are missing there and a re-run will NOT copy them again."
             echo "ERROR: Find the cause in those YARN logs (e.g. \"Checksum mismatch\" for encryption-zone data"
-            echo "ERROR: means HIVE_REPL_SKIP_CRC_CHECK must be true), then either drop the database on the load"
-            echo "ERROR: target and re-bootstrap, or copy the missing table data manually."
+            echo "ERROR: means HIVE_REPL_SKIP_CRC_CHECK must be true), then either copy the missing table data"
+            echo "ERROR: manually, or re-bootstrap: drop the database on the load target AND remove its staging"
+            echo "ERROR: directory on the dump cluster (${REPL_ROOT_DIR_SRC:-hive.repl.rootdir}). Hive chooses"
+            echo "ERROR: bootstrap vs. incremental from that directory, so dropping the database alone does not"
+            echo "ERROR: produce a new bootstrap dump."
         fi
     fi
     rm -f "$capture_file" 2>/dev/null
@@ -2344,7 +2498,7 @@ expand_db_specs() {
     echo "ERROR: Could not list databases on ${regex_probe_jdbc_url} to resolve a database regex in HIVE_DB"
     exit 1
   }
-  all_dbs=$(echo "$all_dbs" | grep -E "^[A-Za-z0-9_]+$" || true)
+  all_dbs=$(echo "$all_dbs" | tr -d '\r' | grep -E "^[A-Za-z0-9_]+$" || true)
   if [[ -z "$all_dbs" ]]; then
     echo "ERROR: SHOW DATABASES returned no databases on ${regex_probe_jdbc_url} - cannot resolve a database regex in HIVE_DB"
     exit 1
@@ -2372,8 +2526,12 @@ expand_db_specs() {
     # "|| grep_rc=$?" keeps a non-zero grep status from tripping set -e
     # here (this runs at top level, where errexit is active) before the
     # checks below can report it.
+    #
+    # The pattern is wrapped in a group so a top-level "|" cannot split the
+    # anchors ("^a|b$" means "^a" OR "b$"), and is matched case-insensitively
+    # because Hive database names are case-insensitive.
     local grep_rc=0
-    matches=$(printf '%s\n' "$all_dbs" | grep -E "^${pattern}$" 2>/dev/null) || grep_rc=$?
+    matches=$(printf '%s\n' "$all_dbs" | grep -iE "^(${pattern})$" 2>/dev/null) || grep_rc=$?
     if (( grep_rc > 1 )); then
       echo "ERROR: Database regex '${pattern}' (from DB spec '${spec}') is not a valid extended regular expression - grep -E rejected it"
       exit 1
@@ -2443,18 +2601,13 @@ repl_status_last_id() {
   #     +---------------+
   #     | 11166         |
   #     +---------------+
-  # Confirmed via testing: the one-column shape is what a normal DR
-  # replica returns, and the original pattern set here only matched the
-  # two-column shape - a real, non-NULL last_repl_id on a one-column
-  # result silently produced no match at all, which the caller could not
-  # tell apart from a genuine NULL/not-yet-a-replica database. The
-  # `/^\| *[0-9]+ *\|$/` alternative below (a row that is just one bare
-  # numeric column) closes that gap.
+  # Both shapes are matched, including a row that is just one bare numeric
+  # column.
   # last_repl_id is the LAST "|"-delimited column of the one data row
   # (the row that is not the header/border). Extract it directly rather
   # than filtering by shape, since the surrounding connection/session
   # chatter never matches this table format.
-  echo "$output" | awk -F'|' '
+  echo "$output" | tr -d '\r' | awk -F'|' '
     /^\| *[Hh]dfs:\/\// || /^\| *[Nn][Uu][Ll][Ll] *\|/ || /^\|.*\|.*[0-9].*\|/ || /^\| *[0-9][0-9]* *\|$/ {
       n = NF
       val = $(n-1)
@@ -2481,10 +2634,7 @@ repl_status_last_id() {
 # (LOAD_NAMESERVICE) is, by definition, the side that has never yet been a
 # replica in this pairing - checking it there would always report "not
 # caught up", even on a legitimate first-ever failover, since it has no
-# replication history to have recorded a checkpoint into. Confirmed via
-# testing: querying LOAD_NAMESERVICE here made a first-time failover
-# unconditionally fail pre-flight, regardless of how caught-up the real
-# current replica (DUMP_NAMESERVICE, post-reversal) actually was.
+# replication history to have recorded a checkpoint into.
 #
 # Only called from failover_one_db(), i.e. only when the caller explicitly
 # requested a direction change for this invocation.
@@ -2524,9 +2674,7 @@ preflight_check_direction_change() {
   #    <db>
   #
   #  A bootstrap DOES set repl.last.id, so the last_repl_id check above passes
-  #  happily on such a database - confirmed via live testing: a database that
-  #  was bootstrapped and then immediately failed over passed pre-flight with
-  #  last_repl_id=11850 and then died on the very next statement with the
+  #  on such a database, and the very next statement would fail with the
   #  40000 above. Checking the flag here turns that into a clear, actionable
   #  abort before any REPL DUMP is issued.
   #
@@ -2586,21 +2734,17 @@ preflight_check_direction_change() {
 # already done" (return code 40000), raised by the LOAD after a full DUMP has
 # already run. This turns it into an immediate, named failure.
 #
-# APPLIES IN BOTH DIRECTIONS. It was originally scoped to dst_to_src only, on
-# the reasoning that the forward path was long-established and should not gain
-# a new way to fail. That reasoning no longer holds: once swapping SRC/DST is a
-# supported way to drive the reversed direction (see "CHOOSING SOURCE AND
-# DESTINATION" at the top of this file), "src_to_dst" no longer implies "dumping
-# from the original production cluster" - a swapped run legitimately dumps from
-# the other cluster, and a run where the operator MEANT to swap but didn't is
-# exactly the mistake this catches.
+# APPLIES IN BOTH DIRECTIONS. Swapping SRC/DST is a supported way to drive
+# the reversed direction (see "CHOOSING SOURCE AND DESTINATION" at the top of
+# this file), so "src_to_dst" does not imply "dumping from the original
+# production cluster" - a swapped run legitimately dumps from the other
+# cluster, and a run where the operator MEANT to swap but didn't is exactly
+# the mistake this catches.
 #
-# The regression risk that motivated the narrow scope is handled differently
-# instead: an unqueryable REPL STATUS (database absent on that side, cluster
+# An unqueryable REPL STATUS (database absent on that side, cluster
 # unreachable, an unexpected beeline failure) only WARNS and proceeds. Only a
-# definite non-NULL id aborts. So this can report a problem, but it cannot
-# invent one - a run that works today and has nothing wrong with it cannot
-# start failing here.
+# definite non-NULL id aborts, so this check can report a problem but cannot
+# invent one.
 #
 # Returns 0 to proceed, 1 to abort.
 # ------------------------------------------------------------------------------
@@ -2658,14 +2802,12 @@ run_as_hdfs() {
 # build_nameservice_ha_props(), one flag per line, for splicing into a
 # direct `hdfs`/`hadoop` CLI invocation's argument list (as opposed to a
 # REPL DUMP/LOAD WITH() clause). Prints nothing when AUTO_DERIVE_HA_CLIENT_CONFIG
-# is not "true" or SAME_NAMESERVICE_COLLISION is not true - these direct CLI
+# is not "yes" or SAME_NAMESERVICE_COLLISION is not true - these direct CLI
 # calls (allow_snapshot_idempotent, the -test/-mkdir calls in
-# enable_external_table_snapshots) never got any "-D" injection before this
-# fix, and continue not to whenever the collision-specific ambiguity this
-# exists to resolve is not actually present, to avoid any behavior change
-# for existing non-colliding deployments.
+# enable_external_table_snapshots) need "-D" injection only when the
+# collision-specific ambiguity is actually present.
 #
-# UNLIKE the WITH()-clause fix (ha_config_props()), this does NOT need to
+# UNLIKE the WITH() clause built by ha_config_props(), this does NOT need to
 # retain the real/native nameservice name in "dfs.nameservices" alongside the
 # alias: each call site here is a single, standalone CLI invocation - a
 # fresh JVM/Configuration every time - that only ever needs ONE cluster
@@ -2898,10 +3040,108 @@ raw_reserved_props() {
   fi
 }
 
+# atlas_dump_props / atlas_load_props: print the REPL DUMP / REPL LOAD
+# WITH-clause properties (each ending in a comma) that make Hive replicate
+# Atlas metadata as part of that statement, when ATLAS_ACTIVE is true. Print
+# nothing otherwise. The two differ because each statement talks to its OWN
+# cluster's Atlas: DUMP exports from the dump side's endpoint, LOAD imports
+# into the load side's. 'hive.repl.atlas.replicatedto' is the target database
+# name, which is always HIVE_DB_NAME here (REPL LOAD <db> INTO <db>), and is
+# only read by REPL DUMP.
+atlas_common_props() {
+  printf "%s\n" "'hive.repl.include.atlas.metadata'='true',"
+  printf "'hive.repl.source.cluster.name'='%s',\n" "$DUMP_ATLAS_CLUSTER_NAME"
+  printf "'hive.repl.target.cluster.name'='%s',\n" "$LOAD_ATLAS_CLUSTER_NAME"
+  if [[ -n "$ATLAS_CLIENT_READ_TIMEOUT" ]]; then
+    printf "'hive.repl.atlas.client.read.timeout'='%s',\n" "$ATLAS_CLIENT_READ_TIMEOUT"
+  fi
+}
+
+atlas_dump_props() {
+  if [[ "$ATLAS_ACTIVE" == true ]]; then
+    atlas_common_props
+    printf "'hive.repl.atlas.endpoint'='%s',\n" "$DUMP_ATLAS_ENDPOINT"
+    printf "'hive.repl.atlas.replicatedto'='%s',\n" "$HIVE_DB_NAME"
+  fi
+}
+
+atlas_load_props() {
+  if [[ "$ATLAS_ACTIVE" == true ]]; then
+    atlas_common_props
+    printf "'hive.repl.atlas.endpoint'='%s',\n" "$LOAD_ATLAS_ENDPOINT"
+  fi
+}
+
+# atlas_endpoint_healthy: return 0 if the Atlas server at <url> answers its
+# admin status API with HTTP 200 and does not report a non-ACTIVE state.
+# Usage: atlas_endpoint_healthy <label> <url>
+atlas_endpoint_healthy() {
+  local label="$1"
+  local url="${2%/}/api/atlas/admin/status"
+  local -a curl_opts=()
+  local response http_code body
+  read -ra curl_opts <<< "$ATLAS_CURL_OPTS"
+  if [[ "$ATLAS_CURL_INSECURE" == "yes" ]]; then
+    curl_opts=(-k ${curl_opts[@]+"${curl_opts[@]}"})
+  fi
+  response="$("$ATLAS_CURL_BIN" --silent --negotiate -u : \
+    --connect-timeout "$ATLAS_HEALTH_CHECK_TIMEOUT_SECONDS" \
+    --max-time "$ATLAS_HEALTH_CHECK_TIMEOUT_SECONDS" \
+    ${curl_opts[@]+"${curl_opts[@]}"} \
+    --write-out '\n%{http_code}' "$url" 2>&1)" || true
+  http_code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  if [[ "$http_code" != "200" ]]; then
+    echo "[ERROR] Atlas health check failed for ${label}: ${url} returned HTTP '${http_code}'" >&2
+    [[ -n "$body" && "$body" != "$response" ]] && echo "[ERROR]   ${body}" >&2
+    return 1
+  fi
+  if [[ "$body" == *'"Status"'* && "$body" != *ACTIVE* ]]; then
+    echo "[ERROR] Atlas health check failed for ${label}: ${url} is not the ACTIVE instance: ${body}" >&2
+    return 1
+  fi
+  echo "OK: Atlas ${label} is reachable and active (${url})"
+  return 0
+}
+
+# atlas_preflight_health_check: once per invocation, before any REPL DUMP is
+# issued, confirm that Atlas replication can work at all - Kerberos is
+# available (Hive's Atlas client has no other authentication mode) and both
+# Atlas endpoints answer. Does nothing when ATLAS_ACTIVE is false. This runs
+# from the host executing this script, not from HiveServer2, so it catches an
+# Atlas outage up front but cannot rule out a failure later in the run.
+atlas_preflight_health_check() {
+  [[ "$ATLAS_ACTIVE" == true ]] || return 0
+  if [[ "$KERBEROS_ENABLED" != "yes" ]]; then
+    echo "[ERROR] INCLUDE_ATLAS_METADATA=yes requires Kerberos: Hive's Atlas client authenticates only" >&2
+    echo "[ERROR] with Kerberos, and no valid ticket was detected for this run." >&2
+    exit 1
+  fi
+  if [[ "$ATLAS_HEALTH_CHECK" != "yes" ]]; then
+    echo "[INFO] ATLAS_HEALTH_CHECK=no - skipping the Atlas endpoint health check."
+    return 0
+  fi
+  if ! command -v "$ATLAS_CURL_BIN" >/dev/null 2>&1; then
+    echo "[ERROR] INCLUDE_ATLAS_METADATA=yes needs curl for the Atlas health check, and '${ATLAS_CURL_BIN}' was not found." >&2
+    echo "[ERROR] Set ATLAS_CURL_BIN to the curl executable's path, or set ATLAS_HEALTH_CHECK=no to skip the check." >&2
+    exit 1
+  fi
+  local failed=false
+  echo "Checking Atlas endpoints..."
+  atlas_endpoint_healthy "SRC (${SRC_ATLAS_CLUSTER_NAME})" "$SRC_ATLAS_ENDPOINT" || failed=true
+  atlas_endpoint_healthy "DST (${DST_ATLAS_CLUSTER_NAME})" "$DST_ATLAS_ENDPOINT" || failed=true
+  if [[ "$failed" == true ]]; then
+    echo "[ERROR] Aborting before any REPL DUMP is issued. Fix Atlas connectivity, or set" >&2
+    echo "[ERROR] ATLAS_HEALTH_CHECK=no if only this host (and not HiveServer2) is unable to reach Atlas." >&2
+    exit 1
+  fi
+  echo ""
+}
+
 # metadata_only_dump_prop: print the
 # 'hive.repl.dump.metadata.only.for.external.table' WITH-clause property
 # (ending in a comma) for a REPL DUMP - 'true' when METADATA_ONLY=true,
-# 'false' otherwise (the default/original behavior).
+# 'false' otherwise (the default).
 metadata_only_dump_prop() {
   if [[ "${METADATA_ONLY,,}" == "true" ]]; then
     printf "%s\n" "'hive.repl.dump.metadata.only.for.external.table'='true',"
@@ -2915,33 +3155,30 @@ metadata_only_dump_prop() {
 # METADATA_ONLY=true or EFFECTIVE_RECONCILE_EXTERNAL_DATA=true (data copy is
 # instead done via a manual distcp - see check_all_tables_external()/
 # reconcile_external_table_data() call sites in run_incremental_cycle()),
-# 'true' otherwise (the default/original behavior).
+# 'true' otherwise (the default).
 # Bootstrap LOAD has its own separate load_data_copy_flag local (see
 # replicate_one_db) for its own EXCEPTION 1/EXCEPTION 2 messaging, but uses
 # the same EFFECTIVE_RECONCILE_EXTERNAL_DATA/METADATA_ONLY logic.
 #
-# ALSO 'false' on a direction-change run when RECONCILE_ON_DIRECTION_CHANGE
-# is not "true" (with the default "true", a direction change gets 'true'
-# here like any other run, unless the manual distcp path is active). The
-# reasoning below applies to that opt-out case: (DIRECTION_CHANGE=true - a failover
-# or a failback), which is exactly what reaches failover_one_db(). A direction
-# change is a control operation that flips which side is primary; the side
-# about to become the new replica already holds the data from every preceding
-# cycle in the direction being reversed FROM, so there is nothing to copy (see
+# ALSO 'false' on a direction-change run (DIRECTION_CHANGE=true - a failover
+# or a failback) when RECONCILE_ON_DIRECTION_CHANGE is not "true" (with the
+# default "true", a direction change gets 'true' here like any other run,
+# unless the manual distcp path is active). In that opt-out case the run is
+# treated as a pure control operation that flips which side is primary: the
+# side about to become the new replica is assumed to already hold the data
+# from every preceding cycle in the direction being reversed FROM (see
 # EFFECTIVE_RECONCILE_EXTERNAL_DATA's doc comment, which disables the manual
-# distcp path for the same runs and the same reason). This branch is what keeps
-# the two mechanisms consistent: without it, switching
-# EFFECTIVE_RECONCILE_EXTERNAL_DATA off for a direction change would silently
-# flip this property back ON, handing the work to Hive's own internal copy -
-# which in the SAME_NAMESERVICE_COLLISION case cannot resolve the dump-side
+# distcp path for the same runs and the same reason). This branch keeps the
+# two mechanisms consistent: without it, switching
+# EFFECTIVE_RECONCILE_EXTERNAL_DATA off for a direction change would flip
+# this property back ON, handing the work to Hive's own internal copy - which
+# in the SAME_NAMESERVICE_COLLISION case cannot resolve the dump-side
 # LOCATIONs at all and "succeeds" having copied nothing ("number of
-# splits:0"), i.e. it would trade one skipped copy for one fake copy.
+# splits:0").
 #
-# KEYED ON DIRECTION_CHANGE, NOT ON REPLICATION_DIRECTION - this used to read
-# `REPLICATION_DIRECTION == dst_to_src`. Ongoing replication in the reversed
-# direction (dst_to_src + DIRECTION_CHANGE=false) has to copy data like any
-# other cycle; see the matching note in EFFECTIVE_RECONCILE_EXTERNAL_DATA's
-# doc comment for why keying this on direction was a silent-data-loss bug.
+# KEYED ON DIRECTION_CHANGE, NOT ON REPLICATION_DIRECTION: ongoing replication
+# in the reversed direction (dst_to_src + DIRECTION_CHANGE=false) has to copy
+# data like any other cycle.
 load_data_copy_prop() {
   if [[ "${METADATA_ONLY,,}" == "true" || "$EFFECTIVE_RECONCILE_EXTERNAL_DATA" == "true" ]]; then
     printf "%s" "false"
@@ -2997,11 +3234,9 @@ failover_one_db() {
 
   ########################################
   # Step 1: pre-flight check - confirm the new dump side is already a
-  # caught-up replica before reversing direction. Was documented (see the
-  # header comment above and preflight_check_direction_change()'s own doc
-  # comment) but never actually wired up - restored here so a direction
-  # change is never attempted against a side Hive itself doesn't yet
-  # consider a valid replication source.
+  # caught-up replica before reversing direction, so a direction change is
+  # never attempted against a side Hive itself doesn't yet consider a valid
+  # replication source (see preflight_check_direction_change()).
   ########################################
   echo "$SUBSEP"
   echo "[1/${FAILOVER_TOTAL_STEPS}] Pre-flight check..."
@@ -3040,9 +3275,8 @@ failover_one_db() {
   #
   # Hive's direction change is a multi-round handshake, not a single
   # DUMP/LOAD pair, and the round count is not something an operator should
-  # have to know or count off by hand. Observed against Hive 4.0.1 (both a
-  # two-distinct-nameservice lab pairing and a SAME_NAMESERVICE_COLLISION
-  # pairing, identical behavior in both):
+  # have to know or count off by hand. On Hive 4.0.1 (identical with distinct
+  # nameservices and with SAME_NAMESERVICE_COLLISION):
   #
   #   round 1 - REPL DUMP returns last_repl_id=-1 with no REPL::START/END and
   #             writes an "event_ack" file into the dump dir. The matching
@@ -3060,11 +3294,8 @@ failover_one_db() {
   #             own natural stop, and it is why FAILOVER_MAX_ROUNDS defaults
   #             to 3 rather than 2.
   #
-  # Before this loop existed the function ran exactly one round and then
-  # printed "Failover Replication Completed" regardless - the REPL STATUS
-  # query at the end had its VALUE discarded (only beeline's exit code was
-  # checked), so a round-1 NULL was reported to the operator as a completed
-  # failover with "Failed: 0". Convergence is now decided by that value.
+  # Convergence is decided by the VALUE REPL STATUS returns on the new
+  # replica, not by beeline's exit code.
   ########################################
   local _round=0
   local _converged=false
@@ -3094,6 +3325,7 @@ $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
 $(raw_reserved_props)
+$(atlas_dump_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
@@ -3157,6 +3389,7 @@ $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
 $(raw_reserved_props)
+$(atlas_load_props)
 $(distcp_crc_props)
 $(force_distcp_props)
 $(distcp_doas_props)
@@ -3184,8 +3417,7 @@ $(distcp_doas_props)
   #
   # Uses repl_status_last_id() (which parses the VALUE) rather than checking
   # beeline's exit code, which is 0 for a NULL result just as it is for a
-  # real id - that indistinguishability is what made the old one-round
-  # version report an unfinished failover as a success.
+  # real id.
   ########################################
   echo "Checking whether ${LOAD_URI_NS} has become a replica of ${DUMP_URI_NS} (round ${_round})..."
   local _stage_t0=$(date +%s)
@@ -3308,6 +3540,7 @@ $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
 $(raw_reserved_props)
+$(atlas_dump_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
@@ -3335,6 +3568,7 @@ $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
 $(raw_reserved_props)
+$(atlas_load_props)
 $(distcp_crc_props)
 $(force_distcp_props)
 $(distcp_doas_props)
@@ -3396,7 +3630,7 @@ check_all_tables_external() {
   echo "SHOW TABLES completed in $(format_duration $(( $(date +%s) - _stage_t0 )))"
 
   local tables
-  tables=$(echo "$tables_output" | grep -E "^[A-Za-z0-9_]+$" || true)
+  tables=$(echo "$tables_output" | tr -d '\r' | grep -E "^[A-Za-z0-9_]+$" || true)
 
   if ! tables=$(filter_tables_by_pattern "$tables"); then
     return 1
@@ -3446,8 +3680,8 @@ check_all_tables_external() {
       echo "ERROR: SAME_NAMESERVICE_COLLISION is active for this run (SRC_NAMESERVICE == DST_NAMESERVICE),"
       echo "ERROR: so Hive's own internal REPL LOAD data copy cannot be used instead - it resolves this"
       echo "ERROR: table's real location using the raw, un-aliased shared nameservice name, which the"
-      echo "ERROR: LOAD-side session resolves to the WRONG physical cluster (confirmed via live testing:"
-      echo "ERROR: it silently copies zero files instead of failing loudly). There is currently no working"
+      echo "ERROR: LOAD-side session resolves to the WRONG physical cluster (it silently copies zero"
+      echo "ERROR: files instead of failing loudly). There is currently no working"
       echo "ERROR: data-copy path for managed/ACID tables in this scenario - narrow HIVE_DB's table pattern"
       echo "ERROR: to exclude this table, or use two genuinely distinct nameservice names/host:port values"
       echo "ERROR: for SRC_NAMESERVICE/DST_NAMESERVICE if that is possible in your environment instead."
@@ -3480,19 +3714,37 @@ check_all_tables_external() {
 # Returns 1 (with an error on stderr) if the pattern cannot be evaluated -
 # an unevaluable pattern must never be read as "matches nothing", which
 # would silently skip the tables it was meant to select.
+#
+# Two pattern forms are refused for that reason, whatever the table list
+# holds, because grep would not read them the way REPL DUMP does:
+#   - a pattern that still contains a single quote once its outer pair is
+#     stripped, i.e. REPL DUMP's separate include/exclude lists
+#     (<db>.'<include>'.'<exclude>') rather than one pattern;
+#   - a pattern containing a backslash: Hive takes the pattern from a SQL
+#     string literal, where a backslash is an escape character, before
+#     compiling it as a regex, while grep compiles the text as written.
 filter_tables_by_pattern() {
   local tables="$1"
   if [[ -z "$HIVE_TABLE_PATTERN" ]]; then
     [[ -n "$tables" ]] && printf '%s\n' "$tables"
     return 0
   fi
-  [[ -z "$tables" ]] && return 0
 
   local table_pattern_regex="$HIVE_TABLE_PATTERN"
   if [[ "$table_pattern_regex" == \'*\' ]]; then
     table_pattern_regex="${table_pattern_regex#\'}"
     table_pattern_regex="${table_pattern_regex%\'}"
   fi
+
+  if [[ "$table_pattern_regex" == *\'* ]]; then
+    echo "ERROR: Table pattern ${HIVE_TABLE_PATTERN} for '${HIVE_DB_NAME}' is not a single quoted pattern - REPL DUMP's separate include/exclude list form (<db>.'<include>'.'<exclude>') is not supported on the manual distcp data-copy path, so this script cannot tell which tables it selects. Use one pattern and exclude with a negative lookahead, e.g. '(?!excluded_table\$).*'" >&2
+    return 1
+  fi
+  if [[ "$table_pattern_regex" == *\\* ]]; then
+    echo "ERROR: Table pattern '${table_pattern_regex}' for '${HIVE_DB_NAME}' contains a backslash. Hive reads the pattern from a SQL string literal, where a backslash is an escape character, and grep reads it as written, so the two may not select the same tables on the manual distcp data-copy path. Write the pattern without backslashes, e.g. [0-9] instead of \\d and [.] instead of an escaped dot" >&2
+    return 1
+  fi
+  [[ -z "$tables" ]] && return 0
 
   local matches grep_rc=0
   if echo x | grep -qP 'x' 2>/dev/null; then
@@ -3528,19 +3780,6 @@ table_describe_fields() {
   printf '%s\n%s\n' "$tbl_type" "$tbl_loc"
 }
 
-# reconcile_external_table_data: for every table actually present in
-# HIVE_DB_NAME on the LOAD target after a metadata-only bootstrap REPL LOAD
-# ('hive.repl.run.data.copy.tasks.on.target'='false'), read that table's
-# real LOCATION on both the dump source and the load target (handles custom
-# LOCATIONs, not just Hive's default warehouse path) and run a manual
-# `hadoop distcp ${DISTCP_OPTS}` directly between those two paths. This is
-# the ONLY point in the whole pipeline where a genuine destination-aware
-# skip-if-unchanged copy happens - REPL LOAD's own bootstrap copy task has
-# no such comparison (confirmed via testing: it re-copies every file in the
-# dump manifest unconditionally, regardless of what already exists at the
-# destination). Only called when RECONCILE_EXTERNAL_DATA=true, after
-# check_all_tables_external has already confirmed every table in scope is
-# EXTERNAL_TABLE.
 # distcp_collision_dgen_args: print the "-D..." generic-option properties
 # needed for a single `hadoop distcp` invocation to correctly resolve BOTH
 # DUMP_URI_NS and LOAD_URI_NS simultaneously, in the same-nameservice-
@@ -3559,11 +3798,9 @@ table_describe_fields() {
 # host's "fs.defaultFS", all resolve nameservices from THEIR OWN static,
 # cluster-wide hdfs-site.xml, not from this one CLI invocation's "-D" flags -
 # dropping the native name from "dfs.nameservices" here would break that
-# resolution exactly the same way it did in the sibling HDFS script (see
-# resolve_active_namenode_hostport's doc comment there for the full history
-# of that failure mode) even though NEITHER src_loc NOR dst_loc use the
-# native name directly (both are rewritten to use DUMP_URI_NS/LOAD_URI_NS -
-# see reconcile_external_table_data() below).
+# resolution even though NEITHER src_loc NOR dst_loc use the native name
+# directly (both are rewritten to use DUMP_URI_NS/LOAD_URI_NS - see
+# reconcile_external_table_data() below).
 distcp_collision_dgen_args() {
   if [[ "${AUTO_DERIVE_HA_CLIENT_CONFIG,,}" != "yes" ]] || [[ "$SAME_NAMESERVICE_COLLISION" != true ]]; then
     return 0
@@ -3618,6 +3855,20 @@ uri_path_depth() {
   printf '%s' "$n"
 }
 
+# reconcile_external_table_data: for every table actually present in
+# HIVE_DB_NAME on the LOAD target after a metadata-only bootstrap REPL LOAD
+# ('hive.repl.run.data.copy.tasks.on.target'='false'), read that table's
+# real LOCATION on both the dump source and the load target (handles custom
+# LOCATIONs, not just Hive's default warehouse path) and run a manual
+# `hadoop distcp ${DISTCP_OPTS}` directly between those two paths. This is
+# the ONLY point in the whole pipeline where a genuine destination-aware
+# skip-if-unchanged copy happens - REPL LOAD's own bootstrap copy task has
+# no such comparison (it re-copies every file in the dump manifest
+# unconditionally, regardless of what already exists at the destination).
+# Only called when EFFECTIVE_RECONCILE_EXTERNAL_DATA=true, after
+# check_all_tables_external has already confirmed every table in scope is
+# EXTERNAL_TABLE.
+#
 # LIMITATION: only each table's own LOCATION directory is reconciled. A
 # partition whose LOCATION lies outside its table's directory is not
 # copied by this function.
@@ -3630,7 +3881,7 @@ reconcile_external_table_data() {
   # DUMP/LOAD (see derive_db_vars()). Uses DUMP_URI_NS/LOAD_URI_NS (the
   # aliases) in the same-nameservice-collision case, since that's what
   # src_loc/dst_loc are rewritten to below - excluding the raw shared name
-  # instead would exclude an authority that no longer appears in either URI.
+  # instead would exclude an authority that appears in neither URI.
   local distcp_token_exclude_ns="${DUMP_NAMESERVICE},${LOAD_NAMESERVICE}"
   if [[ "$SAME_NAMESERVICE_COLLISION" == true ]]; then
     distcp_token_exclude_ns="${DUMP_URI_NS},${LOAD_URI_NS}"
@@ -3659,20 +3910,25 @@ reconcile_external_table_data() {
     echo "ERROR: Could not list tables in '${HIVE_DB_NAME}' on load target for data reconciliation (after $(format_duration $(( $(date +%s) - _stage_t0 ))))"
     return 1
   }
-  tables=$(echo "$tables_output" | grep -E "^[A-Za-z0-9_]+$" || true)
+  tables=$(echo "$tables_output" | tr -d '\r' | grep -E "^[A-Za-z0-9_]+$" || true)
   echo "SHOW TABLES completed in $(format_duration $(( $(date +%s) - _stage_t0 )))"
 
   # Only the tables this run's spec selected - the same set
   # check_all_tables_external() verified and REPL DUMP replicated. Other
   # tables in the same database belong to a different spec (or to none)
   # and may be managed/ACID, which a raw distcp must never touch.
+  local load_target_tables="$tables"
   if ! tables=$(filter_tables_by_pattern "$tables"); then
     echo "ERROR: Could not apply table pattern for '${HIVE_DB_NAME}' - not reconciling any table rather than the wrong ones"
     return 1
   fi
 
   if [[ -z "$tables" ]]; then
-    echo "[WARN] No tables found in '${HIVE_DB_NAME}' on load target after metadata-only LOAD - nothing to reconcile"
+    if [[ -n "$HIVE_TABLE_PATTERN" && -n "$load_target_tables" ]]; then
+      echo "[WARN] Table pattern ${HIVE_TABLE_PATTERN} selects none of the tables in '${HIVE_DB_NAME}' on load target - nothing to reconcile"
+    else
+      echo "[WARN] No tables found in '${HIVE_DB_NAME}' on load target after metadata-only LOAD - nothing to reconcile"
+    fi
     return 0
   fi
 
@@ -3684,11 +3940,10 @@ reconcile_external_table_data() {
   # ORDER MATTERS: `hadoop distcp` is a Tool, so its GenericOptionsParser
   # only recognizes -D/-fs/-conf/etc. when they appear BEFORE any
   # tool-specific arguments (-p, -update, -skipcrccheck, source/dest
-  # paths). Confirmed via testing: with -D flags placed AFTER
-  # -p -update -skipcrccheck, distcp's CopyListing treated the -D flags
-  # themselves as literal source paths ("-Dmapreduce.job...=... doesn't
-  # exist") instead of parsing them as JVM properties, failing with
-  # InvalidInputException before any copy started. All -D options (the
+  # paths). -D flags placed AFTER -p -update -skipcrccheck are treated by
+  # distcp's CopyListing as literal source paths rather than parsed as
+  # properties, and the run fails with InvalidInputException before any
+  # copy starts. All -D options (the
   # token-exclude and queue flags below) are placed first for this reason;
   # DISTCP_OPTS (-p -update -skipcrccheck) comes after, then finally the
   # source/dest paths.
@@ -3736,8 +3991,7 @@ reconcile_external_table_data() {
     # aliases (Hive has no knowledge of them). In the same-nameservice-
     # collision case, src_loc and dst_loc would therefore both come back as
     # "hdfs://<identical-real-name>/..." - indistinguishable from distcp's
-    # point of view, exactly the "does this think it's copying from DR to
-    # DR?" ambiguity already confirmed and fixed in the sibling HDFS script.
+    # point of view.
     # Rewrite each URI's authority to the corresponding alias so distcp
     # receives two genuinely distinct source/destination authorities.
     if [[ "$SAME_NAMESERVICE_COLLISION" == true ]]; then
@@ -3855,7 +4109,7 @@ replicate_one_db() {
   echo ""
 
   # Assert we are dumping from the primary, in EITHER direction - with SRC/DST
-  # swapping supported, the direction label alone no longer tells you which
+  # swapping supported, the direction label alone does not tell you which
   # physical cluster this run dumps from. OPT-IN (default off) because it costs
   # one extra beeline invocation per database per run; see
   # PREFLIGHT_PRIMARY_CHECK's doc comment for when it is worth paying that.
@@ -3916,6 +4170,12 @@ replicate_one_db() {
   ########################################
   # Step 2: Decide bootstrap vs. incremental
   #
+  # This picks which of this script's two procedures runs, from the state
+  # of the load target. The kind of dump is Hive's own decision, made on
+  # the dump side from whether the staging directory (hive.repl.rootdir)
+  # already holds a previous dump - so a load target that disagrees with
+  # the staging directory is rejected by REPL LOAD, not detected here.
+  #
   # A database that EXISTS but is genuinely empty (0 tables) is still
   # eligible for a bootstrap REPL LOAD - this matches Hive's own
   # LoadDatabase.getLoadDbType() constraint (bootstrap proceeds if the
@@ -3926,13 +4186,11 @@ replicate_one_db() {
   # its old tables aside to a "_backup" database so REPL LOAD could
   # bootstrap onto it at all - see RECONCILE_EXTERNAL_DATA above) still
   # exists as a database object, but has no tables to make an incremental
-  # cycle meaningful against. Without this table-count check, such a
-  # database would be routed to run_incremental_cycle() (which
-  # unconditionally sets hive.repl.run.data.copy.tasks.on.target=true and
-  # never reads RECONCILE_EXTERNAL_DATA at all), even though REPL DUMP/LOAD
-  # would still internally perform a real bootstrap underneath - silently
-  # skipping this script's own bootstrap-only safeguards
-  # (RECONCILE_EXTERNAL_DATA check/flip, snapshot enablement, the partial-state notice).
+  # cycle meaningful against. Such a database is routed to the bootstrap
+  # procedure so that it gets the steps only that procedure runs:
+  # 'hive.repl.bootstrap.external.tables'='true' on the DUMP and LOAD,
+  # snapshot enablement on the load side, creation of the external table
+  # base directory, and the partial-state notice on failure.
   ########################################
   echo "$SUBSEP"
   echo "[2/${TOTAL_STEPS}] Determining replication mode..."
@@ -3952,7 +4210,9 @@ replicate_one_db() {
       echo "$existing_tables_output"
       return 1
     fi
-    existing_table_count=$(printf '%s\n' "$existing_tables_output" | grep -c -E "^[A-Za-z0-9_]+$" || true)
+    # A trailing carriage return is dropped first, as in the existence check
+    # above, so a CRLF-terminated row is still counted as a table.
+    existing_table_count=$(printf '%s\n' "$existing_tables_output" | tr -d '\r' | grep -c -E "^[A-Za-z0-9_]+$" || true)
 
     if [[ "$existing_table_count" -eq 0 ]]; then
       echo "Database '${HIVE_DB_NAME}' exists on load target but has 0 tables - Bootstrap mode (empty database is bootstrap-eligible per Hive's own REPL LOAD constraint)"
@@ -4014,6 +4274,7 @@ $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
 $(raw_reserved_props)
+$(atlas_dump_props)
 'hive.repl.replica.external.table.base.dir'='${REPL_EXTERNAL_BASE_DIR}'
 );"
 
@@ -4079,6 +4340,7 @@ $(metadata_only_dump_prop)
 $(snapshot_copy_props)
 $(materialized_view_props)
 $(raw_reserved_props)
+$(atlas_load_props)
 $(distcp_crc_props)
 $(force_distcp_props)
 $(distcp_doas_props)
@@ -4341,6 +4603,17 @@ echo "Force DistCp : ${HIVE_REPL_FORCE_DISTCP} $([ "${HIVE_REPL_FORCE_DISTCP,,}"
 echo "DistCp user  : ${HIVE_DISTCP_DOAS_USER:-<cluster default>} (hive.distcp.privileged.doAs for REPL LOAD data-copy jobs)"
 echo "Raw copy     : ${HIVE_REPL_RAW_RESERVED_COPY} $([ "${HIVE_REPL_RAW_RESERVED_COPY,,}" == "true" ] && echo "(DUMP/LOAD copy via /.reserved/raw - requires identical EZ key material on both clusters)" || echo "(data decrypted on source, re-encrypted with the target's own key)")"
 echo "Skip CRC     : ${HIVE_REPL_SKIP_CRC_CHECK} $([ "${HIVE_REPL_SKIP_CRC_CHECK,,}" == "true" ] && echo "(REPL LOAD DistCp runs with -skipcrccheck)" || echo "(REPL LOAD DistCp compares checksums)")"
+if [[ "$ATLAS_ACTIVE" == true ]]; then
+  if [[ "$REPLICATION_DIRECTION" == "dst_to_src" ]]; then
+    echo "Atlas        : yes (export ${DST_ATLAS_CLUSTER_NAME} @ ${DST_ATLAS_ENDPOINT} -> import ${SRC_ATLAS_CLUSTER_NAME} @ ${SRC_ATLAS_ENDPOINT})"
+  else
+    echo "Atlas        : yes (export ${SRC_ATLAS_CLUSTER_NAME} @ ${SRC_ATLAS_ENDPOINT} -> import ${DST_ATLAS_CLUSTER_NAME} @ ${DST_ATLAS_ENDPOINT})"
+  fi
+elif [[ "$INCLUDE_ATLAS_METADATA" == "yes" ]]; then
+  echo "Atlas        : skipped (${DIRECTION_CHANGE_KIND,,} run - Atlas metadata resumes on the next ongoing cycle)"
+else
+  echo "Atlas        : no"
+fi
 echo "Kerberos     : ${KERBEROS_ENABLED^^}"
 if [[ "$KERBEROS_ENABLED" == "yes" ]]; then
   echo "Execution Mode: Kerberos (no sudo, beeline uses ticket)"
@@ -4350,6 +4623,8 @@ else
 fi
 echo "Session Log  : $SESSION_LOG_FILE"
 echo ""
+
+atlas_preflight_health_check
 
 ########################################
 # Main loop - process each database spec in sequence.
@@ -4456,12 +4731,9 @@ for db_spec in "${DB_SPECS[@]}"; do
   db_status="SUCCESS"
   db_error=""
 
-  # DISPATCH KEYED ON DIRECTION_CHANGE, NOT ON REPLICATION_DIRECTION. This
-  # used to read `REPLICATION_DIRECTION == dst_to_src`, which made "reversed
-  # direction" and "failover" the same thing and left ongoing replication in
-  # the reversed direction (dst_to_src + DIRECTION_CHANGE=false) and failback
-  # (src_to_dst + DIRECTION_CHANGE=true) unreachable - see DIRECTION_CHANGE's
-  # doc comment near the top of this file for the full four-state table.
+  # DISPATCH KEYED ON DIRECTION_CHANGE, NOT ON REPLICATION_DIRECTION - see
+  # DIRECTION_CHANGE's doc comment near the top of this file for the full
+  # four-state table.
   #
   # A database another run is already working on is SKIPPED, not FAILED -
   # it is being replicated, just not by this invocation.
