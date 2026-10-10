@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ./setup_ssl_with_existing_jks.sh
-# Supported Services: HDFS/YARN/MapReduce, Infra-Solr, Hive, Ranger, Spark2, Kafka, HBase, Spark3, Oozie, Ranger KMS, Ozone, NiFi, Schema Registry, Livy2, Kafka3, Livy3, NiFi Registry, Trino, Zeppelin, Solr, Atlas
+# Supported Services: HDFS/YARN/MapReduce, Infra-Solr, Hive, Ranger, Spark2, Kafka, HBase, Spark3, Oozie, Ranger KMS, Ozone, NiFi, Schema Registry, Livy2, Kafka3, Livy3, NiFi Registry, Trino, Zeppelin, Solr, Atlas, Trino Gateway
 ##########################################################################
 GREEN='\e[32m'; YELLOW='\e[33m'; RED='\e[31m'; CYAN='\e[36m'; NC='\e[0m'  # Color codes
 #---------------------------------------------------------
@@ -691,6 +691,16 @@ enable_trino_ssl () {
     report_result "Trino"
 }
 
+enable_trino_gateway_ssl () {
+    SET_CONFIG_FAILURES=0
+    echo -e "${YELLOW}Starting to enable SSL for Trino Gateway...${NC}"
+    set_config "trino-gateway-ssl" "ssl_enabled" "true"
+    set_config "trino-gateway-ssl" "trino-gateway.keystore_path" "$keystore"
+    set_config "trino-gateway-ssl" "trino-gateway.keystore_key" "$keystorepassword"
+    set_config "trino-gateway-ssl" "process_forwarded" "true"
+    report_result "Trino Gateway"
+}
+
 enable_zeppelin_ssl () {
     SET_CONFIG_FAILURES=0
     echo -e "${YELLOW}Starting to enable SSL for Zeppelin...${NC}"
@@ -796,6 +806,7 @@ display_service_options() {
     echo -e "${GREEN} 19)${NC} 📓   Zeppelin"
     echo -e "${GREEN} 20)${NC} 🔍   Solr"
     echo -e "${GREEN} 21)${NC} 🗺️   Atlas"
+    echo -e "${GREEN} 22)${NC} 🚪   Trino Gateway"
     echo -e "${YELLOW}────────────────────────────────────────────────────────────${NC}"
     echo -e "${GREEN}  A)${NC} 🌐   All Services (for the brave)"
     echo -e "${RED}  Q)${NC} ❌   Quit (no changes)"
@@ -830,6 +841,7 @@ while true; do
         19) enable_zeppelin_ssl ;;
         20) enable_solr_ssl ;;
         21) enable_atlas_ssl ;;
+        22) enable_trino_gateway_ssl ;;
         [Aa])
             enable_hdfs_ssl
             enable_infra_solr_ssl
@@ -852,6 +864,7 @@ while true; do
             enable_zeppelin_ssl
             enable_solr_ssl
             enable_atlas_ssl
+            enable_trino_gateway_ssl
             ;;
         [Qq]) 
             echo -e "${GREEN}Exiting...${NC}"
