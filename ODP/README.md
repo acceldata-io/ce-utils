@@ -12,6 +12,7 @@ Here is a set of Bash scripts created to streamline various tasks within your OD
 8. [Disable SSL for Hadoop Services](https://github.com/acceldata-io/ce-utils/tree/main/ODP#8-disable-ssl-for-hadoop-services)
 9. [Knox LDAP Configuration and Ambari Integration](https://github.com/acceldata-io/ce-utils/tree/main/ODP#9-knox-ldap-configuration-and-ambari-integration)
 10. [Ambari MPACK Service Removal](https://github.com/acceldata-io/ce-utils/tree/main/ODP#10-ambari-mpack-service-removal)
+11. [Ambari Config Manager (backup, restore, config groups)](https://github.com/acceldata-io/ce-utils/tree/main/ODP#11-ambari-config-manager)
 
 ## Detailed Information
 
@@ -284,3 +285,22 @@ upgrade_backup/
 > **Note:** Deleting a service removes its components and configuration history from Ambari. Packages on the hosts are not uninstalled, and the mpack stays registered on the Ambari Server until you run `ambari-server uninstall-mpack`.
 
 > **Passwords:** Ambari returns password properties as `SECRET:<type>:<version>:<key>` references. Those references point at config versions that are deleted together with the service, so passwords cannot be recovered from the backup. The script lists every such property and asks you to confirm you have recorded them before it deletes the service.
+
+### 11. Ambari Config Manager
+
+- **Script:** [ambari-config-manager.sh](https://github.com/acceldata-io/ce-utils/blob/main/ODP/scripts/ambari-config-manager.sh)
+- Backs up and restores Ambari service configurations like `config_backup_restore.sh` (section 6), and adds **config groups** (host-specific overrides). Run it on the Ambari Server host; it supports RHEL/CentOS 7, 8 and 9 (bash 4.2 or later).
+
+```bash
+./ambari-config-manager.sh                                      # interactive menu
+./ambari-config-manager.sh --restore-from <path> <service|all>  # restore from a specific backup directory
+```
+
+- **Settings** are environment variables: `AMBARISERVER`, `AMBARI_USER`, `AMBARI_PASSWORD`, `PORT`, `PROTOCOL`, `PYTHON_BIN` (auto-detected: `ambari-python-wrap`, then `python3`, `python`, `python2`). Example: `PROTOCOL=https PORT=8443 ./ambari-config-manager.sh`.
+- **Backup menu:** MPACK services are listed first, then the default stack services. Services not installed on the cluster are dimmed and marked `(not installed)`; the tool supports every service listed. Each action ends with a summary and the backup directory.
+- **Restore menu:** lists only the services that have a backup in the backup directory, each with what the backup holds and when it was taken (for example `Kafka  8 configs, 1 config group(s), 2026-10-10 20:14`). The script shows the backup directory and asks for confirmation before it overwrites anything in Ambari (`--restore-from` does not prompt).
+- **Backup location:** backups go to `./upgrade_backup/<type>/<type>.json`; config groups go to `./upgrade_backup/_config_groups/<SERVICE>__<group>.json`.
+- **Config group restore:** after the Default group, the script lists the groups in the backup and asks for confirmation. Existing groups are updated, deleted ones are created again, matching ones are left alone. Set `INCLUDE_CONFIG_GROUPS=no` to skip config groups.
+- Restart the affected components from Ambari after a restore.
+
+> **Note:** Passwords are saved as Ambari `SECRET:` references and restore on the same cluster only. Config types not listed in the script (for example `kafka-log4j` or Trino) are not backed up.
