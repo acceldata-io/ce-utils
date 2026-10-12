@@ -29,3 +29,5 @@ ambari-server restart
 ```
 
 4. Create a new Express or Rolling upgrade. A plan that is already paused keeps the groups it was created with. This copy does not rewrite that plan.
+
+A 3.2 source reads `stacks/ODP/3.2/upgrades/config-upgrade.xml` only. That file now defines `odp_3_4_0_hdfs_log4j_remove_event_counter` (Hadoop 3.4 removed `EventCounter`) and the JDK 8 to 17 `jvm_flags` copy for HDFS, YARN, MapReduce, Tez, and Hive. The env insert is rendered when `java_version` is greater than 11, so a cluster still on JDK 8 keeps its current opts until the stack JDK is 17. NodeManager pre-upgrade runs `odp_3_4_0_yarn_spark_358_only` so `yarn.nodemanager.aux-services` switches from Spark 3.5.5 (`spark_shuffle_355`) to Spark 3.5.8 (`spark_shuffle_358`) before the NodeManager restart. The shuffle jar is `spark3_python<version>_<stack>-yarn-shuffle`.

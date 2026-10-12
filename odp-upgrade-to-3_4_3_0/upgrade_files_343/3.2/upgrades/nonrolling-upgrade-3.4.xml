@@ -1043,6 +1043,8 @@
       <component name="NAMENODE">
         <pre-upgrade>
           <task xsi:type="configure" id="odp_3_4_0_hdfs_log4j_remove_event_counter"/>
+          <task xsi:type="configure" id="odp_3_3_hdfs_jdk17_jvm_flags"/>
+          <task xsi:type="configure" id="odp_3_3_hadoop_env_jdk17_jvm_flags"/>
         </pre-upgrade>
         <pre-downgrade/>
         <upgrade>
@@ -1114,6 +1116,10 @@
 
     <service name="MAPREDUCE2">
       <component name="HISTORYSERVER">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3_3_mapred_env_jdk17_jvm_flags"/>
+        </pre-upgrade>
+        <pre-downgrade/>
         <upgrade>
           <task xsi:type="restart-task"/>
         </upgrade>
@@ -1140,12 +1146,20 @@
       </component>
 
       <component name="RESOURCEMANAGER">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3_3_yarn_jdk17_jvm_flags"/>
+          <task xsi:type="configure" id="odp_3_3_yarn_env_jdk17_jvm_flags"/>
+        </pre-upgrade>
+        <pre-downgrade/>
         <upgrade>
           <task xsi:type="restart-task"/>
         </upgrade>
       </component>
 
       <component name="NODEMANAGER">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3_4_0_yarn_spark_358_only"/>
+        </pre-upgrade>
         <upgrade>
           <task xsi:type="restart-task"/>
         </upgrade>
@@ -1245,6 +1259,8 @@
         <pre-upgrade>
           <task xsi:type="configure" id="odp_3_3_x_tez_am_launch_opts_fix"/>
           <task xsi:type="configure" id="odp_3_3_x_tez_env_remove_dead_exports"/>
+          <task xsi:type="configure" id="odp_3_3_tez_jdk17_jvm_flags"/>
+          <task xsi:type="configure" id="odp_3_3_tez_env_jdk17_jvm_flags"/>
         </pre-upgrade>
         <pre-downgrade/>
         <upgrade>
@@ -1264,6 +1280,11 @@
 
     <service name="HIVE">
       <component name="HIVE_METASTORE">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3_3_hive_jdk17_jvm_flags"/>
+          <task xsi:type="configure" id="odp_3_3_hive_env_jdk17_jvm_flags"/>
+        </pre-upgrade>
+        <pre-downgrade/>
         <upgrade>
           <task xsi:type="restart-task"/>
         </upgrade>

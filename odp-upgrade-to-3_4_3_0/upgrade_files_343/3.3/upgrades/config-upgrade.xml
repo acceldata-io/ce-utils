@@ -33,6 +33,18 @@
                      find="log4j.appender.EventCounter=org.apache.hadoop.log.metrics.EventCounter"
                      replace-with=""/>
           </definition>
+          <!-- JDK 8 -> 17. Java 17 refuses reflective access unless these add-opens are on the NameNode. -->
+          <definition xsi:type="configure" id="odp_3_3_hdfs_jdk17_jvm_flags" summary="Set HDFS JVM add-opens flags for Java 17">
+            <type>hdfs-site</type>
+            <set key="jvm_flags" value="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED"
+                 if-type="hdfs-site" if-key="jvm_flags" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3_3_hadoop_env_jdk17_jvm_flags" summary="Inject JDK 17 add-opens into hadoop-env so NameNode WebHDFS works">
+            <type>hadoop-env</type>
+            <insert key="content" insert-type="append" newline-before="true"
+                    value="{% if java_version|int &gt; 11 %}&#xA;export HADOOP_OPTS=&quot;$HADOOP_OPTS {{jvm_flags}}&quot;&#xA;export HDFS_NAMENODE_OPTS=&quot;${HDFS_NAMENODE_OPTS} {{jvm_flags}}&quot;&#xA;export HADOOP_CLIENT_OPTS=&quot;${HADOOP_CLIENT_OPTS} {{jvm_flags}}&quot;&#xA;{% endif %}"
+                    if-key="content" if-type="hadoop-env" if-value="{{jvm_flags}}" if-value-match-type="partial" if-value-not-matched="true"/>
+          </definition>
         </changes>
       </component>
     </service>
@@ -70,6 +82,18 @@
             <replace key="content"
                      find="&#xA;{% if java_version == 8 %}&#xA;# Java 8 JVM options&#xA;export tez.am.launch.cmd-opts=&quot;-XX:+PrintGCDetails -verbose:gc -XX:+PrintGCTimeStamps -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}}&quot;&#xA;export tez.task.launch.cmd-opts=&quot;-XX:+PrintGCDetails -verbose:gc -XX:+PrintGCTimeStamps -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}}&quot;&#xA;{% elif java_version == 11 %}&#xA;{% if jvm_tuning_profile == 'azul_prime' %}&#xA;export TEZ_AM_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans&quot;&#xA;export TEZ_TASK_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans&quot;&#xA;{% else %}&#xA;export TEZ_AM_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC&quot;&#xA;export TEZ_TASK_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC&quot;&#xA;{% endif %}&#xA;export tez.am.launch.cmd-opts=&quot;${TEZ_AM_JVM_TUNING_OPTS} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}}&quot;&#xA;export tez.task.launch.cmd-opts=&quot;${TEZ_TASK_JVM_TUNING_OPTS} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}}&quot;&#xA;{% else %}&#xA;# For Java 11+&#xA;{% if jvm_tuning_profile == 'azul_prime' %}&#xA;export TEZ_AM_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans&quot;&#xA;export TEZ_TASK_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans&quot;&#xA;{% else %}&#xA;export TEZ_AM_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC&quot;&#xA;export TEZ_TASK_JVM_TUNING_OPTS=&quot;-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC&quot;&#xA;{% endif %}&#xA;export tez.am.launch.cmd-opts=&quot;${TEZ_AM_JVM_TUNING_OPTS} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}} {{jvm_flags}}&quot;&#xA;export tez.task.launch.cmd-opts=&quot;${TEZ_TASK_JVM_TUNING_OPTS} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}} {{jvm_flags}}&quot;&#xA;{% endif %}&#xA;"
                      replace-with="&#xA;"/>
+          </definition>
+          <!-- JDK 8 -> 17. Tez AM and tasks need the same add-opens once java_version is 17. -->
+          <definition xsi:type="configure" id="odp_3_3_tez_jdk17_jvm_flags" summary="Set Tez JVM add-opens flags for Java 17">
+            <type>tez-site</type>
+            <set key="jvm_flags" value="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED"
+                 if-type="tez-site" if-key="jvm_flags" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3_3_tez_env_jdk17_jvm_flags" summary="Inject JDK 17 add-opens into tez-env">
+            <type>tez-env</type>
+            <insert key="content" insert-type="append" newline-before="true"
+                    value="{% if java_version|int &gt; 11 %}&#xA;export tez.am.launch.cmd-opts=&quot;${tez.am.launch.cmd-opts} {{jvm_flags}}&quot;&#xA;export tez.task.launch.cmd-opts=&quot;${tez.task.launch.cmd-opts} {{jvm_flags}}&quot;&#xA;{% endif %}"
+                    if-key="content" if-type="tez-env" if-value="{{jvm_flags}}" if-value-match-type="partial" if-value-not-matched="true"/>
           </definition>
         </changes>
       </component>
@@ -129,6 +153,53 @@
                       if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_351.classpath" if-key-state="present"/>
             <transfer operation="delete" delete-key="spark.shuffle.service.v351.port"
                       if-type="yarn-site" if-key="spark.shuffle.service.v351.port" if-key-state="present"/>
+          </definition>
+        </changes>
+      </component>
+      <component name="RESOURCEMANAGER">
+        <changes>
+          <!-- JDK 8 -> 17. RM, NM, ATS, Timeline Reader, and Registry DNS. -->
+          <definition xsi:type="configure" id="odp_3_3_yarn_jdk17_jvm_flags" summary="Set YARN JVM add-opens flags for Java 17">
+            <type>yarn-site</type>
+            <set key="jvm_flags" value="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.math=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED"
+                 if-type="yarn-site" if-key="jvm_flags" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3_3_yarn_env_jdk17_jvm_flags" summary="Inject JDK 17 add-opens into yarn-env for RM, NM, ATS, Timeline Reader, and Registry DNS">
+            <type>yarn-env</type>
+            <insert key="content" insert-type="append" newline-before="true"
+                    value="{% if java_version|int &gt; 11 %}&#xA;export YARN_RESOURCEMANAGER_OPTS=&quot;$YARN_RESOURCEMANAGER_OPTS {{jvm_flags}}&quot;&#xA;export YARN_NODEMANAGER_OPTS=&quot;$YARN_NODEMANAGER_OPTS {{jvm_flags}}&quot;&#xA;export YARN_TIMELINESERVER_OPTS=&quot;$YARN_TIMELINESERVER_OPTS {{jvm_flags}}&quot;&#xA;export YARN_TIMELINEREADER_OPTS=&quot;$YARN_TIMELINEREADER_OPTS {{jvm_flags}}&quot;&#xA;export YARN_REGISTRYDNS_OPTS=&quot;$YARN_REGISTRYDNS_OPTS {{jvm_flags}}&quot;&#xA;export HADOOP_OPTS=&quot;$HADOOP_OPTS {{jvm_flags}}&quot;&#xA;{% endif %}"
+                    if-key="content" if-type="yarn-env" if-value="{{jvm_flags}}" if-value-match-type="partial" if-value-not-matched="true"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="MAPREDUCE2">
+      <component name="HISTORYSERVER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_3_mapred_env_jdk17_jvm_flags" summary="Inject JDK 17 add-opens into mapred-env">
+            <type>mapred-env</type>
+            <insert key="content" insert-type="append" newline-before="true"
+                    value="{% if java_version|int &gt; 11 %}&#xA;export MAPRED_HISTORYSERVER_OPTS=&quot;$MAPRED_HISTORYSERVER_OPTS {{jvm_flags}}&quot;&#xA;export HADOOP_OPTS=&quot;$HADOOP_OPTS {{jvm_flags}}&quot;&#xA;{% endif %}"
+                    if-key="content" if-type="mapred-env" if-value="{{jvm_flags}}" if-value-match-type="partial" if-value-not-matched="true"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="HIVE">
+      <component name="HIVE_METASTORE">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_3_hive_jdk17_jvm_flags" summary="Set Hive JVM add-opens flags for Java 17">
+            <type>hive-site</type>
+            <set key="jvm_flags" value="--add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.math=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.security=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.time=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.regex=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/jdk.internal.reflect=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.provider=ALL-UNNAMED --add-opens=java.sql/java.sql=ALL-UNNAMED"
+                 if-type="hive-site" if-key="jvm_flags" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3_3_hive_env_jdk17_jvm_flags" summary="Inject JDK 17 add-opens into hive-env">
+            <type>hive-env</type>
+            <insert key="content" insert-type="append" newline-before="true"
+                    value="{% if java_version|int &gt; 11 %}&#xA;export HADOOP_OPTS=&quot;$HADOOP_OPTS {{jvm_flags}}&quot;&#xA;export HADOOP_CLIENT_OPTS=&quot;$HADOOP_CLIENT_OPTS {{jvm_flags}}&quot;&#xA;{% endif %}"
+                    if-key="content" if-type="hive-env" if-value="{{jvm_flags}}" if-value-match-type="partial" if-value-not-matched="true"/>
           </definition>
         </changes>
       </component>

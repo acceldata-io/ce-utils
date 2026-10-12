@@ -18,7 +18,9 @@
 
 <!-- Config changes applied by the ODP 3.4 -> 3.4 (maintenance) upgrade packs. Ambari resolves
      "configure" task ids against the SOURCE stack's config-upgrade.xml, so definitions needed by
-     the packs under 3.4/upgrades must live here (3.3/upgrades/config-upgrade.xml serves 3.3 -> 3.4). -->
+     the packs under 3.4/upgrades must live here (3.2 and 3.3 copies serve those sources).
+     JDK 8 -> 17 clusters need the jvm_flags copy. The HDFS EventCounter removal must resolve
+     from this same source file or ConfigureAction fails before the NameNode restart. -->
 <upgrade-config-changes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="upgrade-config.xsd">
   <services>
 
@@ -32,6 +34,144 @@
             <type>ranger-kms-site</type>
             <set key="ranger.contextName" value="/"
                  if-type="ranger-kms-site" if-key="ranger.contextName" if-value="/kms"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="HDFS">
+      <component name="NAMENODE">
+        <changes>
+          <!-- org.apache.hadoop.log.metrics.EventCounter was removed in Hadoop 3.4.0 (HADOOP-17524).
+               A JDK 8 source stack resolves this id from its own config-upgrade.xml. -->
+          <definition xsi:type="configure" id="odp_3_4_0_hdfs_log4j_remove_event_counter" summary="Removing EventCounter appender from hdfs-log4j">
+            <type>hdfs-log4j</type>
+            <replace key="content"
+                     find="log4j.rootLogger=${hadoop.root.logger}, EventCounter"
+                     replace-with="log4j.rootLogger=${hadoop.root.logger}"/>
+            <replace key="content"
+                     find="log4j.appender.EventCounter=org.apache.hadoop.log.metrics.EventCounter"
+                     replace-with=""/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3_3_hdfs_jdk17_jvm_flags" summary="Set HDFS JVM add-opens flags for Java 17">
+            <type>hdfs-site</type>
+            <set key="jvm_flags" value="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED"
+                 if-type="hdfs-site" if-key="jvm_flags" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3_3_hadoop_env_jdk17_jvm_flags" summary="Inject JDK 17 add-opens into hadoop-env so NameNode WebHDFS works">
+            <type>hadoop-env</type>
+            <insert key="content" insert-type="append" newline-before="true"
+                    value="{% if java_version|int &gt; 11 %}&#xA;export HADOOP_OPTS=&quot;$HADOOP_OPTS {{jvm_flags}}&quot;&#xA;export HDFS_NAMENODE_OPTS=&quot;${HDFS_NAMENODE_OPTS} {{jvm_flags}}&quot;&#xA;export HADOOP_CLIENT_OPTS=&quot;${HADOOP_CLIENT_OPTS} {{jvm_flags}}&quot;&#xA;{% endif %}"
+                    if-key="content" if-type="hadoop-env" if-value="{{jvm_flags}}" if-value-match-type="partial" if-value-not-matched="true"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="YARN">
+      <component name="NODEMANAGER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_4_0_yarn_spark_358_only" summary="Migrate to Spark 3.5.8 shuffle service only (remove 3.5.5, 4.1.1, 3.3.3, 3.5.1)">
+            <type>yarn-site</type>
+            <replace key="yarn.nodemanager.aux-services" find="spark_shuffle_355" replace-with="spark_shuffle_358"
+                     if-type="yarn-site" if-key="yarn.nodemanager.aux-services" if-value="spark_shuffle_355" if-value-match-type="partial"/>
+            <replace key="yarn.nodemanager.aux-services" find=",spark_shuffle_411" replace-with=""
+                     if-type="yarn-site" if-key="yarn.nodemanager.aux-services" if-value="spark_shuffle_411" if-value-match-type="partial"/>
+            <replace key="yarn.nodemanager.aux-services" find=",spark_shuffle_333" replace-with=""
+                     if-type="yarn-site" if-key="yarn.nodemanager.aux-services" if-value="spark_shuffle_333" if-value-match-type="partial"/>
+            <replace key="yarn.nodemanager.aux-services" find=",spark_shuffle_351" replace-with=""
+                     if-type="yarn-site" if-key="yarn.nodemanager.aux-services" if-value="spark_shuffle_351" if-value-match-type="partial"/>
+            <set key="yarn.nodemanager.aux-services.spark_shuffle_358.class" value="org.apache.spark.network.yarn.v358.YarnShuffleService"/>
+            <set key="yarn.nodemanager.aux-services.spark_shuffle_358.classpath" value="{{stack_root}}/{{version}}/spark3/aux/*"/>
+            <set key="spark.shuffle.service.v358.port" value="7358"/>
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_355.class"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_355.class" if-key-state="present"/>
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_355.classpath"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_355.classpath" if-key-state="present"/>
+            <transfer operation="delete" delete-key="spark.shuffle.service.v355.port"
+                      if-type="yarn-site" if-key="spark.shuffle.service.v355.port" if-key-state="present"/>
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_411.class"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_411.class" if-key-state="present"/>
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_411.classpath"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_411.classpath" if-key-state="present"/>
+            <transfer operation="delete" delete-key="spark.shuffle.service.v411.port"
+                      if-type="yarn-site" if-key="spark.shuffle.service.v411.port" if-key-state="present"/>
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_333.class"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_333.class" if-key-state="present"/>
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_333.classpath"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_333.classpath" if-key-state="present"/>
+            <transfer operation="delete" delete-key="spark.shuffle.service.v333.port"
+                      if-type="yarn-site" if-key="spark.shuffle.service.v333.port" if-key-state="present"/>
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_351.class"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_351.class" if-key-state="present"/>
+            <transfer operation="delete" delete-key="yarn.nodemanager.aux-services.spark_shuffle_351.classpath"
+                      if-type="yarn-site" if-key="yarn.nodemanager.aux-services.spark_shuffle_351.classpath" if-key-state="present"/>
+            <transfer operation="delete" delete-key="spark.shuffle.service.v351.port"
+                      if-type="yarn-site" if-key="spark.shuffle.service.v351.port" if-key-state="present"/>
+          </definition>
+        </changes>
+      </component>
+      <component name="RESOURCEMANAGER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_3_yarn_jdk17_jvm_flags" summary="Set YARN JVM add-opens flags for Java 17">
+            <type>yarn-site</type>
+            <set key="jvm_flags" value="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.math=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED"
+                 if-type="yarn-site" if-key="jvm_flags" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3_3_yarn_env_jdk17_jvm_flags" summary="Inject JDK 17 add-opens into yarn-env for RM, NM, ATS, Timeline Reader, and Registry DNS">
+            <type>yarn-env</type>
+            <insert key="content" insert-type="append" newline-before="true"
+                    value="{% if java_version|int &gt; 11 %}&#xA;export YARN_RESOURCEMANAGER_OPTS=&quot;$YARN_RESOURCEMANAGER_OPTS {{jvm_flags}}&quot;&#xA;export YARN_NODEMANAGER_OPTS=&quot;$YARN_NODEMANAGER_OPTS {{jvm_flags}}&quot;&#xA;export YARN_TIMELINESERVER_OPTS=&quot;$YARN_TIMELINESERVER_OPTS {{jvm_flags}}&quot;&#xA;export YARN_TIMELINEREADER_OPTS=&quot;$YARN_TIMELINEREADER_OPTS {{jvm_flags}}&quot;&#xA;export YARN_REGISTRYDNS_OPTS=&quot;$YARN_REGISTRYDNS_OPTS {{jvm_flags}}&quot;&#xA;export HADOOP_OPTS=&quot;$HADOOP_OPTS {{jvm_flags}}&quot;&#xA;{% endif %}"
+                    if-key="content" if-type="yarn-env" if-value="{{jvm_flags}}" if-value-match-type="partial" if-value-not-matched="true"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="MAPREDUCE2">
+      <component name="HISTORYSERVER">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_3_mapred_env_jdk17_jvm_flags" summary="Inject JDK 17 add-opens into mapred-env">
+            <type>mapred-env</type>
+            <insert key="content" insert-type="append" newline-before="true"
+                    value="{% if java_version|int &gt; 11 %}&#xA;export MAPRED_HISTORYSERVER_OPTS=&quot;$MAPRED_HISTORYSERVER_OPTS {{jvm_flags}}&quot;&#xA;export HADOOP_OPTS=&quot;$HADOOP_OPTS {{jvm_flags}}&quot;&#xA;{% endif %}"
+                    if-key="content" if-type="mapred-env" if-value="{{jvm_flags}}" if-value-match-type="partial" if-value-not-matched="true"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="TEZ">
+      <component name="TEZ_CLIENT">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_3_tez_jdk17_jvm_flags" summary="Set Tez JVM add-opens flags for Java 17">
+            <type>tez-site</type>
+            <set key="jvm_flags" value="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED"
+                 if-type="tez-site" if-key="jvm_flags" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3_3_tez_env_jdk17_jvm_flags" summary="Inject JDK 17 add-opens into tez-env">
+            <type>tez-env</type>
+            <insert key="content" insert-type="append" newline-before="true"
+                    value="{% if java_version|int &gt; 11 %}&#xA;export tez.am.launch.cmd-opts=&quot;${tez.am.launch.cmd-opts} {{jvm_flags}}&quot;&#xA;export tez.task.launch.cmd-opts=&quot;${tez.task.launch.cmd-opts} {{jvm_flags}}&quot;&#xA;{% endif %}"
+                    if-key="content" if-type="tez-env" if-value="{{jvm_flags}}" if-value-match-type="partial" if-value-not-matched="true"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
+    <service name="HIVE">
+      <component name="HIVE_METASTORE">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_3_hive_jdk17_jvm_flags" summary="Set Hive JVM add-opens flags for Java 17">
+            <type>hive-site</type>
+            <set key="jvm_flags" value="--add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.math=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.security=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.time=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.regex=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/jdk.internal.reflect=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.provider=ALL-UNNAMED --add-opens=java.sql/java.sql=ALL-UNNAMED"
+                 if-type="hive-site" if-key="jvm_flags" if-key-state="absent"/>
+          </definition>
+          <definition xsi:type="configure" id="odp_3_3_hive_env_jdk17_jvm_flags" summary="Inject JDK 17 add-opens into hive-env">
+            <type>hive-env</type>
+            <insert key="content" insert-type="append" newline-before="true"
+                    value="{% if java_version|int &gt; 11 %}&#xA;export HADOOP_OPTS=&quot;$HADOOP_OPTS {{jvm_flags}}&quot;&#xA;export HADOOP_CLIENT_OPTS=&quot;$HADOOP_CLIENT_OPTS {{jvm_flags}}&quot;&#xA;{% endif %}"
+                    if-key="content" if-type="hive-env" if-value="{{jvm_flags}}" if-value-match-type="partial" if-value-not-matched="true"/>
           </definition>
         </changes>
       </component>
