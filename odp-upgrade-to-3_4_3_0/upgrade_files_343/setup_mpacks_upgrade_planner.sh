@@ -24,9 +24,14 @@
 # A plan that is already created keeps its old groups. Create a new
 # Express or Rolling upgrade after the restart.
 #
+# JDK 17 service flags (source JDK 8 or 11, or a cluster already on JDK 17)
+# are applied by setup_jdk17_config.sh after this copy and ambari-server
+# restart, before Express or Rolling is created.
+#
 #   cd ./odp-upgrade-to-3_4_3_0/upgrade_files_343/
 #   bash ./setup_mpacks_upgrade_planner.sh
 #   ambari-server restart
+#   bash ./setup_jdk17_config.sh
 
 set -e
 
