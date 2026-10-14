@@ -11,8 +11,10 @@
 # nonrolling-upgrade-3.4.xml and upgrade-3.4.xml files are the 3.3
 # target-3.4 packs copied into that directory.
 #
-# Also installs config-upgrade.xml so EU configure tasks
-# (for example odp_3_4_0_hdfs_log4j_remove_event_counter) resolve.
+# Also installs config-upgrade.xml so EU configure tasks resolve from the
+# source stack. A 3.2 cluster only reads stacks/ODP/3.2/upgrades, so
+# odp_3_4_0_hdfs_log4j_remove_event_counter and the JDK 8 -> 17 jvm_flags
+# copy live in 3.2/upgrades/config-upgrade.xml.
 #
 # Source: odp-ambari rel/ODP-AMBARI-3.0.1.0-1
 #   facc6918eb3ef6ec11f49cdfcffc9e1dd5977e22
@@ -22,9 +24,14 @@
 # A plan that is already created keeps its old groups. Create a new
 # Express or Rolling upgrade after the restart.
 #
+# JDK 17 service flags (source JDK 8 or 11, or a cluster already on JDK 17)
+# are applied by setup_jdk17_config.sh after this copy and ambari-server
+# restart, before Express or Rolling is created.
+#
 #   cd ./odp-upgrade-to-3_4_3_0/upgrade_files_343/
 #   bash ./setup_mpacks_upgrade_planner.sh
 #   ambari-server restart
+#   bash ./setup_jdk17_config.sh
 
 set -e
 
@@ -78,6 +85,7 @@ copy_xml 3.1/upgrades/nonrolling-upgrade-3.1.xml "$AMBARI_STACKS/3.1/upgrades/no
 copy_xml 3.1/upgrades/upgrade-3.1.xml           "$AMBARI_STACKS/3.1/upgrades/upgrade-3.1.xml"
 
 echo "3.################# ODP 3.2 #################"
+copy_xml 3.2/upgrades/config-upgrade.xml "$AMBARI_STACKS/3.2/upgrades/config-upgrade.xml"
 copy_xml 3.2/upgrades/nonrolling-upgrade-3.2.xml "$AMBARI_STACKS/3.2/upgrades/nonrolling-upgrade-3.2.xml"
 copy_xml 3.2/upgrades/nonrolling-upgrade-3.3.xml "$AMBARI_STACKS/3.2/upgrades/nonrolling-upgrade-3.3.xml"
 copy_xml 3.2/upgrades/nonrolling-upgrade-3.4.xml "$AMBARI_STACKS/3.2/upgrades/nonrolling-upgrade-3.4.xml"

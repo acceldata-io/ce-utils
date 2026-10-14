@@ -28,4 +28,21 @@ bash ./setup_mpacks_upgrade_planner.sh
 ambari-server restart
 ```
 
-4. Create a new Express or Rolling upgrade. A plan that is already paused keeps the groups it was created with. This copy does not rewrite that plan.
+4. Apply JDK 17 service flags before the upgrade. Run this on the Ambari Server when the target cluster is JDK 17 and the source JDK is 8 or 11. The same script exists for 3.3.6.5-1 under `odp-upgrade-to-3_3_6_5_1/upgrade_files_336/`. Edit `USER`, `PASSWORD`, `PORT`, and `PROTOCOL` at the top of the script first. `AMBARISERVER` defaults to `hostname -f`.
+
+```
+cd ./odp-upgrade-to-3_4_3_0/upgrade_files_343/
+bash ./setup_jdk17_config.sh
+```
+
+At the JDK prompt, enter the JDK the cluster runs on before this upgrade:
+
+- `8`: JDK 8 -> JDK 17. Full menu. Choose `A` for every service.
+- `11`: JDK 11 -> JDK 17. Full menu. Choose `A` for every service.
+- `17`: cluster is already on JDK 17 (for example 3.3.6 on JDK 17 -> 3.4.3). Menu is ZooKeeper logback, Pinot `JAVA_HOME`, and Spark 3.5.8 shuffle.
+
+Source JDK 8 and 11 update HDFS, YARN, MapReduce, Infra-Solr, Hive, Tez, HBase, Oozie, Ranger KMS, Druid, ZooKeeper, and Pinot. YARN shuffle is Spark 3.5.8 only (`spark_shuffle_358`). Templates are under `upgrade_files_343/ODP-env-templates/`. If the script cannot be run, apply those templates in Ambari Configs. Restart the affected services in Ambari after the script.
+
+5. Create a new Express or Rolling upgrade. A plan that is already paused keeps the groups it was created with. This copy does not rewrite that plan.
+
+A 3.2 source reads `stacks/ODP/3.2/upgrades/config-upgrade.xml` only. That file now defines `odp_3_4_0_hdfs_log4j_remove_event_counter` (Hadoop 3.4 removed `EventCounter`) and the JDK 8 to 17 `jvm_flags` copy for HDFS, YARN, MapReduce, Tez, and Hive. The env insert is rendered when `java_version` is greater than 11, so a cluster still on JDK 8 keeps its current opts until the stack JDK is 17. NodeManager pre-upgrade runs `odp_3_4_0_yarn_spark_358_only` so `yarn.nodemanager.aux-services` switches from Spark 3.5.5 (`spark_shuffle_355`) to Spark 3.5.8 (`spark_shuffle_358`) before the NodeManager restart. The shuffle jar is `spark3_python<version>_<stack>-yarn-shuffle`.
