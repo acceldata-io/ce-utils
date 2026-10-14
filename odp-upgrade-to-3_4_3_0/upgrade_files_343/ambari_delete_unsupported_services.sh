@@ -2,7 +2,7 @@
 # Ambari unsupported service removal
 #
 # Stops, backs up, and deletes services that are no longer supported:
-#   KAFKA, DRUID, OOZIE, SPARK2, SQOOP
+#   KAFKA, DRUID, OOZIE, SPARK2, SQOOP, ZEPPELIN
 #
 # KAFKA3 is not touched. Only the legacy KAFKA service is removed.
 #
@@ -36,7 +36,7 @@
 
 set -o pipefail
 
-UNSUPPORTED_SERVICES=(KAFKA DRUID OOZIE SPARK2 SQOOP)
+UNSUPPORTED_SERVICES=(KAFKA DRUID OOZIE SPARK2 SQOOP ZEPPELIN)
 
 AMBARISERVER="${AMBARISERVER:-$(hostname -f)}"
 AMBARI_USER="${AMBARI_USER:-admin}"
@@ -81,7 +81,7 @@ api_get() { "${CURL[@]}" -X GET "$BASE_URL$1"; }
 
 echo -e "${BOLD}${YELLOW}+------------------------------------------------------------+${NC}"
 echo -e "${BOLD}${YELLOW}|${NC} ${BOLD}${CYAN}Ambari unsupported service removal${NC}                         ${BOLD}${YELLOW}|${NC}"
-echo -e "${BOLD}${YELLOW}|${NC} Targets: KAFKA, DRUID, OOZIE, SPARK2, SQOOP.            ${BOLD}${YELLOW}|${NC}"
+echo -e "${BOLD}${YELLOW}|${NC} Targets: KAFKA, DRUID, OOZIE, SPARK2, SQOOP, ZEPPELIN.  ${BOLD}${YELLOW}|${NC}"
 echo -e "${BOLD}${YELLOW}+------------------------------------------------------------+${NC}"
 printf "   %-18s : %s\n" "AMBARISERVER" "$AMBARISERVER"
 printf "   %-18s : %s\n" "AMBARI_USER" "$AMBARI_USER"
@@ -181,29 +181,83 @@ wait_for_request() {
     return 1
 }
 
-stop_service() {
+# Ambari DELETE rejects a service while any host component is STARTED,
+# STARTING, or STOPPING. Desired state INSTALLED is not enough: a service
+# PUT then returns HTTP 200 and does not stop a component that is still STARTED.
+component_is_removable() {
+    case "$1" in
+        INIT|INSTALLING|INSTALLED|INSTALL_FAILED|UNINSTALLED|UNKNOWN|DISABLED) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+list_host_components() {
     local svc="$1"
-    info "Stopping $svc ..."
-    local resp req_id http_code
-    resp=$("${CURL[@]}" -w '\n%{http_code}' -X PUT \
-        -d '{"RequestInfo":{"context":"Stop '"$svc"' (unsupported service removal)","operation_level":{"level":"SERVICE","cluster_name":"'"$CLUSTER"'","service_name":"'"$svc"'"}},"Body":{"ServiceInfo":{"state":"INSTALLED"}}}' \
-        "$BASE_URL/clusters/$CLUSTER/services/$svc")
+    [ -n "$PYTHON_BIN" ] || { error "python is required to read host component states."; return 1; }
+    api_get "/clusters/$CLUSTER/services/$svc/components?fields=host_components/HostRoles/host_name,host_components/HostRoles/component_name,host_components/HostRoles/state" \
+        | "$PYTHON_BIN" -c '
+import json, sys
+data = json.load(sys.stdin)
+for comp in data.get("items", []):
+    for hc in comp.get("host_components", []):
+        h = hc.get("HostRoles", {})
+        print("%s %s %s" % (h.get("component_name", ""), h.get("host_name", ""), h.get("state", "")))
+'
+}
+
+stop_one_request() {
+    local http_code resp req_id
+    resp=$("${CURL[@]}" -w '\n%{http_code}' -X PUT -d "$1" "$2")
     http_code=$(echo "$resp" | tail -n1)
     resp=$(echo "$resp" | sed '$d')
-
     case "$http_code" in
-        200)
-            info "$svc is already stopped."
-            return 0 ;;
+        200) return 0 ;;
         202)
             req_id=$(echo "$resp" | grep -o '"id" *: *[0-9]*' | head -n1 | sed 's/.*: *//')
             [ -n "$req_id" ] || { error "Could not read request id from response: $resp"; return 1; }
             wait_for_request "$req_id" ;;
         *)
-            error "Stop request for $svc returned HTTP $http_code:"
+            error "Stop request returned HTTP $http_code:"
             echo "$resp" | head -c 800; echo
             return 1 ;;
     esac
+}
+
+stop_host_component() {
+    local svc="$1" comp="$2" host="$3"
+    stop_one_request \
+        '{"RequestInfo":{"context":"Stop '"$comp"' on '"$host"' (unsupported service removal)","operation_level":{"level":"HOST_COMPONENT","cluster_name":"'"$CLUSTER"'","host_name":"'"$host"'","service_name":"'"$svc"'"}},"Body":{"HostRoles":{"state":"INSTALLED"}}}' \
+        "$BASE_URL/clusters/$CLUSTER/hosts/$host/host_components/$comp"
+}
+
+ensure_components_removable() {
+    local svc="$1" rows comp host state stuck=0
+    rows=$(list_host_components "$svc") || return 1
+    while read -r comp host state; do
+        [ -n "$comp" ] || continue
+        component_is_removable "$state" && continue
+        info "Stopping $comp on $host (state $state) ..."
+        stop_host_component "$svc" "$comp" "$host" || return 1
+    done <<< "$rows"
+
+    rows=$(list_host_components "$svc") || return 1
+    while read -r comp host state; do
+        [ -n "$comp" ] || continue
+        if ! component_is_removable "$state"; then
+            error "$comp on $host is still $state. Ambari will not delete $svc until that component is INSTALLED."
+            stuck=1
+        fi
+    done <<< "$rows"
+    [ "$stuck" -eq 0 ]
+}
+
+stop_service() {
+    local svc="$1"
+    info "Stopping $svc ..."
+    stop_one_request \
+        '{"RequestInfo":{"context":"Stop '"$svc"' (unsupported service removal)","operation_level":{"level":"SERVICE","cluster_name":"'"$CLUSTER"'","service_name":"'"$svc"'"}},"Body":{"ServiceInfo":{"state":"INSTALLED"}}}' \
+        "$BASE_URL/clusters/$CLUSTER/services/$svc" || return 1
+    ensure_components_removable "$svc"
 }
 
 backup_service() {
@@ -309,6 +363,10 @@ PY
 
 delete_service() {
     local svc="$1"
+    if ! ensure_components_removable "$svc"; then
+        error "Refusing to delete $svc while a host component is still in a non-removable state."
+        return 1
+    fi
     info "Deleting $svc ..."
     local resp http_code
     resp=$("${CURL[@]}" -w '\n%{http_code}' -X DELETE "$BASE_URL/clusters/$CLUSTER/services/$svc")
