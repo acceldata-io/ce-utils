@@ -118,13 +118,11 @@ spark.shuffle.service.v351.port = 7351
 
 Restart NodeManagers after this change.
 
-### 3. Druid JDK 11/17 jvm.opts (changed in 3.3.6.5-1)
-
-3.3.6.4-1 only pushed Druid on source JDK 8, and used a typo key `druid.coordinator.jvm.opt`. 3.3.6.5-1 applies Druid for JDK 8, 11, and 17, and uses `jvm.opts` for every node type.
+### 3. Druid env (aligned with Ambari ODP-AMBARI-3.0.0.2-1-tag)
 
 Ambari UI -> Druid -> Configs -> Advanced druid-env.
 
-Set all of these to the value in `ODP-env-templates/druid-env-opts` (JDK 11/17) or `ODP-env-templates/jdk8-specific/druid-env-opts` (source JDK 8):
+Set all of these to the value in `ODP-env-templates/druid-env-opts`:
 
 - `druid.broker.jvm.opts`
 - `druid.coordinator.jvm.opts`
@@ -133,7 +131,7 @@ Set all of these to the value in `ODP-env-templates/druid-env-opts` (JDK 11/17) 
 - `druid.overlord.jvm.opts`
 - `druid.router.jvm.opts`
 
-Also refresh `druid-env` `content` from `ODP-env-templates/druid-env-template` (JDK 11/17) or `ODP-env-templates/jdk8-specific/druid-env-template` (source JDK 8). Skip if Druid is not installed.
+Also refresh `druid-env` `content` from `ODP-env-templates/druid-env-template`. The template branches on `java_version`, so source JDK 8 and 11 use the same file. Skip if Druid is not installed.
 
 ### 4. ZooKeeper logback (same as 3.3.6.4-1, still required)
 

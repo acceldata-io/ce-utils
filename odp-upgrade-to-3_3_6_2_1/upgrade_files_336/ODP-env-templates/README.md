@@ -1,4 +1,5 @@
 ### These Template Files are for reference purpose only.
+Source: ODP-AMBARI-2.7.9.2-1-tag, stack ODP 3.3.
 # Following Flags Needs to be added in the Hadoop, Hbase, Hive Env.
 
 ### The following flags should be added after upgrading Hadoop, HBase, and Hive env files before starting the services in a JDK11 environment.

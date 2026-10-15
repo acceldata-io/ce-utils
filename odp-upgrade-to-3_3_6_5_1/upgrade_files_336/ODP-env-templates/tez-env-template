@@ -7,12 +7,26 @@ export TEZ_CONF_DIR={{config_dir}}
 export tez.am.launch.cmd-opts="-XX:+PrintGCDetails -verbose:gc -XX:+PrintGCTimeStamps -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}}"
 export tez.task.launch.cmd-opts="-XX:+PrintGCDetails -verbose:gc -XX:+PrintGCTimeStamps -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}}"
 {% elif java_version == 11 %}
-export tez.am.launch.cmd-opts="-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}}"
-export tez.task.launch.cmd-opts="-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}}"
+{% if jvm_tuning_profile == 'azul_prime' %}
+export TEZ_AM_JVM_TUNING_OPTS="-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans"
+export TEZ_TASK_JVM_TUNING_OPTS="-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans"
+{% else %}
+export TEZ_AM_JVM_TUNING_OPTS="-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC"
+export TEZ_TASK_JVM_TUNING_OPTS="-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC"
+{% endif %}
+export tez.am.launch.cmd-opts="${TEZ_AM_JVM_TUNING_OPTS} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}}"
+export tez.task.launch.cmd-opts="${TEZ_TASK_JVM_TUNING_OPTS} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}}"
 {% else %}
 # For Java 11+
-export tez.am.launch.cmd-opts="-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}} {{jvm_flags}}"
-export tez.task.launch.cmd-opts="-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseNUMA -XX:+UseG1GC -XX:+ResizeTLAB{{heap_dump_opts}} {{jvm_flags}}"
+{% if jvm_tuning_profile == 'azul_prime' %}
+export TEZ_AM_JVM_TUNING_OPTS="-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans"
+export TEZ_TASK_JVM_TUNING_OPTS="-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:+UseZingMXBeans"
+{% else %}
+export TEZ_AM_JVM_TUNING_OPTS="-Xlog:gc*:file={{gc_log_path}}/tez_am_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC"
+export TEZ_TASK_JVM_TUNING_OPTS="-Xlog:gc*:file={{gc_log_path}}/tez_task_gc.log:time,uptime,level,tags:filecount=10,filesize=10M -XX:+UseG1GC"
+{% endif %}
+export tez.am.launch.cmd-opts="${TEZ_AM_JVM_TUNING_OPTS} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}} {{jvm_flags}}"
+export tez.task.launch.cmd-opts="${TEZ_TASK_JVM_TUNING_OPTS} -XX:+UseNUMA -XX:+ResizeTLAB{{heap_dump_opts}} {{jvm_flags}}"
 {% endif %}
 
 # Set HADOOP_HOME to point to a specific hadoop install directory
@@ -20,3 +34,4 @@ export HADOOP_HOME=${HADOOP_HOME:-{{hadoop_home}}}
 
 # The java implementation to use.
 export JAVA_HOME={{java64_home}}
+    

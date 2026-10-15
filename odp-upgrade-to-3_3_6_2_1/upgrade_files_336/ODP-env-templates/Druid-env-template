@@ -1,3 +1,4 @@
+
       #!/bin/bash
 
       # Set DRUID specific environment variables here.
@@ -11,3 +12,12 @@
       export DRUID_CONF_DIR={{druid_conf_dir}}
       export DRUID_LIB_DIR={{druid_home}}/lib
       export HADOOP_CONF_DIR={{hadoop_conf_dir}}
+
+      ##export ssl password variables:
+      export DRUID_CLIENT_HTTPS_TRUSTSTOREPASSWORD=`{{password_command}} -a "druid.client.https.trustStorePassword" `
+      export DRUID_SERVER_HTTPS_KEYSTOREPASSWORD=`{{password_command}} -a "druid.server.https.keyStorePassword"`
+
+      ##export metadata password variable:
+      export DRUID_METADATA_STORAGE_CONNECTOR_PASSWORD=`{{password_command}} -a  "druid.metadata.storage.connector.password"`
+
+    

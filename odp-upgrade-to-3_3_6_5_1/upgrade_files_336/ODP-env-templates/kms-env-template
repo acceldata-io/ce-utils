@@ -30,7 +30,8 @@ JAVA_BIN="$JAVA_HOME/bin/java"
 JAVA_VERSION=$($JAVA_BIN -version 2>&1 | awk -F[\".] '/version/ {print $2}')
 
 {% if security_enabled %}
-export JAVA_OPTS="${JAVA_OPTS} -Dzookeeper.sasl.client.username={{zookeeper_principal_primary}}"
+export KRB5_CONFIG={{krb5_conf_path}}
+export JAVA_OPTS=" ${JAVA_OPTS} -Dzookeeper.sasl.client.username={{zookeeper_principal_primary}} -Djava.security.krb5.conf={{krb5_conf_path}} "
 {% endif %}
 
 if [ "$JAVA_VERSION" -gt 11 ]; then

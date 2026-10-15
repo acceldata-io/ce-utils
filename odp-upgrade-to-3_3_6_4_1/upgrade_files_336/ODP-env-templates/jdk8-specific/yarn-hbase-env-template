@@ -78,8 +78,9 @@
       export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS -XX:InitiatingHeapOccupancyPercent=70 -XX:ReservedCodeCacheSize=256m -Xms{{yarn_hbase_regionserver_heapsize}} -Xmx{{yarn_hbase_regionserver_heapsize}} $JDK_DEPENDED_OPTS"
       {% endif %}
       export HBASE_MASTER_OPTS="$HBASE_MASTER_OPTS -Xmx{{yarn_hbase_master_heapsize}} $JDK_DEPENDED_OPTS"
-
+      
       {% if security_enabled %}
       export HBASE_MASTER_OPTS="$HBASE_MASTER_OPTS -Djava.security.auth.login.config={{yarn_hbase_master_jaas_file}}"
       export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS -Djava.security.auth.login.config={{yarn_hbase_regionserver_jaas_file}}"
       {% endif %}
+    

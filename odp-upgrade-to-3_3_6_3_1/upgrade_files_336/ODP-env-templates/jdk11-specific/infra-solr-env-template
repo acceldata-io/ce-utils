@@ -24,9 +24,25 @@ SOLR_JAVA_MEM="-Xms{{infra_solr_min_mem}}m -Xmx{{infra_solr_max_mem}}m"
 
 SOLR_JAVA_STACK_SIZE="-Xss{{infra_solr_java_stack_size}}m"
 
-GC_LOG_OPTS="{{infra_solr_gc_log_opts}} -Xloggc:{{infra_solr_log_dir}}/solr_gc.log"
+{% if java_version < 11 %}
+  # For JDK 8 and below
+  infra_solr_gc_log_opts="-verbose:gc -XX:+PrintHeapAtGC -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+PrintTenuringDistribution -XX:+PrintGCApplicationStoppedTime -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=15 -XX:GCLogFileSize=200M"
+  GC_LOG_OPTS="{{infra_solr_gc_log_opts}} -Xloggc:{{infra_solr_log_dir}}/solr_gc.log"
 
-GC_TUNE="{{infra_solr_gc_tune}}"
+  infra_solr_gc_tune="-XX:NewRatio=3 -XX:SurvivorRatio=4 -XX:TargetSurvivorRatio=90 -XX:MaxTenuringThreshold=8 -XX:+UseConcMarkSweepGC -XX:+UseParNewGC -XX:ConcGCThreads=4 -XX:ParallelGCThreads=4 -XX:+CMSScavengeBeforeRemark -XX:PretenureSizeThreshold=64m -XX:+UseCMSInitiatingOccupancyOnly -XX:CMSInitiatingOccupancyFraction=50 -XX:CMSMaxAbortablePrecleanTime=6000 -XX:+CMSParallelRemarkEnabled -XX:+ParallelRefProcEnabled"
+{% else %}
+  # For JDK 11 and above
+ GC_LOG_OPTS="-Xlog:gc*=info:file={{infra_solr_log_dir}}/solr_gc.log:time,uptime"
+
+  # Use separate options to handle log file rotation and size
+  LOG_ROTATION_OPTS="-XX:NumberOfGCLogFiles=15 -XX:GCLogFileSize=200M"
+
+  # Garbage Collection Tuning
+  infra_solr_gc_tune="-XX:NewRatio=3 -XX:SurvivorRatio=4 -XX:TargetSurvivorRatio=90 -XX:MaxTenuringThreshold=8 -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:ConcGCThreads=4 -XX:ParallelGCThreads=4 -XX:+DisableExplicitGC"
+
+  # Combine all options
+  JAVA_OPTS="${GC_LOG_OPTS} ${LOG_ROTATION_OPTS} ${infra_solr_gc_tune}"
+{% endif %}
 
 # Set the ZooKeeper connection string if using an external ZooKeeper ensemble
 # e.g. host1:2181,host2:2181/chroot
