@@ -65,8 +65,6 @@
         <component>KNOX_GATEWAY</component>
       </service>
 
-      
-
       <!--  no-op to upgrade <service name="SPARK3">
         <component>SPARK3_JOBHISTORYSERVER</component>
         <component>SPARK3_THRIFTSERVER</component>
@@ -304,8 +302,6 @@
     <group xsi:type="cluster" name="Upgrade service configs" title="Upgrade service configs">
       <direction>UPGRADE</direction> <!--  prevent config changes on downgrade -->
       <skippable>true</skippable> <!-- May fix configuration problems manually -->
-
-      
 
       <!--  no-op to upgrade
       <execute-stage service="SPARK3" component="SPARK3_JOBHISTORYSERVER" title="Create spark.yarn.keytab/principal based on spark history keytab/principal">
@@ -575,6 +571,7 @@
         <component>SPARK3_JOBHISTORYSERVER</component>
         <component>SPARK3_THRIFTSERVER</component>
         <component>SPARK3_CONNECT_SERVER</component>
+        <component>LIVY3_SERVER</component>
       </service>
     </group>
 
@@ -602,19 +599,6 @@
       </service>
     </group>
 
-    <group xsi:type="restart" name="SPARK3" title="Spark3">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-      <service name="SPARK3">
-        <component>SPARK3_JOBHISTORYSERVER</component>
-        <component>SPARK3_THRIFTSERVER</component>
-        <component>SPARK3_CONNECT_SERVER</component>
-        <component>LIVY3_SERVER</component>
-      </service>
-    </group>
-
     <group xsi:type="restart" name="SPARK3_CLIENTS" title="Spark3 Clients">
       <service-check>false</service-check>
       <skippable>true</skippable>
@@ -639,15 +623,6 @@
       <parallel-scheduler/>
       <service name="SPARK3_3_5_1">
         <component>SPARK3_3_5_1_CLIENT</component>
-      </service>
-    </group>
-
-    <group xsi:type="restart" name="SPARK3_CLIENTS" title="Spark3 Clients">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <parallel-scheduler/>
-      <service name="SPARK3">
-        <component>SPARK3_CLIENT</component>
       </service>
     </group>
 
@@ -1144,8 +1119,6 @@
         </upgrade>
       </component>
     </service>
-
-    
 
     <!--  no-op to upgrade
     <service name="SPARK3">

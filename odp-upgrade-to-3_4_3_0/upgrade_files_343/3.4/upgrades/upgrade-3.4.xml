@@ -306,6 +306,7 @@
         <component>SPARK3_JOBHISTORYSERVER</component>
         <component>SPARK3_THRIFTSERVER</component>
         <component>SPARK3_CONNECT_SERVER</component>
+        <component>LIVY3_SERVER</component>
       </service>
     </group>
 
@@ -331,18 +332,6 @@
       </service>
     </group>
 
-    <group name="SPARK3" title="Spark3">
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <service-check>false</service-check>
-      <service name="SPARK3">
-        <component>SPARK3_JOBHISTORYSERVER</component>
-        <component>SPARK3_THRIFTSERVER</component>
-        <component>SPARK3_CONNECT_SERVER</component>
-        <component>LIVY3_SERVER</component>
-      </service>
-    </group>
-
     <group name="SPARK3_CLIENTS" title="Spark3 Clients">
       <skippable>true</skippable>
       <service name="SPARK3">
@@ -361,13 +350,6 @@
       <skippable>true</skippable>
       <service name="SPARK3_3_5_1">
         <component>SPARK3_3_5_1_CLIENT</component>
-      </service>
-    </group>
-
-    <group name="SPARK3_CLIENTS" title="Spark3 Clients">
-      <skippable>true</skippable>
-      <service name="SPARK3">
-        <component>SPARK3_CLIENT</component>
       </service>
     </group>
 
@@ -923,8 +905,6 @@
       </component>
     </service>
 
-    
-
     <service name="SPARK3_3_3_3">
       <component name="SPARK3_3_3_3_JOBHISTORYSERVER">
         <upgrade>
@@ -1089,8 +1069,6 @@
         </upgrade>
       </component>
     </service>
-
-    
 
     <service name="KNOX">
       <component name="KNOX_GATEWAY">

@@ -67,8 +67,6 @@
 
       
 
-      
-
       <!--  no-op to upgrade <service name="SPARK3">
         <component>SPARK3_JOBHISTORYSERVER</component>
         <component>SPARK3_THRIFTSERVER</component>
@@ -93,8 +91,6 @@
         <component>SPARK3_CONNECT_SERVER</component>
         <component>LIVY3_SERVER</component>
       </service>
-
-      
 
       <service name="AIRFLOW">
         <component>AIRFLOW_SCHEDULER</component>
@@ -133,7 +129,6 @@
         <component>HISTORYSERVER</component>
       </service>
 
-      
       <service name="PINOT">
         <component>PINOT_CONTROLLER</component>
         <component>PINOT_SERVER</component>
@@ -158,8 +153,6 @@
       <direction>UPGRADE</direction>
       <skippable>true</skippable>
       <supports-auto-skip-failure>false</supports-auto-skip-failure>
-
-      
 
       <execute-stage service="HIVE" component="HIVE_METASTORE" title="Backup Hive Metastore">
         <task xsi:type="manual">
@@ -194,8 +187,6 @@
         </task>
       </execute-stage>
 
-      
-
       <execute-stage service="AIRFLOW" component="AIRFLOW_SCHEDULER" title="Backup Airflow Database">
         <task xsi:type="manual">
           <message>Before continuing, please backup the Airflow metadata database referenced by the Airflow Scheduler located on {{hosts.all}}.</message>
@@ -226,8 +217,6 @@
         <component>HBASE_MASTER</component>
         <component>PHOENIX_QUERY_SERVER</component>
       </service>
-
-      
 
       <service name="KAFKA3">
         <component>KAFKA3_MIRRORMAKER</component>
@@ -267,8 +256,6 @@
       <!-- If the user attempts a downgrade after this point, they will need to restore backups
       before starting any of the services. -->
 
-      
-
       <execute-stage service="HIVE" component="HIVE_METASTORE" title="Restore Hive Metastore">
         <task xsi:type="manual">
           <message>Before continuing, please restore the Hive Metastore database referenced by the Hive Metastore service(s) located on the following host(s):: {{hosts.all}}.</message>
@@ -286,8 +273,6 @@
           <message>Before continuing, please restore Ranger KMS database</message>
         </task>
       </execute-stage>
-
-      
 
       <execute-stage service="AIRFLOW" component="AIRFLOW_SCHEDULER" title="Restore Airflow Database">
         <task xsi:type="manual">
@@ -317,8 +302,6 @@
     <group xsi:type="cluster" name="Upgrade service configs" title="Upgrade service configs">
       <direction>UPGRADE</direction> <!--  prevent config changes on downgrade -->
       <skippable>true</skippable> <!-- May fix configuration problems manually -->
-
-      
 
       <!--  no-op to upgrade
       <execute-stage service="SPARK3" component="SPARK3_JOBHISTORYSERVER" title="Create spark.yarn.keytab/principal based on spark history keytab/principal">
@@ -528,7 +511,6 @@
         <component>TEZ_CLIENT</component>
       </service>
 
-      
     </group>
 
     <group xsi:type="restart" name="HIVE_MASTERS" title="Hive Masters">
@@ -590,6 +572,7 @@
         <component>SPARK3_JOBHISTORYSERVER</component>
         <component>SPARK3_THRIFTSERVER</component>
         <component>SPARK3_CONNECT_SERVER</component>
+        <component>LIVY3_SERVER</component>
       </service>
     </group>
 
@@ -617,19 +600,6 @@
       </service>
     </group>
 
-    <group xsi:type="restart" name="SPARK3" title="Spark3">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-      <service name="SPARK3">
-        <component>SPARK3_JOBHISTORYSERVER</component>
-        <component>SPARK3_THRIFTSERVER</component>
-        <component>SPARK3_CONNECT_SERVER</component>
-        <component>LIVY3_SERVER</component>
-      </service>
-    </group>
-
     <group xsi:type="restart" name="SPARK3_CLIENTS" title="Spark3 Clients">
       <service-check>false</service-check>
       <skippable>true</skippable>
@@ -654,15 +624,6 @@
       <parallel-scheduler/>
       <service name="SPARK3_3_5_1">
         <component>SPARK3_3_5_1_CLIENT</component>
-      </service>
-    </group>
-
-    <group xsi:type="restart" name="SPARK3_CLIENTS" title="Spark3 Clients">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <parallel-scheduler/>
-      <service name="SPARK3">
-        <component>SPARK3_CLIENT</component>
       </service>
     </group>
 
@@ -1048,7 +1009,6 @@
       </component>
     </service>
 
-    
     <service name="KAFKA3">
       <component name="KAFKA3_BROKER">
         <upgrade>
@@ -1112,8 +1072,6 @@
       </component>
     </service>
 
-    
-
     <service name="HIVE">
       <component name="HIVE_METASTORE">
         <pre-upgrade>
@@ -1156,8 +1114,6 @@
         </upgrade>
       </component>
     </service>
-
-    
 
     <!--  no-op to upgrade
     <service name="SPARK3">
@@ -1206,8 +1162,6 @@
       </component>
     </service>
 
-    
-
     <service name="AIRFLOW">
       <component name="AIRFLOW_SCHEDULER">
         <pre-downgrade/>
@@ -1247,8 +1201,6 @@
       </component>
     </service>
 
-    
-
     <service name="KNOX">
       <component name="KNOX_GATEWAY">
         <upgrade>
@@ -1280,7 +1232,6 @@
       </component>
     </service>
 
-    
     <service name="PINOT">
       <component name="PINOT_CONTROLLER">
         <upgrade>

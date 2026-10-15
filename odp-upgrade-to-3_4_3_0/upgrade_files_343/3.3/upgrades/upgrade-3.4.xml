@@ -82,8 +82,6 @@
         </task>
       </execute-stage>
 
-      
-
       <execute-stage service="RANGER" component="RANGER_ADMIN" title="Pre Upgrade Ranger Admin Backup">
         <task xsi:type="manual">
           <message>Before continuing, please backup the Ranger Admin database on the following host(s): {{hosts.all}}.</message>
@@ -95,7 +93,6 @@
           <message>Before continuing, please backup Ranger KMS database on the following host(s): {{hosts.all}}.</message>
         </task>
       </execute-stage>
-      
 
       <execute-stage service="AIRFLOW" component="AIRFLOW_SCHEDULER" title="Pre Upgrade Airflow Backup">
         <task xsi:type="manual">
@@ -310,6 +307,7 @@
         <component>SPARK3_JOBHISTORYSERVER</component>
         <component>SPARK3_THRIFTSERVER</component>
         <component>SPARK3_CONNECT_SERVER</component>
+        <component>LIVY3_SERVER</component>
       </service>
     </group>
 
@@ -335,18 +333,6 @@
       </service>
     </group>
 
-    <group name="SPARK3" title="Spark3">
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <service-check>false</service-check>
-      <service name="SPARK3">
-        <component>SPARK3_JOBHISTORYSERVER</component>
-        <component>SPARK3_THRIFTSERVER</component>
-        <component>SPARK3_CONNECT_SERVER</component>
-        <component>LIVY3_SERVER</component>
-      </service>
-    </group>
-
     <group name="SPARK3_CLIENTS" title="Spark3 Clients">
       <skippable>true</skippable>
       <service name="SPARK3">
@@ -365,13 +351,6 @@
       <skippable>true</skippable>
       <service name="SPARK3_3_5_1">
         <component>SPARK3_3_5_1_CLIENT</component>
-      </service>
-    </group>
-
-    <group name="SPARK3_CLIENTS" title="Spark3 Clients">
-      <skippable>true</skippable>
-      <service name="SPARK3">
-        <component>SPARK3_CLIENT</component>
       </service>
     </group>
 
@@ -479,8 +458,6 @@
       <service name="HBASE">
         <component>HBASE_CLIENT</component>
       </service>
-
-      
 
       <service name="HIVE">
         <component>HIVE_CLIENT</component>
@@ -694,7 +671,6 @@
       </component>
     </service>
 
-    
     <service name="KAFKA3">
       <component name="KAFKA3_BROKER">
         <upgrade>
@@ -881,8 +857,6 @@
       </component>
     </service>
 
-    
-
     <service name="HIVE">
       <component name="HIVE_METASTORE">
         <pre-upgrade>
@@ -925,8 +899,6 @@
         </upgrade>
       </component>
     </service>
-
-    
 
     <service name="SPARK3_3_3_3">
       <component name="SPARK3_3_3_3_JOBHISTORYSERVER">
@@ -1054,8 +1026,6 @@
       </component>
     </service>
 
-    
-
     <service name="AIRFLOW">
       <component name="AIRFLOW_SCHEDULER">
         <pre-downgrade/>
@@ -1097,8 +1067,6 @@
 
     
 
-    
-
     <service name="KNOX">
       <component name="KNOX_GATEWAY">
         <upgrade>
@@ -1129,7 +1097,6 @@
       </component>
     </service>
 
-    
     <service name="PINOT">
       <component name="PINOT_CONTROLLER">
         <upgrade>
