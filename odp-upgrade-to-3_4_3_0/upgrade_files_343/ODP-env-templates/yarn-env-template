@@ -57,7 +57,8 @@ export YARN_RESOURCEMANAGER_HEAPSIZE={{resourcemanager_heapsize}}
 # These options will be appended to the options specified as HADOOP_OPTS
 # and therefore may override any similar flags set in HADOOP_OPTS
 {% if security_enabled %}
-export YARN_RESOURCEMANAGER_OPTS="-Djava.security.auth.login.config={{yarn_jaas_file}}"
+export KRB5_CONFIG={{krb5_conf_path}}
+export YARN_RESOURCEMANAGER_OPTS="-Djava.security.auth.login.config={{yarn_jaas_file}} -Djava.security.krb5.conf={{krb5_conf_path}}"
 {% endif %}
 {% if java_version|int > 11 %}
 export YARN_RESOURCEMANAGER_OPTS="$YARN_RESOURCEMANAGER_OPTS {{jvm_flags}}"
@@ -84,21 +85,21 @@ export YARN_NODEMANAGER_HEAPSIZE={{nodemanager_heapsize}}
 export YARN_TIMELINESERVER_HEAPSIZE={{apptimelineserver_heapsize}}
 
 {% if security_enabled %}
-export YARN_TIMELINESERVER_OPTS="-Djava.security.auth.login.config={{ yarn_ats_jaas_file }}"
+export YARN_TIMELINESERVER_OPTS="-Djava.security.auth.login.config={{yarn_ats_jaas_file}} -Djava.security.krb5.conf={{krb5_conf_path}}"
 {% endif %}
 {% if java_version|int > 11 %}
 export YARN_TIMELINESERVER_OPTS="$YARN_TIMELINESERVER_OPTS {{jvm_flags}}"
 {% endif %}
 
 {% if security_enabled %}
-export YARN_TIMELINEREADER_OPTS="-Djava.security.auth.login.config={{yarn_ats_jaas_file}}"
+export YARN_TIMELINEREADER_OPTS="-Djava.security.auth.login.config={{yarn_ats_jaas_file}} -Djava.security.krb5.conf={{krb5_conf_path}}"
 {% endif %}
 {% if java_version|int > 11 %}
 export YARN_TIMELINEREADER_OPTS="$YARN_TIMELINEREADER_OPTS {{jvm_flags}}"
 {% endif %}
 
 {% if security_enabled %}
-export YARN_REGISTRYDNS_OPTS="-Djava.security.auth.login.config={{yarn_registry_dns_jaas_file}}"
+export YARN_REGISTRYDNS_OPTS="-Djava.security.auth.login.config={{yarn_registry_dns_jaas_file}} -Djava.security.krb5.conf={{krb5_conf_path}}"
 {% endif %}
 {% if java_version|int > 11 %}
 export YARN_REGISTRYDNS_OPTS="$YARN_REGISTRYDNS_OPTS {{jvm_flags}}"
@@ -109,7 +110,7 @@ export YARN_REGISTRYDNS_OPTS="$YARN_REGISTRYDNS_OPTS {{jvm_flags}}"
 # and therefore may override any similar flags set in HADOOP_OPTS
 
 {% if security_enabled %}
-export YARN_NODEMANAGER_OPTS="-Djava.security.auth.login.config={{yarn_nm_jaas_file}} -Dsun.security.krb5.rcache=none"
+export YARN_NODEMANAGER_OPTS="-Djava.security.auth.login.config={{yarn_nm_jaas_file}} -Dsun.security.krb5.rcache=none -Djava.security.krb5.conf={{krb5_conf_path}}"
 {% endif %}
 {% if java_version|int > 11 %}
 export YARN_NODEMANAGER_OPTS="$YARN_NODEMANAGER_OPTS {{jvm_flags}}"
@@ -153,6 +154,34 @@ YARN_RESOURCEMANAGER_OPTS="{{rm_security_opts}} $YARN_RESOURCEMANAGER_OPTS"
 export YARN_NODEMANAGER_OPTS="$YARN_NODEMANAGER_OPTS -Dnm.audit.logger=INFO,NMAUDIT"
 export YARN_RESOURCEMANAGER_OPTS="$YARN_RESOURCEMANAGER_OPTS -Dyarn.server.resourcemanager.appsummary.logger=INFO,RMSUMMARY -Drm.audit.logger=INFO,RMAUDIT"
 
+{% if java_version|int >= 11 %}
+{% if jvm_tuning_profile == 'azul_prime' %}
+export YARN_RM_JVM_TUNING_OPTS="-Xlog:gc*:file={{yarn_log_dir_prefix}}/yarn/resourcemanager-gc.log:time,uptime,level,tags:filecount=10,filesize=100M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn={{yarn_log_dir_prefix}}/resourcemanager.profile -XX:ProfileLogOut={{yarn_log_dir_prefix}}/resourcemanager.profile -XX:+UseZingMXBeans"
+export YARN_NM_JVM_TUNING_OPTS="-Xlog:gc*:file={{yarn_log_dir_prefix}}/yarn/nodemanager-gc.log:time,uptime,level,tags:filecount=10,filesize=100M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn={{yarn_log_dir_prefix}}/nodemanager.profile -XX:ProfileLogOut={{yarn_log_dir_prefix}}/nodemanager.profile -XX:+UseZingMXBeans"
+export YARN_ATS_JVM_TUNING_OPTS="-Xlog:gc*:file={{yarn_log_dir_prefix}}/yarn/timelineserver-gc.log:time,uptime,level,tags:filecount=10,filesize=100M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn={{yarn_log_dir_prefix}}/timelineserver.profile -XX:ProfileLogOut={{yarn_log_dir_prefix}}/timelineserver.profile -XX:+UseZingMXBeans"
+export YARN_ATR_JVM_TUNING_OPTS="-Xlog:gc*:file={{yarn_log_dir_prefix}}/yarn/timelinereader-gc.log:time,uptime,level,tags:filecount=10,filesize=100M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn={{yarn_log_dir_prefix}}/timelinereader.profile -XX:ProfileLogOut={{yarn_log_dir_prefix}}/timelinereader.profile -XX:+UseZingMXBeans"
+export YARN_DNS_JVM_TUNING_OPTS="-Xlog:gc*:file={{yarn_log_dir_prefix}}/yarn/registrydns-gc.log:time,uptime,level,tags:filecount=10,filesize=100M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn={{yarn_log_dir_prefix}}/registrydns.profile -XX:ProfileLogOut={{yarn_log_dir_prefix}}/registrydns.profile -XX:+UseZingMXBeans"
+{% else %}
+export YARN_RM_JVM_TUNING_OPTS="-XX:+UseG1GC"
+export YARN_NM_JVM_TUNING_OPTS="-XX:+UseG1GC"
+export YARN_ATS_JVM_TUNING_OPTS="-XX:+UseG1GC"
+export YARN_ATR_JVM_TUNING_OPTS="-XX:+UseG1GC"
+export YARN_DNS_JVM_TUNING_OPTS="-XX:+UseG1GC"
+{% endif %}
+export YARN_RESOURCEMANAGER_OPTS="$YARN_RESOURCEMANAGER_OPTS ${YARN_RM_JVM_TUNING_OPTS}"
+export YARN_NODEMANAGER_OPTS="$YARN_NODEMANAGER_OPTS ${YARN_NM_JVM_TUNING_OPTS}"
+export YARN_TIMELINESERVER_OPTS="$YARN_TIMELINESERVER_OPTS ${YARN_ATS_JVM_TUNING_OPTS}"
+export YARN_TIMELINEREADER_OPTS="$YARN_TIMELINEREADER_OPTS ${YARN_ATR_JVM_TUNING_OPTS}"
+export YARN_REGISTRYDNS_OPTS="$YARN_REGISTRYDNS_OPTS ${YARN_DNS_JVM_TUNING_OPTS}"
+{% endif %}
+
+# Xms-only here: Hadoop yarn startup maps YARN_*_HEAPSIZE to HADOOP_HEAPSIZE_MAX and adds
+# -Xmx from the same value (see hadoop_finalize_hadoop_heap). Both flags read the HEAPSIZE
+# env var above, so Xms=Xmx without duplicating -Xmx in *_OPTS.
+export YARN_RESOURCEMANAGER_OPTS="-Xms${YARN_RESOURCEMANAGER_HEAPSIZE}m $YARN_RESOURCEMANAGER_OPTS"
+export YARN_NODEMANAGER_OPTS="-Xms${YARN_NODEMANAGER_HEAPSIZE}m $YARN_NODEMANAGER_OPTS"
+export YARN_TIMELINESERVER_OPTS="-Xms${YARN_TIMELINESERVER_HEAPSIZE}m $YARN_TIMELINESERVER_OPTS"
+
 {% if registry_dns_needs_privileged_access %}
 # If the DNS server is configured to use the standard privileged port 53,
 # the environment variables YARN_REGISTRYDNS_SECURE_USER and
@@ -160,3 +189,4 @@ export YARN_RESOURCEMANAGER_OPTS="$YARN_RESOURCEMANAGER_OPTS -Dyarn.server.resou
 export YARN_REGISTRYDNS_SECURE_USER={{yarn_user}}
 export YARN_REGISTRYDNS_SECURE_EXTRA_OPTS="-jvm server"
 {% endif %}
+    

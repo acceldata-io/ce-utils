@@ -3,6 +3,11 @@
 
       export HADOOP_JOB_HISTORYSERVER_HEAPSIZE={{jobhistory_heapsize}}
 
+      # Xms-only here: Hadoop mapred historyserver startup maps HADOOP_JOB_HISTORYSERVER_HEAPSIZE
+      # to HADOOP_HEAPSIZE_MAX and adds -Xmx from the same value (see hadoop_finalize_hadoop_heap).
+      # Both flags read the HEAPSIZE env var above, so Xms=Xmx without duplicating -Xmx in *_OPTS.
+      export MAPRED_HISTORYSERVER_OPTS="-Xms${HADOOP_JOB_HISTORYSERVER_HEAPSIZE}m $MAPRED_HISTORYSERVER_OPTS"
+
       # We need to add the RFA appender for the mr daemons only;
       # however, HADOOP_MAPRED_LOGGER is shared by the mapred client and the
       # daemons. This will restrict the RFA appender to daemons only.
@@ -11,17 +16,29 @@
       export HADOOP_DAEMON_ROOT_LOGGER=${HADOOP_DAEMON_ROOT_LOGGER:-${HADOOP_LOGLEVEL},RFA}
 
       {% if security_enabled %}
-      export MAPRED_HISTORYSERVER_OPTS="-Djava.security.auth.login.config={{mapred_jaas_file}}  -Djavax.security.auth.useSubjectCredsOnly=false"
+      export MAPRED_HISTORYSERVER_OPTS="-Djava.security.auth.login.config={{mapred_jaas_file}}  -Djavax.security.auth.useSubjectCredsOnly=false -Djava.security.krb5.conf={{krb5_conf_path}}"
       {% endif %}
       {% if java_version|int > 11 %}
       export MAPRED_HISTORYSERVER_OPTS="$MAPRED_HISTORYSERVER_OPTS {{jvm_flags}}"
+      {% endif %}
+
+      {% if java_version|int >= 11 %}
+      {% if jvm_tuning_profile == 'azul_prime' %}
+      export MR_HS_JVM_TUNING_OPTS="-Xlog:gc*:file={{mapred_log_dir_prefix}}/mapred/historyserver-gc.log:time,uptime,level,tags:filecount=10,filesize=100M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn={{mapred_log_dir_prefix}}/historyserver.profile -XX:ProfileLogOut={{mapred_log_dir_prefix}}/historyserver.profile -XX:+UseZingMXBeans"
+      {% else %}
+      export MR_HS_JVM_TUNING_OPTS="-XX:+UseG1GC"
+      {% endif %}
+      export MAPRED_HISTORYSERVER_OPTS="$MAPRED_HISTORYSERVER_OPTS ${MR_HS_JVM_TUNING_OPTS}"
       {% endif %}
 
       #export HADOOP_JHS_LOGGER=INFO,RFA # Hadoop JobSummary logger.
       #export HADOOP_IDENT_STRING= #A string representing this instance of hadoop. $USER by default
       #export HADOOP_NICENESS= #The scheduling priority for daemons. Defaults to 0.
       export HADOOP_OPTS="-Dodp.version=$ODP_VERSION $HADOOP_OPTS"
-      export HADOOP_OPTS="-Djava.io.tmpdir={{hadoop_java_io_tmpdir}} {{jvm_flags}} $HADOOP_OPTS"
+      export HADOOP_OPTS="-Djava.io.tmpdir={{hadoop_java_io_tmpdir}} $HADOOP_OPTS"
+      {% if java_version|int > 11 %}
+      export HADOOP_OPTS="$HADOOP_OPTS {{jvm_flags}}"
+      {% endif %}
       export JAVA_LIBRARY_PATH="${JAVA_LIBRARY_PATH}:{{hadoop_java_io_tmpdir}}"
 
       # History server logs
@@ -29,3 +46,4 @@
 
       # History server pid
       export HADOOP_PID_DIR={{mapred_pid_dir_prefix}}/$USER
+    

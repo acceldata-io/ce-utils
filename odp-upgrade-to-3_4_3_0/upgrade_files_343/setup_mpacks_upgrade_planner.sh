@@ -17,7 +17,7 @@
 # copy live in 3.2/upgrades/config-upgrade.xml.
 #
 # Source: odp-ambari rel/ODP-AMBARI-3.0.1.0-1
-#   facc6918eb3ef6ec11f49cdfcffc9e1dd5977e22
+#   2264d0061c3ecf29a4a3ecf197e906b00b503c03
 #
 # Run this file from upgrade_files_343 on the Ambari Server, then restart
 # ambari-server. Bundled XMLs are copied in place; no RPM download.
