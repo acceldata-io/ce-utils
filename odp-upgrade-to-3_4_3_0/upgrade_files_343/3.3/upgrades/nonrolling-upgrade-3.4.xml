@@ -43,8 +43,6 @@
         </task>
       </execute-stage>
 
-
-
       <execute-stage service="TEZ" component="TEZ_CLIENT" title="Check Tez Tarball">
         <task xsi:type="execute" hosts="any">
           <script>scripts/pre_upgrade.py</script>
@@ -63,21 +61,13 @@
         <component>ATLAS_SERVER</component>
       </service>
 
-
-
     <service name="KNOX">
         <component>KNOX_GATEWAY</component>
       </service>
 
-      <service name="OOZIE">
-        <component>OOZIE_SERVER</component>
-      </service>
+      
 
-      <service name="SPARK2">
-        <component>SPARK2_JOBHISTORYSERVER</component>
-        <component>SPARK2_THRIFTSERVER</component>
-        <component>LIVY2_SERVER</component>
-      </service>
+      
 
       <!--  no-op to upgrade <service name="SPARK3">
         <component>SPARK3_JOBHISTORYSERVER</component>
@@ -90,7 +80,6 @@
         <component>SPARK3_3_3_3_THRIFTSERVER</component>
         <component>LIVY3_3_3_3_SERVER</component>
       </service>
-
 
       <service name="SPARK3_3_5_1">
         <component>SPARK3_3_5_1_JOBHISTORYSERVER</component>
@@ -105,9 +94,7 @@
         <component>LIVY3_SERVER</component>
       </service>
 
-      <service name="ZEPPELIN">
-        <component>ZEPPELIN_MASTER</component>
-      </service>
+      
 
       <service name="AIRFLOW">
         <component>AIRFLOW_SCHEDULER</component>
@@ -146,14 +133,7 @@
         <component>HISTORYSERVER</component>
       </service>
 
-      <service name="DRUID">
-        <component>DRUID_HISTORICAL</component>
-        <component>DRUID_MIDDLEMANAGER</component>
-        <component>DRUID_BROKER</component>
-        <component>DRUID_ROUTER</component>
-        <component>DRUID_COORDINATOR</component>
-        <component>DRUID_OVERLORD</component>
-      </service>
+      
       <service name="PINOT">
         <component>PINOT_CONTROLLER</component>
         <component>PINOT_SERVER</component>
@@ -172,8 +152,6 @@
         <component>HTTPFS_GATEWAY</component>
       </service>
 
-
-
     </group>
 
     <group xsi:type="cluster" name="Backups" title="Perform Backups">
@@ -181,11 +159,7 @@
       <skippable>true</skippable>
       <supports-auto-skip-failure>false</supports-auto-skip-failure>
 
-      <execute-stage service="OOZIE" component="OOZIE_SERVER" title="Backup Oozie Database">
-        <task xsi:type="manual">
-          <message>Before continuing, please backup the Oozie Server database referenced by the Oozie server located on {{hosts.all}}.</message>
-        </task>
-      </execute-stage>
+      
 
       <execute-stage service="HIVE" component="HIVE_METASTORE" title="Backup Hive Metastore">
         <task xsi:type="manual">
@@ -220,11 +194,7 @@
         </task>
       </execute-stage>
 
-      <execute-stage service="ZEPPELIN" component="ZEPPELIN_MASTER" title="Pre Upgrade Zeppelin notebooks Backup">
-        <task xsi:type="manual">
-          <message>Before continuing, please backup Zeppelin notebooks directory on the following host(s): {{hosts.all}}.</message>
-        </task>
-      </execute-stage>
+      
 
       <execute-stage service="AIRFLOW" component="AIRFLOW_SCHEDULER" title="Backup Airflow Database">
         <task xsi:type="manual">
@@ -257,13 +227,7 @@
         <component>PHOENIX_QUERY_SERVER</component>
       </service>
 
-      <service name="KAFKA">
-        <component>KAFKA_MIRRORMAKER</component>
-        <component>KAFKA_CONNECT</component>
-        <component>CRUISE_CONTROL</component>
-        <component>KAFKA_CLIENT</component>
-        <component>KAFKA_BROKER</component>
-      </service>
+      
 
       <service name="KAFKA3">
         <component>KAFKA3_MIRRORMAKER</component>
@@ -271,7 +235,6 @@
         <component>CRUISE_CONTROL3</component>
         <component>KAFKA3_BROKER</component>
       </service>
-
 
       <service name="HDFS">
         <component>DATANODE</component>
@@ -304,11 +267,7 @@
       <!-- If the user attempts a downgrade after this point, they will need to restore backups
       before starting any of the services. -->
 
-      <execute-stage service="OOZIE" component="OOZIE_SERVER" title="Restore Oozie Database">
-        <task xsi:type="manual">
-          <message>Before continuing, please restore the Oozie Server database referenced by the Oozie server located on {{hosts.all}}.</message>
-        </task>
-      </execute-stage>
+      
 
       <execute-stage service="HIVE" component="HIVE_METASTORE" title="Restore Hive Metastore">
         <task xsi:type="manual">
@@ -328,11 +287,7 @@
         </task>
       </execute-stage>
 
-      <execute-stage service="ZEPPELIN" component="ZEPPELIN_MASTER" title="Restore Zeppelin notebooks directory">
-        <task xsi:type="manual">
-          <message>Before continuing, please restore Zeppelin notebooks directory</message>
-        </task>
-      </execute-stage>
+      
 
       <execute-stage service="AIRFLOW" component="AIRFLOW_SCHEDULER" title="Restore Airflow Database">
         <task xsi:type="manual">
@@ -353,23 +308,17 @@
       </execute-stage>
     </group>
 
-    <!-- After processing this group, will change the effective Stack of the UpgradeContext object. -->
     <group xsi:type="update-stack" name="UPDATE_DESIRED_REPOSITORY_ID" title="Update Target Repositories">
       <execute-stage title="Update Target Repositories">
         <task xsi:type="server_action" class="org.apache.ambari.server.serveraction.upgrades.UpdateDesiredRepositoryAction"/>
       </execute-stage>
     </group>
 
-
     <group xsi:type="cluster" name="Upgrade service configs" title="Upgrade service configs">
       <direction>UPGRADE</direction> <!--  prevent config changes on downgrade -->
       <skippable>true</skippable> <!-- May fix configuration problems manually -->
 
-      <execute-stage service="SPARK2" component="SPARK2_JOBHISTORYSERVER" title="Create spark.yarn.keytab/principal based on spark history keytab/principal">
-        <task xsi:type="server_action" class="org.apache.ambari.server.serveraction.upgrades.FixSparkYarnIdentity">
-          <summary>Adding spark.yarn.keytab/principal properties</summary>
-        </task>
-      </execute-stage>
+      
 
       <!--  no-op to upgrade
       <execute-stage service="SPARK3" component="SPARK3_JOBHISTORYSERVER" title="Create spark.yarn.keytab/principal based on spark history keytab/principal">
@@ -377,13 +326,6 @@
           <summary>Adding spark.yarn.keytab/principal properties</summary>
         </task>
       </execute-stage>-->
-
-      <!-- ZEPPELIN -->
-      <execute-stage service="ZEPPELIN" component="ZEPPELIN_MASTER" title="Apply zeppelin.notebook.storage config">
-        <task xsi:type="server_action" class="org.apache.ambari.server.serveraction.upgrades.FixNotebookStorage">
-          <summary>Adjusting Zeppelin Notebook properties</summary>
-        </task>
-      </execute-stage>
 
       <execute-stage service="YARN" title="Apply config changes for Timeline Reader">
         <task xsi:type="server_action" class="org.apache.ambari.server.serveraction.upgrades.FixTimelineReaderAddress">
@@ -393,10 +335,6 @@
 
     </group>
 
-    <!--
-    After processing this group, the user-specified Kerberos descriptor will be updated to work with
-    the new stack-level Kerberos descriptor.
-    -->
     <group xsi:type="cluster" name="UPDATE_KERBEROS_DESCRIPTORS" title="Update Kerberos Descriptors">
       <condition xsi:type="security" type="kerberos"/>
       <execute-stage title="Update the user-specified Kerberos descriptor">
@@ -404,7 +342,6 @@
       </execute-stage>
     </group>
 
-    <!-- Now, restart all of the services. -->
     <group xsi:type="restart" name="ZOOKEEPER" title="ZooKeeper">
       <service-check>false</service-check>
       <skippable>true</skippable>
@@ -413,6 +350,17 @@
       <service name="ZOOKEEPER">
         <component>ZOOKEEPER_SERVER</component>
         <component>ZOOKEEPER_CLIENT</component>
+      </service>
+    </group>
+
+    <group xsi:type="restart" name="INFRA_SOLR" title="Infra Solr">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+      <service name="AMBARI_INFRA_SOLR">
+        <component>INFRA_SOLR</component>
+        <component>INFRA_SOLR_CLIENT</component>
       </service>
     </group>
 
@@ -465,77 +413,6 @@
         </task>
       </execute-stage>
     </group>
-    <group xsi:type="restart" name="OZONE" title="Ozone">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-      <service name="OZONE">
-        <component>OZONE_STORAGE_CONTAINER_MANAGER</component>
-        <component>OZONE_MANAGER</component>
-        <component>OZONE_RECON</component>
-        <component>OZONE_S3_GATEWAY</component>
-        <component>OZONE_CLIENT</component>
-        <component>OZONE_DATANODE</component>
-      </service>
-    </group>
-
-    <group xsi:type="restart" name="HTTPFS" title="HttpFS">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-      <service name="HTTPFS">
-        <component>HTTPFS_GATEWAY</component>
-      </service>
-    </group>
-    <group xsi:type="restart" name="RANGER_KMS" title="Ranger KMS">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-      <service name="RANGER_KMS">
-        <component>RANGER_KMS_SERVER</component>
-      </service>
-    </group>
-
-    <group xsi:type="restart" name="KAFKA" title="Kafka">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <parallel-scheduler/>
-      <service name="KAFKA">
-        <component>KAFKA_BROKER</component>
-        <component>KAFKA_MIRRORMAKER</component>
-        <component>KAFKA_CONNECT</component>
-        <component>CRUISE_CONTROL</component>
-        <component>KAFKA_CLIENT</component>
-      </service>
-    </group>
-    <group xsi:type="restart" name="KAFKA3" title="Kafka3">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <parallel-scheduler/>
-      <service name="KAFKA3">
-        <component>KAFKA3_BROKER</component>
-        <component>KAFKA3_MIRRORMAKER</component>
-        <component>KAFKA3_CONNECT</component>
-        <component>CRUISE_CONTROL3</component>
-        <component>KAFKA3_CLIENT</component>
-      </service>
-    </group>
-
-
-    <group xsi:type="restart" name="MAPREDUCE2" title="MapReduce2">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-
-      <service name="MAPREDUCE2">
-        <component>HISTORYSERVER</component>
-        <component>MAPREDUCE2_CLIENT</component>
-      </service>
-    </group>
 
     <group xsi:type="restart" name="YARN_RESOURCE_MANAGERS" title="YARN ResourceManagers">
       <service-check>false</service-check>
@@ -585,6 +462,28 @@
       </execute-stage>
     </group>
 
+    <group xsi:type="restart" name="MAPREDUCE2" title="MapReduce2">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+
+      <service name="MAPREDUCE2">
+        <component>HISTORYSERVER</component>
+        <component>MAPREDUCE2_CLIENT</component>
+      </service>
+    </group>
+
+    <group xsi:type="restart" name="RANGER_KMS" title="Ranger KMS">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+      <service name="RANGER_KMS">
+        <component>RANGER_KMS_SERVER</component>
+      </service>
+    </group>
+
     <group xsi:type="restart" name="HBASE" title="HBASE">
       <service-check>false</service-check>
       <skippable>true</skippable>
@@ -598,7 +497,30 @@
       </service>
     </group>
 
-    <group xsi:type="restart" name="CLIENTS" title="Tez, Pig, Sqoop Clients">
+    <group xsi:type="restart" name="HTTPFS" title="HttpFS">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+      <service name="HTTPFS">
+        <component>HTTPFS_GATEWAY</component>
+      </service>
+    </group>
+
+    <group xsi:type="restart" name="KAFKA3" title="Kafka3">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <parallel-scheduler/>
+      <service name="KAFKA3">
+        <component>KAFKA3_BROKER</component>
+        <component>KAFKA3_MIRRORMAKER</component>
+        <component>KAFKA3_CONNECT</component>
+        <component>CRUISE_CONTROL3</component>
+        <component>KAFKA3_CLIENT</component>
+      </service>
+    </group>
+
+    <group xsi:type="restart" name="CLIENTS" title="Tez Clients">
       <service-check>false</service-check>
       <skippable>true</skippable>
       <parallel-scheduler/>
@@ -606,28 +528,7 @@
         <component>TEZ_CLIENT</component>
       </service>
 
-
-      <service name="SQOOP">
-        <component>SQOOP</component>
-      </service>
-    </group>
-
-    <group name="SERVICE_CHECK_1" title="All Service Checks" xsi:type="service-check">
-      <direction>UPGRADE</direction>
-      <skippable>true</skippable>
-      <priority>
-        <service>ZOOKEEPER</service>
-        <service>RANGER</service>
-        <service>RANGER_KMS</service>
-        <service>HDFS</service>
-        <service>OZONE</service>
-        <service>HTTPFS</service>
-        <service>KAFKA</service>
-        <service>KAFKA3</service>
-        <service>YARN</service>
-        <service>MAPREDUCE2</service>
-        <service>HBASE</service>
-      </priority>
+      
     </group>
 
     <group xsi:type="restart" name="HIVE_MASTERS" title="Hive Masters">
@@ -657,50 +558,6 @@
       </service>
     </group>
 
-    <group xsi:type="restart" name="SPARK2" title="Spark2">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-      <service name="SPARK2">
-        <component>SPARK2_JOBHISTORYSERVER</component>
-        <component>SPARK2_THRIFTSERVER</component>
-        <component>LIVY2_SERVER</component>
-      </service>
-    </group>
-
-    <group xsi:type="restart" name="SPARK2_CLIENTS" title="Spark2 Clients">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <parallel-scheduler/>
-      <service name="SPARK2">
-        <component>SPARK2_CLIENT</component>
-      </service>
-    </group>
-
-    <!--  no-op to upgrade
-    <group xsi:type="restart" name="SPARK3" title="Spark3">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-      <service name="SPARK3">
-        <component>SPARK3_JOBHISTORYSERVER</component>
-        <component>SPARK3_THRIFTSERVER</component>
-        <component>SPARK3_CONNECT_SERVER</component>
-      </service>
-    </group>-->
-
-    <!--  no-op to upgrade
-    <group xsi:type="restart" name="SPARK3_CLIENTS" title="Spark3 Clients">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <parallel-scheduler/>
-      <service name="SPARK3">
-        <component>SPARK3_CLIENT</component>
-      </service>
-    </group>-->
-
     <group xsi:type="restart" name="IMPALA" title="Impala">
       <service-check>false</service-check>
       <skippable>true</skippable>
@@ -724,6 +581,17 @@
       </service>
     </group>
 
+    <group xsi:type="restart" name="SPARK3" title="Spark3">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+      <service name="SPARK3">
+        <component>SPARK3_JOBHISTORYSERVER</component>
+        <component>SPARK3_THRIFTSERVER</component>
+        <component>SPARK3_CONNECT_SERVER</component>
+      </service>
+    </group>
 
     <group xsi:type="restart" name="SPARK3_3_3_3" title="Spark3 3.3.3">
       <service-check>false</service-check>
@@ -762,51 +630,14 @@
       </service>
     </group>
 
-    <group xsi:type="restart" name="ZEPPELIN" title="Zeppelin">
+    <group xsi:type="restart" name="SPARK3_CLIENTS" title="Spark3 Clients">
       <service-check>false</service-check>
       <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
       <parallel-scheduler/>
-      <service name="ZEPPELIN">
-        <component>ZEPPELIN_MASTER</component>
+      <service name="SPARK3">
+        <component>SPARK3_CLIENT</component>
       </service>
     </group>
-    <group xsi:type="restart" name="HUE" title="Hue">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-      <service name="HUE">
-        <component>HUE_SERVER</component>
-      </service>
-    </group>
-
-
-
-    <group xsi:type="restart" name="JUPYTER" title="JupyterHub">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-      <service name="JUPYTER">
-        <component>JUPYTERHUB</component>
-      </service>
-    </group>
-
-
-    <group xsi:type="restart" name="AIRFLOW" title="Airflow">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-      <service name="AIRFLOW">
-        <component>AIRFLOW_SCHEDULER</component>
-        <component>AIRFLOW_WEBSERVER</component>
-        <component>AIRFLOW_WORKER</component>
-      </service>
-    </group>
-
-
 
     <group xsi:type="restart" name="SPARK3_3_3_3_CLIENTS" title="Spark3 3.3.3 Clients">
       <service-check>false</service-check>
@@ -835,6 +666,72 @@
       </service>
     </group>
 
+    <group xsi:type="restart" name="HUE" title="Hue">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+      <service name="HUE">
+        <component>HUE_SERVER</component>
+      </service>
+    </group>
+
+    <group xsi:type="restart" name="JUPYTER" title="JupyterHub">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+      <service name="JUPYTER">
+        <component>JUPYTERHUB</component>
+      </service>
+    </group>
+
+    <group xsi:type="restart" name="AIRFLOW" title="Airflow">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+      <service name="AIRFLOW">
+        <component>AIRFLOW_SCHEDULER</component>
+        <component>AIRFLOW_WEBSERVER</component>
+        <component>AIRFLOW_WORKER</component>
+      </service>
+    </group>
+
+    <group xsi:type="restart" name="KNOX" title="Knox">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <parallel-scheduler/>
+      <service name="KNOX">
+        <component>KNOX_GATEWAY</component>
+      </service>
+    </group>
+
+    <group xsi:type="restart" name="PINOT" title="Pinot">
+      <skippable>true</skippable>
+      <service name="PINOT">
+        <component>PINOT_CONTROLLER</component>
+        <component>PINOT_SERVER</component>
+        <component>PINOT_BROKER</component>
+        <component>PINOT_MINION</component>
+      </service>
+    </group>
+
+    <group xsi:type="restart" name="OZONE" title="Ozone">
+      <service-check>false</service-check>
+      <skippable>true</skippable>
+      <supports-auto-skip-failure>false</supports-auto-skip-failure>
+      <parallel-scheduler/>
+      <service name="OZONE">
+        <component>OZONE_STORAGE_CONTAINER_MANAGER</component>
+        <component>OZONE_MANAGER</component>
+        <component>OZONE_RECON</component>
+        <component>OZONE_S3_GATEWAY</component>
+        <component>OZONE_CLIENT</component>
+        <component>OZONE_DATANODE</component>
+      </service>
+    </group>
+
     <group xsi:type="restart" name="ATLAS" title="Atlas">
       <service-check>false</service-check>
       <skippable>true</skippable>
@@ -855,83 +752,42 @@
       </service>
     </group>
 
-    <group xsi:type="restart" name="OOZIE" title="Oozie">
-      <service-check>false</service-check>
+    <group name="SERVICE_CHECK_1" title="All Service Checks" xsi:type="service-check">
+      <direction>UPGRADE</direction>
       <skippable>true</skippable>
-      <supports-auto-skip-failure>false</supports-auto-skip-failure>
-      <parallel-scheduler/>
-      <service name="OOZIE">
-        <component>OOZIE_SERVER</component>
-      </service>
+      <priority>
+        <service>ZOOKEEPER</service>
+        <service>AMBARI_INFRA_SOLR</service>
+        <service>RANGER</service>
+        <service>HDFS</service>
+        <service>YARN</service>
+        <service>MAPREDUCE2</service>
+        <service>RANGER_KMS</service>
+        <service>HBASE</service>
+        <service>HTTPFS</service>
+        <service>KAFKA3</service>
+        <service>OZONE</service>
+      </priority>
     </group>
-
-    <group xsi:type="restart" name="OOZIE_CLIENTS" title="Oozie Clients">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <parallel-scheduler/>
-      <service name="OOZIE">
-        <component>OOZIE_CLIENT</component>
-      </service>
-    </group>
-
 
     <group name="SERVICE_CHECK_2" title="All Service Checks" xsi:type="service-check">
       <direction>UPGRADE</direction>
       <skippable>true</skippable>
       <priority>
         <service>HIVE</service>
-        <service>SPARK2</service>
-        <!--  no-op to upgrade  <service>SPARK3</service> -->
-        <service>ATLAS</service>
-        <service>ZEPPELIN</service>
-        <service>AIRFLOW</service>
+        <service>SPARK3</service>
         <service>HUE</service>
         <service>JUPYTER</service>
-        <service>OOZIE</service>
+        <service>AIRFLOW</service>
+        <service>ATLAS</service>
       </priority>
     </group>
-
-   <group xsi:type="restart" name="KNOX" title="Knox">
-      <service-check>false</service-check>
-      <skippable>true</skippable>
-      <parallel-scheduler/>
-      <service name="KNOX">
-        <component>KNOX_GATEWAY</component>
-      </service>
-    </group>
-
-
-
-
-    <group xsi:type="restart" name="DRUID" title="Druid">
-      <skippable>true</skippable>
-      <service name="DRUID">
-        <component>DRUID_HISTORICAL</component>
-        <component>DRUID_MIDDLEMANAGER</component>
-        <component>DRUID_BROKER</component>
-        <component>DRUID_ROUTER</component>
-        <component>DRUID_COORDINATOR</component>
-        <component>DRUID_OVERLORD</component>
-      </service>
-    </group>
-    <group xsi:type="restart" name="PINOT" title="Pinot">
-      <skippable>true</skippable>
-      <service name="PINOT">
-        <component>PINOT_CONTROLLER</component>
-        <component>PINOT_SERVER</component>
-        <component>PINOT_BROKER</component>
-        <component>PINOT_MINION</component>
-      </service>
-    </group>
-
-
 
     <group name="SERVICE_CHECK_3" title="All Service Checks" xsi:type="service-check">
       <direction>UPGRADE</direction>
       <skippable>true</skippable>
       <priority>
         <service>KNOX</service>
-        <service>DRUID</service>
       </priority>
     </group>
 
@@ -988,6 +844,19 @@
       </component>
 
       <component name="ZOOKEEPER_CLIENT">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+    </service>
+
+    <service name="AMBARI_INFRA_SOLR">
+      <component name="INFRA_SOLR">
+        <upgrade>
+          <task xsi:type="restart-task"/>
+        </upgrade>
+      </component>
+      <component name="INFRA_SOLR_CLIENT">
         <upgrade>
           <task xsi:type="restart-task"/>
         </upgrade>
@@ -1179,33 +1048,7 @@
       </component>
     </service>
 
-    <service name="KAFKA">
-      <component name="KAFKA_BROKER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="KAFKA_MIRRORMAKER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="KAFKA_CONNECT">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="CRUISE_CONTROL">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="KAFKA_CLIENT">
-        <upgrade>
-          <task xsi:type="restart-task" />
-        </upgrade>
-      </component>
-    </service>
+    
     <service name="KAFKA3">
       <component name="KAFKA3_BROKER">
         <upgrade>
@@ -1233,7 +1076,6 @@
         </upgrade>
       </component>
     </service>
-
 
     <service name="HBASE">
       <component name="HBASE_MASTER">
@@ -1270,14 +1112,7 @@
       </component>
     </service>
 
-
-    <service name="SQOOP">
-      <component name="SQOOP">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-    </service>
+    
 
     <service name="HIVE">
       <component name="HIVE_METASTORE">
@@ -1322,28 +1157,7 @@
       </component>
     </service>
 
-    <service name="SPARK2">
-      <component name="SPARK2_JOBHISTORYSERVER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="SPARK2_THRIFTSERVER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="SPARK2_CLIENT">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="LIVY2_SERVER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-    </service>
+    
 
     <!--  no-op to upgrade
     <service name="SPARK3">
@@ -1392,13 +1206,7 @@
       </component>
     </service>
 
-    <service name="ZEPPELIN">
-      <component name="ZEPPELIN_MASTER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-    </service>
+    
 
     <service name="AIRFLOW">
       <component name="AIRFLOW_SCHEDULER">
@@ -1439,39 +1247,7 @@
       </component>
     </service>
 
-
-    <service name="OOZIE">
-      <component name="OOZIE_SERVER">
-        <pre-upgrade>
-          <!-- It is extremely important that both of these tasks run on the exact same host. Hence, pick the first alphabetically. -->
-          <task xsi:type="configure_function" hosts="first" />
-
-          <task xsi:type="execute" hosts="first" sequential="true">
-            <summary>Upgrading the Oozie database and creating a new sharelib</summary>
-            <script>scripts/oozie_server_upgrade.py</script>
-            <function>upgrade_oozie_database_and_sharelib</function>
-          </task>
-        </pre-upgrade>
-
-        <pre-downgrade>
-          <task xsi:type="execute" hosts="any" sequential="true">
-            <summary>Create a new sharelib</summary>
-            <script>scripts/oozie_server_upgrade.py</script>
-            <function>create_sharelib</function>
-          </task>
-        </pre-downgrade>
-
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-
-      <component name="OOZIE_CLIENT">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-    </service>
+    
 
     <service name="KNOX">
       <component name="KNOX_GATEWAY">
@@ -1504,38 +1280,7 @@
       </component>
     </service>
 
-    <service name="DRUID">
-      <component name="DRUID_HISTORICAL">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="DRUID_MIDDLEMANAGER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="DRUID_BROKER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="DRUID_ROUTER">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="DRUID_COORDINATOR">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-      <component name="DRUID_OVERLORD">
-        <upgrade>
-          <task xsi:type="restart-task"/>
-        </upgrade>
-      </component>
-    </service>
+    
     <service name="PINOT">
       <component name="PINOT_CONTROLLER">
         <upgrade>
@@ -1598,7 +1343,6 @@
         </upgrade>
       </component>
     </service>
-
 
   </processing>
 </upgrade>

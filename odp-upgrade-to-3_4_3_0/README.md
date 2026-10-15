@@ -39,7 +39,7 @@ At the JDK prompt, enter the JDK the cluster runs on before this upgrade:
 
 - `8`: JDK 8 -> JDK 17. Full menu. Choose `A` for every service.
 - `11`: JDK 11 -> JDK 17. Full menu. Choose `A` for every service.
-- `17`: cluster is already on JDK 17 (for example 3.3.6 on JDK 17 -> 3.4.3). Menu is ZooKeeper logback, Pinot `JAVA_HOME`, and Spark 3.5.8 shuffle.
+- `17`: cluster is already on JDK 17 (for example 3.3.6 on JDK 17 -> 3.4.3). Menu is ZooKeeper logback, Pinot JVM templates, and Spark 3.5.8 shuffle.
 
 Source JDK 8 and 11 update HDFS, YARN, MapReduce, Infra-Solr, Hive, Tez, HBase, Ranger KMS, ZooKeeper, and Pinot. YARN shuffle is Spark 3.5.8 only (`spark_shuffle_358`). Templates under `upgrade_files_343/ODP-env-templates/` are the current Ambari values (ODP 3.3 service content, ODP 3.4 YARN aux-services, Infra-Solr j2). Tez AppMaster and task opts are separate files. If the script cannot be run, apply those templates in Ambari Configs. Restart the affected services in Ambari after the script.
 
