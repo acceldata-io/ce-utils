@@ -8,15 +8,15 @@ Prefer `setup_jdk17_config.sh` on the Ambari Server. If you cannot run it, apply
 
 - JDK 8 and 11 use the same Ambari templates. Those templates branch on `java_version` (and Azul Prime where Ambari does).
 - JDK 8 only: `jdk8-specific/yarn-nodemanager-aux-services` replaces `yarn.nodemanager.aux-services` with the ODP 3.4 default, and the script deletes the old Spark 2 shuffle keys.
-- JDK 17: patch mode only (ZooKeeper logback, Pinot JAVA_HOME, Spark 3.5.8 shuffle).
+- JDK 17: patch mode only (ZooKeeper logback, Pinot JVM templates, Spark 3.5.8 shuffle).
 
-## Pinot JAVA_HOME
+## Pinot
 
-Config type: `pinot-env`
-Key: `JAVA_HOME`
-Value: stack JDK 17 home, for example `/usr/lib/jvm/java-17-openjdk`
+Source: ambari-mpacks `ODP-3.4.x-main` Pinot 1.5.1 (`3b4ff3b2d6b4`).
 
-Ambari UI: Pinot -> Configs -> Advanced pinot-env.
+`pinot-env` / `JAVA_HOME` stays empty so Pinot uses the cluster JDK. The script deletes a leftover JDK 8 or JDK 11 path. It does not write a JDK 17 path while the cluster `java_version` is still 8.
+
+`pinot/pinot-*-contentjmx` is the `contentjmx` value for controller, broker, server, and minion. JDK 8 keeps `-Xloggc`. JDK 11 and above use `-Xlog`. Ambari renders the branch from `java_version` at command time.
 
 ## YARN Spark 3.5.8 shuffle
 

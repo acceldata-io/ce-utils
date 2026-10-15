@@ -17,7 +17,7 @@
 # Source JDK 8 or 11: full service menu (HDFS, YARN, MapReduce, Infra-Solr,
 # Hive, Tez, HBase, Ranger KMS, ZooKeeper, Pinot).
 # Oozie and Druid are not part of ODP 3.4.3.
-# Source JDK 17: ZooKeeper logback, Pinot JAVA_HOME, Spark 3.5.8 shuffle.
+# Source JDK 17: ZooKeeper logback, Pinot JVM templates, Spark 3.5.8 shuffle.
 ##########################################################################
 GREEN='\e[32m'
 YELLOW='\e[33m'
@@ -175,35 +175,6 @@ delete_config() {
         -b "Old configuration deleted" \
     && echo -e "${GREEN}[OK]${NC} Deleted ${config_file}:${key}" \
     || echo -e "${RED}Failed updating ${key} in ${config_file}.${NC}" | tee -a /tmp/jdk17_update.log
-}
-
-# Resolve cluster stack java.home (same source Ambari uses for hostLevelParams/java_home).
-resolve_stack_java_home() {
-    local java_home=""
-    local candidate=""
-
-    for candidate in /usr/lib/jvm/java-17-openjdk /usr/lib/jvm/java-17; do
-        if [[ -d "$candidate" && -x "$candidate/bin/java" ]]; then
-            java_home="$candidate"
-            break
-        fi
-    done
-
-    if [[ -z "$java_home" && -L /usr/lib/jvm/java ]]; then
-        candidate=$(readlink -f /usr/lib/jvm/java 2>/dev/null || true)
-        if [[ -n "$candidate" && -x "$candidate/bin/java" ]]; then
-            java_home="$candidate"
-        fi
-    fi
-
-    if [[ -z "$java_home" ]]; then
-        candidate=$(ls -d /usr/lib/jvm/java-*openjdk* 2>/dev/null | sort -V | tail -1)
-        if [[ -n "$candidate" && -x "$candidate/bin/java" ]]; then
-            java_home="$candidate"
-        fi
-    fi
-
-    echo "$java_home"
 }
 
 get_config_property() {
@@ -425,18 +396,40 @@ update_zookeeper_configuration_for_jdk17() {
     echo -e "${GREEN}Successfully updated configurations for ZooKeeper.${NC}"
 }
 
+# Pinot 1.5.1 (ambari-mpacks ODP-3.4.x-main) uses cluster Java when
+# pinot-env JAVA_HOME is empty. A java-11 path is ignored by params.py.
+# A java-8 path is not, so delete JDK 8 and JDK 11 leftovers here.
+# contentjmx keeps the java_version branch: -Xloggc on JDK 8, -Xlog on JDK 11+.
+# Do not write a JDK 17 path while Ambari java_version is still 8.
 update_pinot_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for Pinot...${NC}"
 
-    local stack_java_home
-    stack_java_home=$(resolve_stack_java_home)
-    if [[ -z "$stack_java_home" || ! -d "$stack_java_home" ]]; then
-        echo -e "${RED}[ERROR] Could not resolve stack java.home for Pinot.${NC}" | tee -a /tmp/jdk17_update.log
-        return 1
+    if ! config_type_present "pinot-env"; then
+        echo -e "${YELLOW}[SKIPPED] pinot-env is not present on this cluster.${NC}"
+        return 0
     fi
 
-    echo -e "${GREEN}Resetting pinot-env JAVA_HOME to stack java.home: ${stack_java_home}${NC}"
-    set_config "pinot-env" "JAVA_HOME" "${stack_java_home}"
+    local java_home
+    java_home=$(get_config_property "pinot-env" "JAVA_HOME")
+    if [[ "$java_home" =~ java-1\.8|java-8|jdk1\.8|jdk-8|java-11|jdk-11 ]]; then
+        echo -e "${GREEN}Removing leftover pinot-env JAVA_HOME (${java_home}) so Pinot follows cluster Java.${NC}"
+        delete_config "pinot-env" "JAVA_HOME"
+    elif [[ -n "$java_home" ]]; then
+        echo -e "${GREEN}Leaving pinot-env JAVA_HOME unchanged: ${java_home}${NC}"
+    else
+        echo -e "${GREEN}pinot-env JAVA_HOME is empty. Pinot will use cluster Java.${NC}"
+    fi
+
+    local role config_type template
+    for role in controller broker server minion; do
+        config_type="pinot-${role}-conf"
+        template="$TEMPLATE_DIR/pinot/pinot-${role}-contentjmx"
+        if ! config_type_present "$config_type"; then
+            echo -e "${YELLOW}[SKIPPED] ${config_type} is not present.${NC}"
+            continue
+        fi
+        set_config "$config_type" "contentjmx" "$(cat "$template")"
+    done
 
     echo -e "${GREEN}Successfully updated configurations for Pinot.${NC}"
 }
@@ -464,7 +457,7 @@ display_service_options() {
                 echo -e "${GREEN}  4)${NC} HBase (env + log4j2)"
                 echo -e "${GREEN}  5)${NC} Ranger KMS"
                 echo -e "${GREEN}  6)${NC} ZooKeeper (logback)"
-                echo -e "${GREEN}  7)${NC} Pinot (JAVA_HOME)"
+                echo -e "${GREEN}  7)${NC} Pinot (JAVA_HOME + JVM)"
                 echo -e "${GREEN}  8)${NC} YARN Spark 3.5.8 shuffle (pre-EU)"
                 ;;
             11)
@@ -474,12 +467,12 @@ display_service_options() {
                 echo -e "${GREEN}  4)${NC} HBase (env + log4j2)"
                 echo -e "${GREEN}  5)${NC} Ranger KMS"
                 echo -e "${GREEN}  6)${NC} ZooKeeper (logback)"
-                echo -e "${GREEN}  7)${NC} Pinot (JAVA_HOME)"
+                echo -e "${GREEN}  7)${NC} Pinot (JAVA_HOME + JVM)"
                 echo -e "${GREEN}  8)${NC} YARN Spark 3.5.8 shuffle (pre-EU)"
                 ;;
             17)
                 echo -e "${GREEN}  1)${NC} ZooKeeper (logback)"
-                echo -e "${GREEN}  2)${NC} Pinot (JAVA_HOME)"
+                echo -e "${GREEN}  2)${NC} Pinot (JAVA_HOME + JVM)"
                 echo -e "${GREEN}  3)${NC} YARN Spark 3.5.8 shuffle (pre-EU)"
                 ;;
         esac
