@@ -51,3 +51,5 @@
 
       ##export metadata password variable:
       export DRUID_METADATA_STORAGE_CONNECTOR_PASSWORD=`{{password_command}} "druid.metadata.storage.connector.password"`
+
+    

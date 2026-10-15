@@ -144,3 +144,4 @@ export YARN_RESOURCEMANAGER_OPTS="$YARN_RESOURCEMANAGER_OPTS -Dyarn.server.resou
 export YARN_REGISTRYDNS_SECURE_USER={{yarn_user}}
 export YARN_REGISTRYDNS_SECURE_EXTRA_OPTS="-jvm server"
 {% endif %}
+    

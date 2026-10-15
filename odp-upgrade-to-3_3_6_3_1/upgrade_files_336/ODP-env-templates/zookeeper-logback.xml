@@ -27,7 +27,7 @@
                      (Note:Mention the units of backup file size along with "MB" units.)
         </description>
         <display-name>ZooKeeper Log: backup file size</display-name>
-        <on-ambari-upgrade add="true"/>
+        <on-ambari-upgrade add="false"/>
     </property>
     <property>
         <name>zookeeper_log_number_of_backup_files</name>
@@ -38,7 +38,7 @@
             <type>int</type>
             <minimum>0</minimum>
         </value-attributes>
-        <on-ambari-upgrade add="true"/>
+        <on-ambari-upgrade add="false"/>
     </property>
     <property>
         <name>content</name>

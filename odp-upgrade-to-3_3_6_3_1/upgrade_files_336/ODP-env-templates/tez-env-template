@@ -20,3 +20,4 @@ export HADOOP_HOME=${HADOOP_HOME:-{{hadoop_home}}}
 
 # The java implementation to use.
 export JAVA_HOME={{java64_home}}
+    

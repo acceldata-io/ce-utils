@@ -1,3 +1,4 @@
+
 # Tez specific configuration
 export TEZ_CONF_DIR={{config_dir}}
 
@@ -16,3 +17,4 @@ export HADOOP_HOME=${HADOOP_HOME:-{{hadoop_home}}}
 
 # The java implementation to use.
 export JAVA_HOME={{java64_home}}
+    

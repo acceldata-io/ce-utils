@@ -129,7 +129,7 @@
       {% else %}
       SHARED_HDFS_NAMENODE_OPTS="-server -XX:ParallelGCThreads=8 -XX:+UseG1GC -XX:ErrorFile={{hdfs_log_dir_prefix}}/$USER/hs_err_pid%p.log -XX:NewSize={{namenode_opt_newsize}} -XX:MaxNewSize={{namenode_opt_maxnewsize}} -Xlog:gc*,gc+heap=debug,gc+phases=debug:file={{hdfs_log_dir_prefix}}/$USER/gc.log-`date +'%Y%m%d%H%M'`:time,level,tags -XX:InitiatingHeapOccupancyPercent=70 -Xms$HADOOP_NAMENODE_HEAPSIZE -Xmx$HADOOP_NAMENODE_HEAPSIZE -Dhadoop.security.logger=INFO,DRFAS -Dhdfs.audit.logger=INFO,DRFAAUDIT"
 
-      {% if java_version >= 17 %}
+      {% if java_version|int > 11 %}
       export SHARED_HDFS_NAMENODE_OPTS="${SHARED_HDFS_NAMENODE_OPTS} {{jvm_flags}}"
       {% endif %}
 
@@ -142,7 +142,7 @@
       # The following applies to multiple commands (fs, dfs, fsck, distcp etc)
       export HADOOP_CLIENT_OPTS="-Xmx${HADOOP_HEAPSIZE}m $HADOOP_CLIENT_OPTS"
 
-      {% if java_version >= 17 %}
+      {% if java_version|int > 11 %}
       export HADOOP_CLIENT_OPTS="${HADOOP_CLIENT_OPTS} {{jvm_flags}}"
       {% endif %}
       {% endif %}
@@ -323,7 +323,7 @@
       HADOOP_OPTS="-Dzookeeper.sasl.client.username={{zk_principal_user}} $HADOOP_OPTS"
       {% endif %}
 
-      {% if java_version > 11 %}
+      {% if java_version|int > 11 %}
       HADOOP_OPTS="$HADOOP_OPTS {{jvm_flags}}"
       {% endif %}
 
@@ -393,3 +393,4 @@
       #
       # For example, to limit who can execute the namenode command,
       # export HDFS_NAMENODE_USER=hdfs
+    

@@ -191,9 +191,13 @@ update_hdfs_configuration_for_jdk17() {
     set_config "mapred-site" "yarn.app.mapreduce.am.admin-command-opts" "$(cat $TEMPLATE_DIR/mapred-site-template)"
     set_config "yarn-env" "content" "$(cat $TEMPLATE_DIR/yarn-env-template)"
 
+    # Ambari content already branches on java_version, so JDK 8 and 11 use one template.
+    if [ "$JAVA_VERSION" -eq "8" ] || [ "$JAVA_VERSION" -eq "11" ]; then
+      set_config "yarn-hbase-env" "content" "$(cat $TEMPLATE_DIR/yarn-hbase-env-template)"
+    fi
+
     # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
-      set_config "yarn-hbase-env" "content" "$(cat $MIGRATION_PATH/yarn-hbase-env-template)"
       set_config "yarn-site" "yarn.nodemanager.aux-services" "$(cat $MIGRATION_PATH/yarn-nodemanager-aux-services)"
       # Remove configs
       delete_config "yarn-site" "yarn.nodemanager.aux-services.spark2_shuffle.class"
@@ -211,9 +215,9 @@ update_infra_configuration_for_jdk17() {
     set_config "infra-solr-env" "infra_solr_gc_log_opts" "$(cat $TEMPLATE_DIR/infra-solr-gc-log-opts)"
     set_config "infra-solr-env" "infra_solr_gc_tune" "$(cat $TEMPLATE_DIR/infra-solr-gc-tune)"
 
-    # Java 11 specific configuration changes
-    if [ "$JAVA_VERSION" -eq "11" ]; then
-      set_config "infra-solr-env" "content" "$(cat $MIGRATION_PATH/infra-solr-env-template)"
+    # Ambari infra-solr-env.sh.j2 already branches on java_version.
+    if [ "$JAVA_VERSION" -eq "8" ] || [ "$JAVA_VERSION" -eq "11" ]; then
+      set_config "infra-solr-env" "content" "$(cat $TEMPLATE_DIR/infra-solr-env-template)"
     fi
 
     echo -e "${GREEN}Successfully updated configurations for Infra-Solr.${NC}"
@@ -254,9 +258,9 @@ update_hbase_configuration_for_jdk17() {
       set_config "hbase-log4j" "content" "$(cat "$TEMPLATE_DIR/hbase-log4j2-template")"
     fi
 
-    # Java 8 specific configuration changes
-    if [ "$JAVA_VERSION" -eq "8" ]; then
-      set_config "hbase-env" "content" "$(cat $MIGRATION_PATH/hbase-env-template)"
+    # Ambari hbase-env content already branches on java_version.
+    if [ "$JAVA_VERSION" -eq "8" ] || [ "$JAVA_VERSION" -eq "11" ]; then
+      set_config "hbase-env" "content" "$(cat $TEMPLATE_DIR/hbase-env-template)"
     fi
 
     echo -e "${GREEN}Successfully updated configurations for HBase.${NC}"
@@ -284,15 +288,17 @@ update_kms_configuration_for_jdk17() {
 update_druid_configuration_for_jdk17() {
     echo -e "${YELLOW}Starting to update configurations for Ranger Druid...${NC}"
 
-    # Java 8 specific configuration changes
-    if [ "$JAVA_VERSION" -eq "8" ]; then
-      set_config "druid-env" "content" "$(cat $MIGRATION_PATH/druid-env-template)"
-      set_config "druid-env" "druid.broker.jvm.opts" "$(cat $MIGRATION_PATH/druid-env-opts)"
-      set_config "druid-env" "druid.coordinator.jvm.opt" "$(cat $MIGRATION_PATH/druid-env-opts)"
-      set_config "druid-env" "druid.historical.jvm.opt" "$(cat $MIGRATION_PATH/druid-env-opts)"
-      set_config "druid-env" "druid.middlemanager.jvm.opts" "$(cat $MIGRATION_PATH/druid-env-opts)"
-      set_config "druid-env" "druid.overlord.jvm.opts" "$(cat $MIGRATION_PATH/druid-env-opts)"
-      set_config "druid-env" "druid.router.jvm.opts" "$(cat $MIGRATION_PATH/druid-env-opts)"
+    if [ "$JAVA_VERSION" -eq "8" ] || [ "$JAVA_VERSION" -eq "11" ]; then
+      set_config "druid-env" "content" "$(cat $TEMPLATE_DIR/druid-env-template)"
+      if [[ -f "$TEMPLATE_DIR/druid-env-opts" ]]; then
+        druid_opts="$(cat $TEMPLATE_DIR/druid-env-opts)"
+        set_config "druid-env" "druid.broker.jvm.opts" "${druid_opts}"
+        set_config "druid-env" "druid.coordinator.jvm.opts" "${druid_opts}"
+        set_config "druid-env" "druid.historical.jvm.opts" "${druid_opts}"
+        set_config "druid-env" "druid.middlemanager.jvm.opts" "${druid_opts}"
+        set_config "druid-env" "druid.overlord.jvm.opts" "${druid_opts}"
+        set_config "druid-env" "druid.router.jvm.opts" "${druid_opts}"
+      fi
     fi
     echo -e "${GREEN}Successfully updated configurations for Ranger Druid.${NC}"
 }
@@ -333,6 +339,7 @@ display_service_options() {
                 echo -e "${GREEN}  5)${NC} 🌀   Oozie"
                 echo -e "${GREEN}  6)${NC} 🔑   Ranger KMS"
                 echo -e "${GREEN}  7)${NC} 🦎   ZooKeeper (logback)"
+                echo -e "${GREEN}  8)${NC} Druid"
                 ;;
         esac
 
@@ -378,6 +385,7 @@ handle_selection() {
                 5) update_oozie_configuration_for_jdk17 ;;
                 6) update_kms_configuration_for_jdk17 ;;
                 7) update_zookeeper_configuration_for_jdk17 ;;
+                8) update_druid_configuration_for_jdk17 ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17
@@ -385,6 +393,7 @@ handle_selection() {
                     update_hbase_configuration_for_jdk17
                     update_oozie_configuration_for_jdk17
                     update_kms_configuration_for_jdk17
+                    update_druid_configuration_for_jdk17
                     update_zookeeper_configuration_for_jdk17
                     ;;
                 [Qq]) return 1 ;;

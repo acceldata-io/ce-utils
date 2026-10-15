@@ -21,7 +21,29 @@ export JRE_HOME=${JAVA_HOME}
 {% if java_version < 8 %}
 export CATALINA_OPTS="$CATALINA_OPTS -Xmx{{oozie_heapsize}} -XX:MaxPermSize={{oozie_permsize}}"
 {% else %}
-export CATALINA_OPTS="$CATALINA_OPTS -Xmx{{oozie_heapsize}}"
+export CATALINA_OPTS="$CATALINA_OPTS -Xms{{oozie_heapsize}} -Xmx{{oozie_heapsize}}"
+{% if java_version >= 11 %}
+{% if jvm_tuning_profile == 'azul_prime' %}
+export OOZIE_JVM_TUNING_OPTS="-Xlog:gc*:file={{oozie_log_dir}}/oozie-gc.log:time,uptime:filecount=10,filesize=20M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn={{oozie_log_dir}}/oozie.profile -XX:ProfileLogOut={{oozie_log_dir}}/oozie.profile -XX:+UseZingMXBeans"
+{% else %}
+export OOZIE_JVM_TUNING_OPTS="-Xlog:gc*,gc+heap=info,gc+age=debug:file={{oozie_log_dir}}/oozie-gc.log:time,uptime:filecount=10,filesize=20M -XX:+UseG1GC"
+{% endif %}
+export CATALINA_OPTS="$CATALINA_OPTS ${OOZIE_JVM_TUNING_OPTS}"
+{% endif %}
+{% endif %}
+{% if security_enabled %}
+export KRB5_CONFIG={{krb5_conf_path}}
+# CATALINA_OPTS is consumed by the legacy bigtop-tomcat launcher.
+# JETTY_OPTS is consumed by the embedded-oozie-server (Oozie 5.x).
+# OOZIE_CLIENT_OPTS is consumed by bin/oozie when the client CLI is invoked
+# (e.g. the "oozie admin -status" alert; also any operator "oozie jobs ...").
+# Set the krb5.conf sysprop on all three so every Oozie JVM spawned from
+# this environment picks up the cluster-configured krb5.conf regardless of
+# which launcher is in use; the JDK's sun.security.krb5.Config honors only
+# -Djava.security.krb5.conf (it does not read the KRB5_CONFIG env var).
+export CATALINA_OPTS="$CATALINA_OPTS -Djava.security.krb5.conf={{krb5_conf_path}}"
+export JETTY_OPTS="$JETTY_OPTS -Djava.security.krb5.conf={{krb5_conf_path}}"
+export OOZIE_CLIENT_OPTS="$OOZIE_CLIENT_OPTS -Djava.security.krb5.conf={{krb5_conf_path}}"
 {% endif %}
 # Oozie configuration file to load from Oozie configuration directory
 #
@@ -76,5 +98,7 @@ export JAVA_LIBRARY_PATH="$JAVA_LIBRARY_PATH:{{jdbc_libs_dir}}"
 {% endif %}
 
 {% if java_version > 11 %}
-export JETTY_OPTS="${JETTY_OPTS} {{jvm_flags}} -Dorg.eclipse.jetty.util.ssl.SslContextFactory.class=org.eclipse.jetty.util.ssl.SslContextFactory$Server"
+export JETTY_OPTS="${JETTY_OPTS} {{jvm_flags}}"
 {% endif %}
+
+   
