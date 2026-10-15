@@ -14,16 +14,25 @@
       # export HBASE_HEAPSIZE=1000
 
         {% if java_version == 8 %}
+        # Extra Java runtime options.
+        export HBASE_OPTS="-XX:+UseG1GC -XX:MaxGCPauseMillis=100 -XX:-ResizePLAB -XX:ErrorFile={{log_dir}}/hs_err_pid%p.log -Djava.io.tmpdir={{java_io_tmpdir}}"
+        export HBASE_MASTER_OPTS="-Xms{{master_heapsize}} -Xmx{{master_heapsize}} -XX:+UseG1GC"
+        export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS -Xms{{regionserver_heapsize}} -Xmx{{regionserver_heapsize}} -XX:+UseG1GC"
         # For Java version  8
         export SERVER_GC_OPTS="-verbose:gc -XX:-PrintGCCause -XX:+PrintAdaptiveSizePolicy -XX:+PrintGCDetails -XX:+PrintGCDateStamps -Xloggc:{{log_dir}}/gc.log-`date +'%Y%m%d%H%M'` -XX:+PrintHeapAtGC -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCTimeStamps -XX:+PrintTenuringDistribution"
         {% else %}
         # For Java 11 and above
+        {% if jvm_tuning_profile == 'azul_prime' %}
+        export SERVER_GC_OPTS="-Xlog:gc*:file={{log_dir}}/gc.log-`date +'%Y%m%d%H%M'`:time,uptime:filecount=10,filesize=200M"
+        export HBASE_JVM_TUNING_OPTS="-XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn={{log_dir}}/hbase.profile -XX:ProfileLogOut={{log_dir}}/hbase.profile -XX:+UseZingMXBeans"
+        {% else %}
         export SERVER_GC_OPTS="-Xlog:gc*,gc+heap=info,gc+age=debug:file={{log_dir}}/gc.log-`date +'%Y%m%d%H%M'`:time,uptime:filecount=10,filesize=200M -XX:+UseG1GC"
+        export HBASE_JVM_TUNING_OPTS="-XX:+UseG1GC -XX:MaxGCPauseMillis=100 -XX:-ResizePLAB"
         {% endif %}
-
-      # Extra Java runtime options.
-      export HBASE_OPTS="-Xms1g -Xmx2g -XX:+UseG1GC -XX:MaxGCPauseMillis=100 -XX:-ResizePLAB -XX:ErrorFile={{log_dir}}/hs_err_pid%p.log -Djava.io.tmpdir={{java_io_tmpdir}}"
-      export HBASE_MASTER_OPTS="-Xms1g -Xmx2g -XX:+UseG1GC"
+        export HBASE_OPTS="${HBASE_JVM_TUNING_OPTS} -XX:ErrorFile={{log_dir}}/hs_err_pid%p.log -Djava.io.tmpdir={{java_io_tmpdir}}"
+        export HBASE_MASTER_OPTS="-Xms{{master_heapsize}} -Xmx{{master_heapsize}} ${HBASE_JVM_TUNING_OPTS}"
+        export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS -Xms{{regionserver_heapsize}} -Xmx{{regionserver_heapsize}} ${HBASE_JVM_TUNING_OPTS}"
+        {% endif %}
 
       # Uncomment below to enable java garbage collection logging.
       # export HBASE_OPTS="$HBASE_OPTS -verbose:gc -XX:+PrintGCDetails -XX:+PrintGCDateStamps -Xloggc:$HBASE_HOME/logs/gc-hbase.log"
@@ -74,10 +83,11 @@
 
       # Add Kerberos authentication-related configuration
       {% if security_enabled %}
-      export HBASE_OPTS="$HBASE_OPTS -Djava.security.auth.login.config={{client_jaas_config_file}} {{zk_security_opts}}"
-      export HBASE_MASTER_OPTS="$HBASE_MASTER_OPTS -Djava.security.auth.login.config={{master_jaas_config_file}} -Djavax.security.auth.useSubjectCredsOnly=false"
-      export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS -Djava.security.auth.login.config={{regionserver_jaas_config_file}} -Djavax.security.auth.useSubjectCredsOnly=false"
-      export PHOENIX_QUERYSERVER_OPTS="$PHOENIX_QUERYSERVER_OPTS -Djava.security.auth.login.config={{queryserver_jaas_config_file}}"
+      export KRB5_CONFIG={{krb5_conf_path}}
+      export HBASE_OPTS="$HBASE_OPTS -Djava.security.auth.login.config={{client_jaas_config_file}} {{zk_security_opts}} -Djava.security.krb5.conf={{krb5_conf_path}}"
+      export HBASE_MASTER_OPTS="$HBASE_MASTER_OPTS -Djava.security.auth.login.config={{master_jaas_config_file}} -Djavax.security.auth.useSubjectCredsOnly=false -Djava.security.krb5.conf={{krb5_conf_path}}"
+      export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS -Djava.security.auth.login.config={{regionserver_jaas_config_file}} -Djavax.security.auth.useSubjectCredsOnly=false -Djava.security.krb5.conf={{krb5_conf_path}}"
+      export PHOENIX_QUERYSERVER_OPTS="$PHOENIX_QUERYSERVER_OPTS -Djava.security.auth.login.config={{queryserver_jaas_config_file}} -Djava.security.krb5.conf={{krb5_conf_path}}"
       {% endif %}
 
       # HBase off-heap MaxDirectMemorySize

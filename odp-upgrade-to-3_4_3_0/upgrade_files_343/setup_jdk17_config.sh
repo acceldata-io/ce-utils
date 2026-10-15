@@ -15,7 +15,8 @@
 #   bash ./setup_jdk17_config.sh
 #
 # Source JDK 8 or 11: full service menu (HDFS, YARN, MapReduce, Infra-Solr,
-# Hive, Tez, HBase, Oozie, Ranger KMS, Druid, ZooKeeper, Pinot).
+# Hive, Tez, HBase, Ranger KMS, ZooKeeper, Pinot).
+# Oozie and Druid are not part of ODP 3.4.3.
 # Source JDK 17: ZooKeeper logback, Pinot JAVA_HOME, Spark 3.5.8 shuffle.
 ##########################################################################
 GREEN='\e[32m'
@@ -93,7 +94,7 @@ detect_source_jdk() {
             JAVA_VERSION="$source_jdk"
             ;;
         11)
-            MIGRATION_PATH="$TEMPLATE_DIR/jdk11-specific"
+            MIGRATION_PATH=""
             echo -e "${GREEN}Migration path set: JDK 11 -> JDK 17${NC}"
             JAVA_VERSION="$source_jdk"
             ;;
@@ -251,7 +252,6 @@ JVM_FLAGS_HDFS="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.bas
 JVM_FLAGS_YARN="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.math=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED"
 JVM_FLAGS_TEZ="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED"
 JVM_FLAGS_HIVE="--add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.math=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.security=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.time=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.regex=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/jdk.internal.reflect=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.provider=ALL-UNNAMED --add-opens=java.sql/java.sql=ALL-UNNAMED"
-JVM_FLAGS_OOZIE="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED"
 JVM_FLAGS_KMS="--add-exports java.xml.crypto/com.sun.org.apache.xml.internal.security.utils=ALL-UNNAMED"
 
 #---------------------------------------------------------
@@ -268,6 +268,7 @@ update_hdfs_configuration_for_jdk17() {
     set_config "mapred-env" "content" "$(cat $TEMPLATE_DIR/mapred-env-template)"
     set_config "mapred-site" "yarn.app.mapreduce.am.admin-command-opts" "$(cat $TEMPLATE_DIR/mapred-site-template)"
     set_config "yarn-env" "content" "$(cat $TEMPLATE_DIR/yarn-env-template)"
+    set_config "yarn-hbase-env" "content" "$(cat $TEMPLATE_DIR/yarn-hbase-env-template)"
 
     # Java 8 specific configuration changes
     if [ "$JAVA_VERSION" -eq "8" ]; then
@@ -365,11 +366,8 @@ update_infra_configuration_for_jdk17() {
 
     set_config "infra-solr-env" "infra_solr_gc_log_opts" "$(cat $TEMPLATE_DIR/infra-solr-gc-log-opts)"
     set_config "infra-solr-env" "infra_solr_gc_tune" "$(cat $TEMPLATE_DIR/infra-solr-gc-tune)"
-
-    # Java 11 specific configuration changes
-    if [ "$JAVA_VERSION" -eq "11" ]; then
-      set_config "infra-solr-env" "content" "$(cat $MIGRATION_PATH/infra-solr-env-template)"
-    fi
+    # Ambari infra-solr-env.sh.j2 branches on java_version, so both source JDKs get the same content.
+    set_config "infra-solr-env" "content" "$(cat $TEMPLATE_DIR/infra-solr-env-template)"
 
     echo -e "${GREEN}Successfully updated configurations for Infra-Solr.${NC}"
 }
@@ -379,21 +377,14 @@ update_hive_configuration_for_jdk17() {
 
     set_config "tez-site" "jvm_flags" "${JVM_FLAGS_TEZ}"
     set_config "tez-env" "content" "$(cat $TEMPLATE_DIR/tez-env-template)"
-    set_config "tez-site" "tez.am.launch.cluster-default.cmd-opts" "$(cat $TEMPLATE_DIR/tez-site-template)"
-    set_config "tez-site" "tez.task.launch.cluster-default.cmd-opts" "$(cat $TEMPLATE_DIR/tez-site-template)"
+    set_config "tez-site" "tez.am.launch.cluster-default.cmd-opts" "$(cat $TEMPLATE_DIR/tez-am-site-template)"
+    set_config "tez-site" "tez.task.launch.cluster-default.cmd-opts" "$(cat $TEMPLATE_DIR/tez-task-site-template)"
 
     set_config "hive-site" "jvm_flags" "${JVM_FLAGS_HIVE}"
     set_config "hive-env" "content" "$(cat $TEMPLATE_DIR/hive-env-template)"
     set_config "hive-site" "hive.tez.java.opts" "$(cat $TEMPLATE_DIR/hive-tez-java-opts)"
     set_config "hive-interactive-env" "llap_java_opts" "$(cat $TEMPLATE_DIR/hive-llap-java-opts)"
     set_config "hive-interactive-env" "content" "$(cat $TEMPLATE_DIR/hive-interactive-env-template)"
-
-    # Java 8 specific configuration changes
-    if [ "$JAVA_VERSION" -eq "8" ]; then
-      # Remove configs
-      delete_config "tez-site" "tez.am.launch.cmd-opts"
-      delete_config "tez-site" "tez.task.launch.cmd-opts"
-    fi
 
     echo -e "${GREEN}Successfully updated configurations for Tez and Hive.${NC}"
 }
@@ -410,21 +401,10 @@ update_hbase_configuration_for_jdk17() {
       set_config "hbase-log4j" "content" "$(cat "$TEMPLATE_DIR/hbase-log4j2-template")"
     fi
 
-    # Java 8 specific configuration changes
-    if [ "$JAVA_VERSION" -eq "8" ]; then
-      set_config "hbase-env" "content" "$(cat $MIGRATION_PATH/hbase-env-template)"
-    fi
+    # Ambari hbase-env content branches on java_version (8 vs 11+ / Azul Prime).
+    set_config "hbase-env" "content" "$(cat $TEMPLATE_DIR/hbase-env-template)"
 
     echo -e "${GREEN}Successfully updated configurations for HBase.${NC}"
-}
-
-update_oozie_configuration_for_jdk17() {
-    echo -e "${YELLOW}Starting to update configurations for Oozie...${NC}"
-
-    set_config "oozie-site" "jvm_flags" "${JVM_FLAGS_OOZIE}"
-    set_config "oozie-env" "content" "$(cat $TEMPLATE_DIR/oozie-env-template)"
-
-    echo -e "${GREEN}Successfully updated configurations for Oozie.${NC}"
 }
 
 update_kms_configuration_for_jdk17() {
@@ -434,37 +414,6 @@ update_kms_configuration_for_jdk17() {
     set_config "kms-env" "content" "$(cat $TEMPLATE_DIR/kms-env-template)"
 
     echo -e "${GREEN}Successfully updated configurations for Ranger KMS.${NC}"
-}
-
-update_druid_configuration_for_jdk17() {
-    echo -e "${YELLOW}Starting to update configurations for Druid...${NC}"
-
-    local druid_template_dir druid_opts
-    if [ "$JAVA_VERSION" -eq "8" ]; then
-        druid_template_dir="$MIGRATION_PATH"
-    else
-        druid_template_dir="$TEMPLATE_DIR"
-    fi
-
-    if [[ ! -f "${druid_template_dir}/druid-env-template" ]]; then
-        echo -e "${RED}[ERROR] Druid template not found: ${druid_template_dir}/druid-env-template${NC}" | tee -a /tmp/jdk17_update.log
-        return 1
-    fi
-    if [[ ! -f "${druid_template_dir}/druid-env-opts" ]]; then
-        echo -e "${RED}[ERROR] Druid jvm.opts template not found: ${druid_template_dir}/druid-env-opts${NC}" | tee -a /tmp/jdk17_update.log
-        return 1
-    fi
-
-    druid_opts="$(cat "${druid_template_dir}/druid-env-opts")"
-    set_config "druid-env" "content" "$(cat "${druid_template_dir}/druid-env-template")"
-    set_config "druid-env" "druid.broker.jvm.opts" "${druid_opts}"
-    set_config "druid-env" "druid.coordinator.jvm.opts" "${druid_opts}"
-    set_config "druid-env" "druid.historical.jvm.opts" "${druid_opts}"
-    set_config "druid-env" "druid.middlemanager.jvm.opts" "${druid_opts}"
-    set_config "druid-env" "druid.overlord.jvm.opts" "${druid_opts}"
-    set_config "druid-env" "druid.router.jvm.opts" "${druid_opts}"
-
-    echo -e "${GREEN}Successfully updated configurations for Druid.${NC}"
 }
 
 update_zookeeper_configuration_for_jdk17() {
@@ -513,24 +462,20 @@ display_service_options() {
                 echo -e "${GREEN}  2)${NC} Infra-Solr"
                 echo -e "${GREEN}  3)${NC} Hive and Tez"
                 echo -e "${GREEN}  4)${NC} HBase (env + log4j2)"
-                echo -e "${GREEN}  5)${NC} Oozie"
-                echo -e "${GREEN}  6)${NC} Ranger KMS"
-                echo -e "${GREEN}  7)${NC} Druid"
-                echo -e "${GREEN}  8)${NC} ZooKeeper (logback)"
-                echo -e "${GREEN}  9)${NC} Pinot (JAVA_HOME)"
-                echo -e "${GREEN} 10)${NC} YARN Spark 3.5.8 shuffle (pre-EU)"
+                echo -e "${GREEN}  5)${NC} Ranger KMS"
+                echo -e "${GREEN}  6)${NC} ZooKeeper (logback)"
+                echo -e "${GREEN}  7)${NC} Pinot (JAVA_HOME)"
+                echo -e "${GREEN}  8)${NC} YARN Spark 3.5.8 shuffle (pre-EU)"
                 ;;
             11)
                 echo -e "${GREEN}  1)${NC} HDFS, YARN and MapReduce"
                 echo -e "${GREEN}  2)${NC} Infra-Solr"
                 echo -e "${GREEN}  3)${NC} Hive and Tez"
-                echo -e "${GREEN}  4)${NC} HBase (log4j2)"
-                echo -e "${GREEN}  5)${NC} Oozie"
-                echo -e "${GREEN}  6)${NC} Ranger KMS"
-                echo -e "${GREEN}  7)${NC} Druid"
-                echo -e "${GREEN}  8)${NC} ZooKeeper (logback)"
-                echo -e "${GREEN}  9)${NC} Pinot (JAVA_HOME)"
-                echo -e "${GREEN} 10)${NC} YARN Spark 3.5.8 shuffle (pre-EU)"
+                echo -e "${GREEN}  4)${NC} HBase (env + log4j2)"
+                echo -e "${GREEN}  5)${NC} Ranger KMS"
+                echo -e "${GREEN}  6)${NC} ZooKeeper (logback)"
+                echo -e "${GREEN}  7)${NC} Pinot (JAVA_HOME)"
+                echo -e "${GREEN}  8)${NC} YARN Spark 3.5.8 shuffle (pre-EU)"
                 ;;
             17)
                 echo -e "${GREEN}  1)${NC} ZooKeeper (logback)"
@@ -558,20 +503,16 @@ handle_selection() {
                 2) update_infra_configuration_for_jdk17 ;;
                 3) update_hive_configuration_for_jdk17 ;;
                 4) update_hbase_configuration_for_jdk17 ;;
-                5) update_oozie_configuration_for_jdk17 ;;
-                6) update_kms_configuration_for_jdk17 ;;
-                7) update_druid_configuration_for_jdk17 ;;
-                8) update_zookeeper_configuration_for_jdk17 ;;
-                9) update_pinot_configuration_for_jdk17 ;;
-                10) update_yarn_spark_shuffle_isolation ;;
+                5) update_kms_configuration_for_jdk17 ;;
+                6) update_zookeeper_configuration_for_jdk17 ;;
+                7) update_pinot_configuration_for_jdk17 ;;
+                8) update_yarn_spark_shuffle_isolation ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17
                     update_hive_configuration_for_jdk17
                     update_hbase_configuration_for_jdk17
-                    update_oozie_configuration_for_jdk17
                     update_kms_configuration_for_jdk17
-                    update_druid_configuration_for_jdk17
                     update_zookeeper_configuration_for_jdk17
                     update_pinot_configuration_for_jdk17
                     ;;
@@ -585,20 +526,16 @@ handle_selection() {
                 2) update_infra_configuration_for_jdk17 ;;
                 3) update_hive_configuration_for_jdk17 ;;
                 4) update_hbase_configuration_for_jdk17 ;;
-                5) update_oozie_configuration_for_jdk17 ;;
-                6) update_kms_configuration_for_jdk17 ;;
-                7) update_druid_configuration_for_jdk17 ;;
-                8) update_zookeeper_configuration_for_jdk17 ;;
-                9) update_pinot_configuration_for_jdk17 ;;
-                10) update_yarn_spark_shuffle_isolation ;;
+                5) update_kms_configuration_for_jdk17 ;;
+                6) update_zookeeper_configuration_for_jdk17 ;;
+                7) update_pinot_configuration_for_jdk17 ;;
+                8) update_yarn_spark_shuffle_isolation ;;
                 [Aa])
                     update_hdfs_configuration_for_jdk17
                     update_infra_configuration_for_jdk17
                     update_hive_configuration_for_jdk17
                     update_hbase_configuration_for_jdk17
-                    update_oozie_configuration_for_jdk17
                     update_kms_configuration_for_jdk17
-                    update_druid_configuration_for_jdk17
                     update_zookeeper_configuration_for_jdk17
                     update_pinot_configuration_for_jdk17
                     ;;

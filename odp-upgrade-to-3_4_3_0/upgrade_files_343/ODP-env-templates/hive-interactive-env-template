@@ -1,15 +1,26 @@
-export HADOOP_OPTS="$HADOOP_OPTS -Xloggc:{{hive_log_dir}}/hiveserverinteractive-gc-%t.log -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={{hive_log_dir}}/hsi_heapdump.hprof -Dhive.log.dir={{hive_log_dir}} -Dhive.log.file=hiveserver2Interactive.log"
+
+{% if java_version|int >= 11 %}
+{% if jvm_tuning_profile == 'azul_prime' %}
+export HIVE_JVM_TUNING_OPTS="-Xlog:gc*,gc+heap=debug,gc+phases=debug:file={{hive_log_dir}}/hiveserverinteractive-gc-%t.log:time,level,tags:filecount=10,filesize=10M -XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn={{hive_log_dir}}/hiveserverinteractive.profile -XX:ProfileLogOut={{hive_log_dir}}/hiveserverinteractive.profile -XX:+UseZingMXBeans"
+{% else %}
+export HIVE_JVM_TUNING_OPTS="-Xlog:gc*,gc+heap=debug,gc+phases=debug:file={{hive_log_dir}}/hiveserverinteractive-gc-%t.log:time,level,tags:filecount=10,filesize=10M -XX:+UseG1GC"
+{% endif %}
+export HADOOP_OPTS="$HADOOP_OPTS ${HIVE_JVM_TUNING_OPTS} -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={{hive_log_dir}}/hsi_heapdump.hprof -Dhive.log.dir={{hive_log_dir}} -Dhive.log.file=hiveserver2Interactive.log"
 {% if java_version|int > 11 %}
 export HADOOP_OPTS="$HADOOP_OPTS {{jvm_flags}}"
+{% endif %}
+{% else %}
+export HADOOP_OPTS="$HADOOP_OPTS -Xloggc:{{hive_log_dir}}/hiveserverinteractive-gc-%t.log -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={{hive_log_dir}}/hsi_heapdump.hprof -Dhive.log.dir={{hive_log_dir}} -Dhive.log.file=hiveserver2Interactive.log"
 {% endif %}
 # The heap size of the jvm stared by hive shell script can be controlled via:
 export HADOOP_HEAPSIZE={{hive_interactive_heapsize}} # Setting for HiveServer2 and Client
 
 {% if security_enabled %}
-export HADOOP_OPTS="$HADOOP_OPTS -Dzookeeper.sasl.client.username={{zk_principal_user}}"
+export KRB5_CONFIG={{krb5_conf_path}}
+export HADOOP_OPTS="$HADOOP_OPTS -Dzookeeper.sasl.client.username={{zk_principal_user}} -Djava.security.krb5.conf={{krb5_conf_path}}"
 {% endif %}
 
-export HADOOP_CLIENT_OPTS="$HADOOP_CLIENT_OPTS  -Xmx${HADOOP_HEAPSIZE}m"
+export HADOOP_CLIENT_OPTS="$HADOOP_CLIENT_OPTS -Xms${HADOOP_HEAPSIZE}m -Xmx${HADOOP_HEAPSIZE}m"
 export HADOOP_CLIENT_OPTS="$HADOOP_CLIENT_OPTS{{heap_dump_opts}}"
 {% if java_version|int > 11 %}
 export HADOOP_CLIENT_OPTS="$HADOOP_CLIENT_OPTS {{jvm_flags}}"
@@ -34,3 +45,4 @@ else
 fi
 
 export METASTORE_PORT={{hive_metastore_port}}
+    

@@ -24,7 +24,15 @@
       export SERVER_GC_OPTS="-verbose:gc -XX:+PrintGCDetails -XX:+PrintGCDateStamps -Xloggc:{{yarn_hbase_log_dir}}/gc.log-`date +'%Y%m%d%H%M'`"
       {% else %}
       # For Java 11 and above
+      {% if jvm_tuning_profile == 'azul_prime' %}
+      export SERVER_GC_OPTS="-Xlog:gc*:file={{yarn_hbase_log_dir}}/gc.log-`date +'%Y%m%d%H%M'`:time,uptime,tid,level:filecount=10,filesize=200M"
+      export YARN_HBASE_JVM_TUNING_OPTS="-XX:+UseTransparentHugePages -XX:CIMaxCompilerThreads=8 -XX:ProfileLogIn={{yarn_hbase_log_dir}}/yarn-hbase.profile -XX:ProfileLogOut={{yarn_hbase_log_dir}}/yarn-hbase.profile -XX:+UseZingMXBeans"
+      export YARN_HBASE_RS_JVM_TUNING_OPTS=""
+      {% else %}
       export SERVER_GC_OPTS="-Xlog:gc*,gc+heap=debug,gc+phases=debug:file={{yarn_hbase_log_dir}}/gc.log-`date +'%Y%m%d%H%M'`:time,level,tags"
+      export YARN_HBASE_JVM_TUNING_OPTS="-XX:+UseG1GC"
+      export YARN_HBASE_RS_JVM_TUNING_OPTS="-XX:InitiatingHeapOccupancyPercent=70"
+      {% endif %}
       {% endif %}
       # Uncomment below to enable java garbage collection logging.
       # export HBASE_OPTS="$HBASE_OPTS -verbose:gc -XX:+PrintGCDetails -XX:+PrintGCDateStamps -Xloggc:$HBASE_HOME/logs/gc-hbase.log"
@@ -64,7 +72,11 @@
       # Tell HBase whether it should manage it's own instance of Zookeeper or not.
       export HBASE_MANAGES_ZK=false
 
-      {% if java_version < 8 %}
+      # PermSize is only valid on Java 6/7. Always initialize so Java 11+/21
+      # paths that append $JDK_DEPENDED_OPTS do not inherit a stale value, and
+      # so an unrecognized java_version (-1) cannot reintroduce PermSize.
+      JDK_DEPENDED_OPTS=""
+      {% if java_version == 6 or java_version == 7 %}
       JDK_DEPENDED_OPTS="-XX:PermSize=128m -XX:MaxPermSize=128m"
       {% endif %}
 
@@ -72,14 +84,17 @@
       # For Java 8
       export HBASE_OPTS="$HBASE_OPTS -XX:+UseConcMarkSweepGC -XX:ErrorFile=$HBASE_LOG_DIR/hs_err_pid%p.log -Djava.io.tmpdir={{yarn_hbase_java_io_tmpdir}}"
       export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS -XX:CMSInitiatingOccupancyFraction=70 -XX:ReservedCodeCacheSize=256m -Xms{{yarn_hbase_regionserver_heapsize}} -Xmx{{yarn_hbase_regionserver_heapsize}} $JDK_DEPENDED_OPTS"
+      export HBASE_MASTER_OPTS="$HBASE_MASTER_OPTS -Xms{{yarn_hbase_master_heapsize}} -Xmx{{yarn_hbase_master_heapsize}} $JDK_DEPENDED_OPTS"
       {% else %}
       # For Java 11 and above
-      export HBASE_OPTS="$HBASE_OPTS -XX:+UseG1GC -XX:ErrorFile=$HBASE_LOG_DIR/hs_err_pid%p.log -Djava.io.tmpdir={{yarn_hbase_java_io_tmpdir}}"
-      export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS -XX:InitiatingHeapOccupancyPercent=70 -XX:ReservedCodeCacheSize=256m -Xms{{yarn_hbase_regionserver_heapsize}} -Xmx{{yarn_hbase_regionserver_heapsize}} $JDK_DEPENDED_OPTS"
+      export HBASE_OPTS="$HBASE_OPTS ${YARN_HBASE_JVM_TUNING_OPTS} -XX:ErrorFile=$HBASE_LOG_DIR/hs_err_pid%p.log -Djava.io.tmpdir={{yarn_hbase_java_io_tmpdir}}"
+      export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS ${YARN_HBASE_RS_JVM_TUNING_OPTS} -XX:ReservedCodeCacheSize=256m -Xms{{yarn_hbase_regionserver_heapsize}} -Xmx{{yarn_hbase_regionserver_heapsize}} $JDK_DEPENDED_OPTS"
+      export HBASE_MASTER_OPTS="$HBASE_MASTER_OPTS -Xms{{yarn_hbase_master_heapsize}} -Xmx{{yarn_hbase_master_heapsize}} $JDK_DEPENDED_OPTS"
       {% endif %}
-      export HBASE_MASTER_OPTS="$HBASE_MASTER_OPTS -Xmx{{yarn_hbase_master_heapsize}} $JDK_DEPENDED_OPTS"
-
+      
       {% if security_enabled %}
-      export HBASE_MASTER_OPTS="$HBASE_MASTER_OPTS -Djava.security.auth.login.config={{yarn_hbase_master_jaas_file}}"
-      export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS -Djava.security.auth.login.config={{yarn_hbase_regionserver_jaas_file}}"
+      export KRB5_CONFIG={{krb5_conf_path}}
+      export HBASE_MASTER_OPTS="$HBASE_MASTER_OPTS -Djava.security.auth.login.config={{yarn_hbase_master_jaas_file}} -Djava.security.krb5.conf={{krb5_conf_path}}"
+      export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS -Djava.security.auth.login.config={{yarn_hbase_regionserver_jaas_file}} -Djava.security.krb5.conf={{krb5_conf_path}}"
       {% endif %}
+    
