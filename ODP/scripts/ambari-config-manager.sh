@@ -248,6 +248,7 @@ ATLAS_CONFIGS=("application-properties" "atlas-env" "atlas-log4j" "atlas-simple-
 AIRFLOW_CONFIG=("airflow-admin-site" "airflow-api-site" "airflow-atlas-site" "airflow-celery-site" "airflow-cli-site" "airflow-core-site" "airflow-dask-site" "airflow-database-site" "airflow-elasticsearch-site" "airflow-email-site" "airflow-env" "airflow-githubenterprise-site" "airflow-hive-site" "airflow-kubernetes-site" "airflow-kubernetes_executor-site" "airflow-kubernetessecrets-site" "airflow-ldap-site" "airflow-lineage-site" "airflow-logging-site" "airflow-mesos-site" "airflow-metrics-site" "airflow-openlineage-site" "airflow-operators-site" "airflow-scheduler-site" "airflow-smtp-site" "airflow-kerberos-site" "airflow-webserver-site")
 OZONE_CONFIG=("ozone-log4j-datanode" "ozone-log4j-om" "ozone-log4j-properties" "ozone-log4j-recon" "ozone-log4j-s3g" "ozone-log4j-scm" "ozone-ssl-client" "ranger-ozone-plugin-properties" "ranger-ozone-policymgr-ssl" "ranger-ozone-security" "ssl-client-datanode" "ssl-client-om" "ssl-client-recon" "ssl-client-s3g" "ssl-client-scm" "ssl-server-datanode" "ssl-server-om" "ssl-server-recon" "ssl-server-s3g" "ssl-server-scm" "ozone-core-site" "ranger-ozone-audit" "ozone-env" "ozone-site")
 PINOT_CONFIG=("pinot-tools-log4j2" "pinot-server-conf" "pinot-service-log4j2" "pinot-env" "pinot-broker-conf" "pinot-broker-log4j2" "pinot-controller-conf" "pinot-server-log4j2" "pinot-minion-conf" "pinot-admin-log4j2" "pinot-minion-log4j2" "pinot-controller-log4j2" "pinot-ingestion-job-log4j2" "quickstart-log4j2" "log4j2")
+TRINO_CONFIGS=("access-control" "config-properties" "jvm-config" "node-env" "ranger-trino-audit" "ranger-trino-plugin-properties" "ranger-trino-policymgr-ssl" "ranger-trino-security" "trino-env" "trino-hive" "trino-ldap" "trino-mariadb" "trino-mysql" "trino-oracle" "trino-postgresql" "trino-rules" "trino-testing")
 KAFKA3_CONFIGS=("kafka3-env" "kafka3-log4j" "ranger-kafka3-policymgr-ssl" "kafka3-mirrormaker2-destination" "ranger-kafka3-audit" "kafka3-mirrormaker2-common" "kafka3-broker" "kafka3-connect-distributed" "kafka3_client_jaas_conf" "ranger-kafka3-plugin-properties" "ranger-kafka3-security" "kafka3_jaas_conf" "kafka3-mirrormaker2-source" "cruise-control3" "cruise-control3-log4j" "cruise-control3-capacityJBOD" "cruise-control3-ui-config" "cruise-control3-env" "cruise-control3-jaas-conf" "cruise-control3-capacity" "cruise-control3-clusterConfigs" "cruise-control3-capacityCores" "kraft-controller-env" "kraft-broker-env" "kraft-config" "kraft-broker" "kraft-broker-controller" "kraft-controller")
 KAFKA4_CONFIGS=("cruise-control4" "cruise-control4-capacity" "cruise-control4-capacityCores" "cruise-control4-capacityJBOD" "cruise-control4-clusterConfigs" "cruise-control4-env" "cruise-control4-jaas-conf" "cruise-control4-log4j" "cruise-control4-ui-config" "kafka4-connect-distributed" "kafka4-log4j2" "kafka4-mirrormaker2" "kafka4-mirrormaker2-env" "kafka4-mirrormaker2-jaas-conf" "kafka4-mirrormaker2-log4j" "kafka4_client_jaas_conf" "kafka4_jaas_conf" "kraft4-broker" "kraft4-broker-controller" "kraft4-broker-env" "kraft4-controller" "kraft4-controller-env" "ranger-kafka4-audit" "ranger-kafka4-plugin-properties" "ranger-kafka4-policymgr-ssl" "ranger-kafka4-security")
 
@@ -787,6 +788,7 @@ backup_airflow_configs() { backup_service AIRFLOW_CONFIG; }
 backup_atlas_configs() { backup_service ATLAS_CONFIGS; }
 backup_ozone_configs() { backup_service OZONE_CONFIG; }
 backup_pinot_configs() { backup_service PINOT_CONFIG; }
+backup_trino_configs() { backup_service TRINO_CONFIGS; }
 backup_kafka3_configs() { backup_service KAFKA3_CONFIGS; }
 backup_kafka4_configs() { backup_service KAFKA4_CONFIGS; }
 backup_hdfs_configs() { backup_service HDFS_CONFIGS; }
@@ -820,6 +822,7 @@ restore_airflow_configs() { restore_service AIRFLOW_CONFIG; }
 restore_atlas_configs() { restore_service ATLAS_CONFIGS; }
 restore_ozone_configs() { restore_service OZONE_CONFIG; }
 restore_pinot_configs() { restore_service PINOT_CONFIG; }
+restore_trino_configs() { restore_service TRINO_CONFIGS; }
 restore_kafka3_configs() { restore_service KAFKA3_CONFIGS; }
 restore_kafka4_configs() { restore_service KAFKA4_CONFIGS; }
 restore_hdfs_configs() { restore_service HDFS_CONFIGS; }
@@ -841,7 +844,7 @@ print_backup_summary() {
 
 # Run backup/restore for all services by calling their respective functions
 backup_all_configs() {
-    local services=(hue impala kafka ranger ranger_kms spark3 spark4 spark2 nifi nifi_registry schema_registry httpfs kudu jupyter flink druid airflow atlas ozone kafka3 kafka4 pinot mr tez hive sqoop oozie zookeeper infra_solr knox kerberos yarn hdfs)
+    local services=(hue impala kafka ranger ranger_kms spark3 spark4 spark2 nifi nifi_registry schema_registry httpfs kudu jupyter flink druid airflow atlas ozone kafka3 kafka4 pinot trino mr tez hive sqoop oozie zookeeper infra_solr knox kerberos yarn hdfs)
     local ok=() partial=() fail=()
     local rc
     local CG_DEFER=1
@@ -895,6 +898,7 @@ restore_all_configs() {
     restore_kafka3_configs
     restore_kafka4_configs
     restore_pinot_configs
+    restore_trino_configs
     restore_mr_configs
     restore_tez_configs
     restore_hive_configs
@@ -966,6 +970,7 @@ restore_one_from_dir() {
         KAFKA3 | kafka3) restore_kafka3_configs ;;
         KAFKA4 | kafka4) restore_kafka4_configs ;;
         PINOT | pinot) restore_pinot_configs ;;
+        TRINO | trino) restore_trino_configs ;;
         MR | mr) restore_mr_configs ;;
         TEZ | tez) restore_tez_configs ;;
         HIVE | hive) restore_hive_configs ;;
@@ -1007,6 +1012,7 @@ MENU_SERVICES=(
     "📓 Jupyter|JUPYTER_CONFIG"
     "🦩 Flink|FLINK_CONFIG"
     "🍷 Pinot|PINOT_CONFIG"
+    "🐇 Trino|TRINO_CONFIGS"
     "🧙 Druid|DRUID_CONFIG"
     "🌬️ Airflow|AIRFLOW_CONFIG"
     "🧭 Atlas|ATLAS_CONFIGS"
@@ -1026,7 +1032,7 @@ MENU_SERVICES=(
     "🎩 Oozie|OOZIE_CONFIGS"
     "🛡️ Kerberos|KERBEROS_CONFIGS"
 )
-MENU_MPACK_COUNT=18
+MENU_MPACK_COUNT=19
 
 # Reads every config type that exists in the cluster into CLUSTER_TYPES
 load_cluster_types() {
