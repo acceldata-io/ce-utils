@@ -105,12 +105,24 @@ detect_source_jdk() {
     esac
 }
 
+# ODP 3.3.6.6 spark3/aux has v355 only. The 3.4.3 JDK script writes
+# spark_shuffle_358; this script must not.
+refuse_spark_358() {
+    local where=$1
+    local payload=$2
+    if [[ "$payload" == *"spark_shuffle_358"* || "$payload" == *"v358.YarnShuffleService"* || "$payload" == *"spark.shuffle.service.v358.port"* ]]; then
+        echo -e "${RED}[ERROR] Refusing to push Spark shuffle v358 from the 3.3.6.6 JDK script (${where}). 3.3.6.6 ships v355 only.${NC}" | tee -a /tmp/jdk17_update.log
+        exit 1
+    fi
+}
+
 #---------------------------------------------------------
 # Function: set_config
 # Invokes the Ambari configuration script to set a given property.
 #---------------------------------------------------------
 set_config() {
     local config_file=$1 key=$2 value=$3
+    refuse_spark_358 "${config_file}:${key}" "${key} ${value}"
 
     python /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$USER" \
@@ -138,6 +150,7 @@ set_config_from_file() {
         echo -e "${RED}Template not found: ${xml_file}${NC}" | tee -a /tmp/jdk17_update.log
         return 1
     fi
+    refuse_spark_358 "$xml_file" "$(cat "$xml_file")"
 
     python /var/lib/ambari-server/resources/scripts/configs.py \
         -u "$USER" \
