@@ -213,7 +213,6 @@
         <component>KAFKA_MIRRORMAKER</component>
         <component>KAFKA_CONNECT</component>
         <component>CRUISE_CONTROL</component>
-        <component>KAFKA_CLIENT</component>
         <component>KAFKA_BROKER</component>
       </service>
 
