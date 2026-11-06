@@ -183,5 +183,30 @@
       </component>
     </service>
 
+    <service name="KAFKA3">
+      <component name="CRUISE_CONTROL3">
+        <changes>
+          <definition xsi:type="configure" id="odp_3_3_cruise_control3_jaas_jdk_flags" summary="Point Cruise Control 3 JDK login config at its own JAAS file">
+            <type>cruise-control3-env</type>
+            <replace key="content"
+                     find="/etc/kafka3/conf/kafka3_jaas.conf"
+                     replace-with="/etc/cruise-control3/conf/cruise_control_jaas_conf"
+                     if-key="content" if-type="cruise-control3-env" if-key-state="present"
+                     if-value="/etc/kafka3/conf/kafka3_jaas.conf" if-value-match-type="partial"/>
+            <replace key="content"
+                     find="/usr/odp/current/kafka3-broker/config/kafka3_jaas.conf"
+                     replace-with="/etc/cruise-control3/conf/cruise_control_jaas_conf"
+                     if-key="content" if-type="cruise-control3-env" if-key-state="present"
+                     if-value="/usr/odp/current/kafka3-broker/config/kafka3_jaas.conf" if-value-match-type="partial"/>
+            <replace key="content"
+                     find="{{kafka_kerberos_params}}"
+                     replace-with="-Djava.security.auth.login.config=/etc/cruise-control3/conf/cruise_control_jaas_conf"
+                     if-key="content" if-type="cruise-control3-env" if-key-state="present"
+                     if-value="useSubjectCredsOnly=false {{kafka_kerberos_params}}" if-value-match-type="partial"/>
+          </definition>
+        </changes>
+      </component>
+    </service>
+
   </services>
 </upgrade-config-changes>

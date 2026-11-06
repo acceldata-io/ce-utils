@@ -1047,6 +1047,9 @@
         </upgrade>
       </component>
       <component name="CRUISE_CONTROL3">
+        <pre-upgrade>
+          <task xsi:type="configure" id="odp_3_3_cruise_control3_jaas_jdk_flags"/>
+        </pre-upgrade>
         <upgrade>
           <task xsi:type="restart-task" />
         </upgrade>
