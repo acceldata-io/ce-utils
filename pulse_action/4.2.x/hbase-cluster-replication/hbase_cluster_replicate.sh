@@ -1167,14 +1167,11 @@ for ((table_idx = 0; table_idx < TOTAL_TABLES; table_idx++)); do
     # When using wildcard patterns (multiple tables), append table name to SNAP_PREFIX
     # to ensure each table gets unique snapshot names for clarity and independent rotation
     # Example: SNAP_PREFIX="backup", TABLE_NAME="prod:customers" → "backup_prod_customers"
-    TABLE_SNAP_PREFIX="${SNAP_PREFIX}"
-    if [[ $TOTAL_TABLES -gt 1 ]]; then
-        # Multiple tables (wildcard pattern) - append table name to prefix
-        # Convert namespace:table to namespace_table for snapshot name
-        EFFECTIVE_TABLE_NAME="${TABLE_NAME//:/_}"  # Replace colon with underscore
-        TABLE_SNAP_PREFIX="${SNAP_PREFIX}_${EFFECTIVE_TABLE_NAME}"
-        echo "[INFO] Using table-specific snapshot prefix (due to wildcard pattern): ${TABLE_SNAP_PREFIX}"
-    fi
+    # Multiple tables (wildcard pattern) - append table name to prefix
+    # Convert namespace:table to namespace_table for snapshot name
+    EFFECTIVE_TABLE_NAME="${TABLE_NAME//:/_}"  # Replace colon with underscore
+    TABLE_SNAP_PREFIX="${SNAP_PREFIX}_${EFFECTIVE_TABLE_NAME}"
+    echo "[INFO] Using table-specific snapshot prefix: ${TABLE_SNAP_PREFIX}"
 
     # Process this table - determine snapshot name for this table
     SNAPSHOT_INFO=$(get_next_snapshot_info "${TABLE_SNAP_PREFIX}" "${TABLE_NAME}" "${RETENTION}")
