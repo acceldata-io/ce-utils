@@ -439,7 +439,7 @@
 #     Default: true
 #
 #   HIVE_REPL_FORCE_DISTCP
-#     "true" or "false". When "true", every REPL LOAD sets 'hive.exec.copyfile.maxsize'='0', so every copy Hive performs runs as a DistCp job in YARN_QUEUE. By default Hive copies a small set of files (each below hive.exec.copyfile.maxsize, 32 MB by default) directly inside HiveServer2 instead. External table data is always copied with DistCp, so this only changes managed-table and small incremental event copies - each of which then pays a YARN job's startup and queueing cost. Enable only when all copy work must run on YARN rather than in HiveServer2.
+#     "true" or "false". When "true", every REPL LOAD sets 'hive.exec.copyfile.maxsize'='0' and 'hive.exec.copyfile.maxnumfiles'='0', so every copy Hive performs runs as a DistCp job in YARN_QUEUE. By default Hive copies directly inside HiveServer2 unless the copy is both larger than hive.exec.copyfile.maxsize (32 MB by default) and has more files than hive.exec.copyfile.maxnumfiles (1 by default) - so a single large file is still copied in HiveServer2 unless both limits are lowered. External table data is always copied with DistCp, so this only changes managed-table and small incremental event copies - each of which then pays a YARN job's startup and queueing cost. Enable only when all copy work must run on YARN rather than in HiveServer2.
 #     Default: false
 #
 #   HIVE_DISTCP_DOAS_USER
@@ -3008,14 +3008,17 @@ distcp_crc_props() {
   fi
 }
 
-# force_distcp_props: print the extra REPL LOAD WITH-clause property (ending
-# in a comma) that sets 'hive.exec.copyfile.maxsize'='0', when
-# HIVE_REPL_FORCE_DISTCP=true. With a maximum size of 0 no file set
-# qualifies for Hive's in-HiveServer2 copy, so every copy goes through DistCp.
-# Prints nothing when false.
+# force_distcp_props: print the extra REPL LOAD WITH-clause properties (each
+# ending in a comma) that set 'hive.exec.copyfile.maxsize'='0' and
+# 'hive.exec.copyfile.maxnumfiles'='0', when HIVE_REPL_FORCE_DISTCP=true.
+# Hive copies inside HiveServer2 unless BOTH the total size exceeds maxsize
+# AND the file count exceeds maxnumfiles (default 1), so maxsize=0 alone still
+# copies a single-file table locally. With both at 0 every copy goes through
+# DistCp. Prints nothing when false.
 force_distcp_props() {
   if [[ "${HIVE_REPL_FORCE_DISTCP,,}" == "true" ]]; then
     printf "%s\n" "'hive.exec.copyfile.maxsize'='0',"
+    printf "%s\n" "'hive.exec.copyfile.maxnumfiles'='0',"
   fi
 }
 
